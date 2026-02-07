@@ -1,0 +1,69 @@
+﻿using Magic.Kernel.Processor;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Text.Json;
+
+namespace Magic.Kernel.Compilation
+{
+    public class ExecutableUnit
+    {
+        public string Version { get; set; } = "0.0.1";
+        public string? Name { get; set; }
+        public string? Module { get; set; }
+
+        public ExecutionBlock EntryPoint { get; set; } = new ExecutionBlock();
+
+        public Dictionary<string, Processor.Procedure> Procedures { get; set; } = new Dictionary<string, Processor.Procedure>();
+        
+        public Dictionary<string, Processor.Function> Functions { get; set; } = new Dictionary<string, Processor.Function>();
+
+        public List<Export> Exports { get; set; } = new List<Export>();
+
+        public async Task SaveAsync(string filePath)
+        {
+            var data = await SerializeAsync();
+            await File.WriteAllBytesAsync(filePath, data);
+        }
+
+        public async Task<byte[]> SerializeAsync()
+        {
+            // Typed JSON формат по умолчанию (типобезопасно для object-полей вроде CallInfo.Parameters и Command.Operand*)
+            return await Task.FromResult(ExecutableUnitJsonSerializer.Serialize(this));
+        }
+
+        public static async Task<ExecutableUnit> LoadAsync(string filePath)
+        {
+            var data = await File.ReadAllBytesAsync(filePath);
+            return await DeserializeAsync(data);
+        }
+
+        public async static Task<ExecutableUnit> DeserializeAsync(byte[] data)
+        {
+            // 1) Новый typed JSON формат (с $format header)
+            if (ExecutableUnitJsonSerializer.IsTypedJson(data))
+            {
+                return await Task.FromResult(ExecutableUnitJsonSerializer.Deserialize(data));
+            }
+
+            // 2) Backward-compat: бинарный формат (с magic header)
+            if (ExecutableUnitBinarySerializer.IsBinaryFormat(data))
+            {
+                return await Task.FromResult(ExecutableUnitBinarySerializer.Deserialize(data));
+            }
+
+            // 3) Backward-compat: старый JSON (может содержать JsonElement в object-полях)
+            var json = Encoding.UTF8.GetString(data);
+            var options = new JsonSerializerOptions
+            {
+                IncludeFields = true
+            };
+
+            var unit = JsonSerializer.Deserialize<ExecutableUnit>(json, options) ?? new ExecutableUnit();
+            ExecutableUnitJsonPostProcessor.NormalizeObjectGraphs(unit);
+            return await Task.FromResult(unit);
+        }
+    }
+}

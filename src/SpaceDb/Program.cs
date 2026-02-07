@@ -23,6 +23,7 @@ using SpaceDb.Helpers;
 using SpaceDb.Data.SpaceDb.Entities;
 using SpaceDb.Data.SpaceDb.Ids;
 using SpaceDb.Data.SpaceDb.DatabaseContext;
+using Magic.Kernel;
 
 var builder = WebApplication.CreateBuilder(args);
 var configuration = builder.Configuration;
@@ -144,5 +145,25 @@ app.UseCors(x =>
 {
     x.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
 });
+
+using (var serviceScope = app.Services.GetRequiredService<IServiceScopeFactory>().CreateScope())
+{
+    var kernel = serviceScope.ServiceProvider.GetService<MagicKernel>();
+    var defaultSpaceDisk = serviceScope.ServiceProvider.GetService<RocksDbSpaceDisk>();
+    kernel.Devices.Add(defaultSpaceDisk);
+    kernel.StartKernel().Wait();
+
+    // Apply disk config AFTER StartKernel() (it overwrites ISpaceDisk.Configuration).
+    var vSeq = builder.Configuration["SpaceDisk:VertexSequenceIndex"];
+    var rSeq = builder.Configuration["SpaceDisk:RelationSequenceIndex"];
+    var sSeq = builder.Configuration["SpaceDisk:ShapeSequenceIndex"];
+
+    if (defaultSpaceDisk != null)
+    {
+        defaultSpaceDisk.Configuration.VertexSequenceIndex ??= long.TryParse(vSeq, out var v) ? v : 0;
+        defaultSpaceDisk.Configuration.RelationSequenceIndex ??= long.TryParse(rSeq, out var r) ? r : 0;
+        defaultSpaceDisk.Configuration.ShapeSequenceIndex ??= long.TryParse(sSeq, out var s) ? s : 0;
+    }
+}
 
 app.Run();

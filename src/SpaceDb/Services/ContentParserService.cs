@@ -147,7 +147,7 @@ namespace SpaceDb.Services
                         "Creating resource point (dimension=0)");
                 }
 
-                var resourcePointId = await _spaceDbService.AddPointAsync(null, resourcePoint);
+                var resourcePointId = await _spaceDbService.AddPointAsync((long?)null, resourcePoint);
 
                 if (!resourcePointId.HasValue)
                 {

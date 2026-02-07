@@ -1,5 +1,6 @@
 ﻿using AI.Client;
 using AI.Client.Configuration;
+using Magic.Kernel;
 using Microsoft.Extensions.Options;
 using SpaceDb.Mappings;
 using SpaceDb.Services;
@@ -47,13 +48,9 @@ namespace SpaceDb.Helpers
             services.AddScoped<IEmbeddingProvider, QAiEmbeddingProvider>();
 
             // RocksDB Service
-            services.AddSingleton<IRocksDbService>(provider =>
-            {
-                var logger = provider.GetRequiredService<ILogger<RocksDbService>>();
-                var dbPath = Environment.GetEnvironmentVariable("ROCKSDB_PATH") ??
-                             Path.Combine(Directory.GetCurrentDirectory(), "rocksdb");
-                return new RocksDbService(dbPath, logger);
-            });
+            services.AddRocksDb(configuration);
+
+            services.AddSingleton<MagicKernel>();
 
             // Links Service (Platform.Data.Doublets)
             services.AddSingleton<ILinksService>(provider =>

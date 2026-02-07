@@ -109,6 +109,77 @@ public class SpaceDbService : ISpaceDbService
         }
     }
 
+    public async Task<long?> AddPointAsync(string key, Point point)
+    {
+        try
+        {
+            // Generate new ID if not provided
+            if (point.Id == 0)
+            {
+                point.Id = Interlocked.Increment(ref _pointCounter);
+            }
+
+            // Save point to RocksDB without payload
+            var pointWithoutPayload = new Point
+            {
+                Id = point.Id,
+                Layer = point.Layer,
+                Dimension = point.Dimension,
+                Weight = point.Weight,
+                SingularityId = point.SingularityId,
+                UserId = point.UserId,
+                Payload = null // Don't save payload in RocksDB
+            };
+
+            var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+            var saved = await _rocksDbService.PutJsonAsync($"point:{key}", pointWithoutPayload, jsonOptions);
+
+            if (!saved)
+            {
+                _logger.LogError("Failed to save point {PointId} to RocksDB with key {Key}", point.Id, key);
+                return null;
+            }
+
+            // If payload exists, create embedding and save to Qdrant
+            if (!string.IsNullOrEmpty(point.Payload))
+            {
+                try
+                {
+                    // Create embedding from payload
+                    var embedding = await _embeddingProvider.CreateEmbeddingAsync(
+                        _config.EmbeddingType, 
+                        point.Payload, 
+                        returnVectors: true);
+
+                    if (embedding.Vector == null || embedding.Vector.Count == 0)
+                    {
+                        _logger.LogWarning("Failed to create embedding for point {PointId}, skipping Qdrant", point.Id);
+                        return point.Id;
+                    }
+
+                    await SavePointToQdrantAsync(point, embedding, null);
+                    _logger.LogInformation("Successfully added point {PointId} to RocksDB (key: {Key}) and Qdrant", point.Id, key);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error saving point {PointId} to Qdrant", point.Id);
+                    // Continue even if Qdrant fails
+                }
+            }
+            else
+            {
+                _logger.LogInformation("Point {PointId} saved to RocksDB only (key: {Key}, no payload)", point.Id, key);
+            }
+
+            return point.Id;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error adding point with key {Key}", key);
+            return null;
+        }
+    }
+
     public async Task<long?> AddPointAsync(long? fromId, Point point, AIEmbedding embedding)
     {
         try
@@ -574,6 +645,178 @@ public class SpaceDbService : ISpaceDbService
         }
 
         return filter;
+    }
+
+    public async Task<bool> PointExistsAsync(long pointId)
+    {
+        try
+        {
+            var pointKey = $"point:{pointId}";
+            return await _rocksDbService.ExistsAsync(pointKey);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error checking if point {PointId} exists", pointId);
+            return false;
+        }
+    }
+
+    public async Task<long?> FindOrCreateVocabularyAsync(long? singularityId, int? userId = null)
+    {
+        try
+        {
+            if (!singularityId.HasValue)
+            {
+                _logger.LogWarning("SingularityId is required to find or create vocabulary");
+                return null;
+            }
+
+            // Search for existing vocabulary point by key "vocabulary"
+            var vocabularyKey = "vocabulary";
+            var vocabularyPoint = await _rocksDbService.GetJsonAsync<Point>($"point:{vocabularyKey}");
+
+            if (vocabularyPoint != null)
+            {
+                _logger.LogInformation("Found existing vocabulary {VocabularyId} for singularity {SingularityId}",
+                    vocabularyPoint.Id, singularityId);
+                return vocabularyPoint.Id;
+            }
+
+            // Create new vocabulary point with key "Vocabulary"
+            _logger.LogInformation("Creating new vocabulary for singularity {SingularityId}", singularityId);
+            var newVocabularyPoint = new Point
+            {
+                Id = 0, // Will be auto-generated
+                Layer = 2, // Vocabulary is at concept layer
+                Dimension = 2, // Vocabulary dimension
+                Weight = 1.0,
+                SingularityId = singularityId,
+                UserId = userId,
+                Payload = "Vocabulary" // Mark as Vocabulary
+            };
+
+            var createdVocabularyId = await AddPointAsync(vocabularyKey, newVocabularyPoint);
+            if (createdVocabularyId.HasValue)
+            {
+                _logger.LogInformation("Created vocabulary {VocabularyId} for singularity {SingularityId}",
+                    createdVocabularyId.Value, singularityId);
+            }
+
+            return createdVocabularyId;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error finding or creating vocabulary for singularity {SingularityId}", singularityId);
+            return null;
+        }
+    }
+
+    public async Task<AddTokenToVocabularyResult?> AddTokenToVocabularyAsync(
+        SpaceCompiler.Models.Token token,
+        long? singularityId = null,
+        int? userId = null)
+    {
+        try
+        {
+            _logger.LogInformation("Adding token '{Content}' to vocabulary for singularity {SingularityId}",
+                token.Content, singularityId);
+
+            if (!singularityId.HasValue)
+            {
+                _logger.LogError("SingularityId is required to add token to vocabulary");
+                return null;
+            }
+
+            // Find or create vocabulary for this singularity
+            var vocabularyId = await FindOrCreateVocabularyAsync(singularityId, userId);
+            if (!vocabularyId.HasValue)
+            {
+                _logger.LogError("Failed to find or create vocabulary for singularity {SingularityId}", singularityId);
+                return null;
+            }
+
+            // Search for existing token by key vocabulary:{token.Content.ToLower()}
+            var tokenKey = $"vocabulary:{token.Content.ToLower()}";
+            var existingTokenPoint = await _rocksDbService.GetJsonAsync<Point>($"point:{tokenKey}");
+
+            long tokenPointId;
+            if (existingTokenPoint != null)
+            {
+                _logger.LogInformation("Found existing token '{Content}' with ID {TokenId}",
+                    token.Content, existingTokenPoint.Id);
+                tokenPointId = existingTokenPoint.Id;
+            }
+            else
+            {
+                // Create new token point
+                _logger.LogInformation("Creating new token point for '{Content}'", token.Content);
+                
+                // Serialize token to JSON for payload
+                var tokenJson = System.Text.Json.JsonSerializer.Serialize(token);
+                
+                var tokenPoint = new Point
+                {
+                    Id = 0, // Will be auto-generated
+                    Layer = 1, // Token is at extracted layer
+                    Dimension = 2, // Token dimension
+                    Weight = 0.5,
+                    SingularityId = singularityId,
+                    UserId = userId,
+                    Payload = tokenJson
+                };
+
+                var createdTokenId = await AddPointAsync(tokenKey, tokenPoint);
+                if (!createdTokenId.HasValue)
+                {
+                    _logger.LogError("Failed to create token point");
+                    return null;
+                }
+                tokenPointId = createdTokenId.Value;
+            }
+
+            // Create a segment from vocabulary to token (Vocabulary => Token*)
+            // Check if segment already exists
+            var segmentKey = $"segment:in:{vocabularyId.Value}:{tokenPointId}";
+            var existingSegment = await _rocksDbService.ExistsAsync(segmentKey);
+            
+            long? segmentId;
+            if (existingSegment)
+            {
+                _logger.LogInformation("Segment from vocabulary {VocabularyId} to token {TokenId} already exists",
+                    vocabularyId.Value, tokenPointId);
+                // Get existing segment ID
+                var segment = await _rocksDbService.GetJsonAsync<Segment>(segmentKey);
+                segmentId = segment?.Id;
+            }
+            else
+            {
+                segmentId = await AddSegmentAsync(vocabularyId.Value, tokenPointId);
+            }
+
+            if (segmentId.HasValue)
+            {
+                _logger.LogInformation("Successfully added token '{Content}' (ID: {TokenId}) to vocabulary {VocabularyId} with segment {SegmentId}",
+                    token.Content, tokenPointId, vocabularyId.Value, segmentId);
+
+                return new AddTokenToVocabularyResult
+                {
+                    VocabularyId = vocabularyId.Value,
+                    TokenId = tokenPointId,
+                    SegmentId = segmentId.Value
+                };
+            }
+            else
+            {
+                _logger.LogWarning("Failed to create segment from vocabulary {VocabularyId} to token {TokenId}",
+                    vocabularyId.Value, tokenPointId);
+                return null;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error adding token to vocabulary");
+            return null;
+        }
     }
 
     private Value ConvertToValue(object? value)

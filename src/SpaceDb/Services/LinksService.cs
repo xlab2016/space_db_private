@@ -21,6 +21,8 @@ namespace SpaceDb.Services
         private const ulong BlockType = 2;
         private const ulong FragmentType = 3;
         private const ulong ContainsRelation = 4;
+        private const ulong VocabularyType = 5;
+        private const ulong TokenType = 6;
 
         public LinksService(string dbPath, ILogger<LinksService> logger)
         {
@@ -65,13 +67,15 @@ namespace SpaceDb.Services
                 var any = constants.Any;
 
                 // Check if types are already initialized
-                if (_links.Count() < 4)
+                if (_links.Count() < 6)
                 {
                     // Create type markers as self-referencing links
                     EnsureLinkExists(ResourceType, ResourceType, ResourceType);
                     EnsureLinkExists(BlockType, BlockType, BlockType);
                     EnsureLinkExists(FragmentType, FragmentType, FragmentType);
                     EnsureLinkExists(ContainsRelation, ContainsRelation, ContainsRelation);
+                    EnsureLinkExists(VocabularyType, VocabularyType, VocabularyType);
+                    EnsureLinkExists(TokenType, TokenType, TokenType);
 
                     _logger.LogInformation("Initialized well-known link types");
                 }
@@ -450,6 +454,36 @@ namespace SpaceDb.Services
                 }
 
                 _disposed = true;
+            }
+        }
+
+        public async Task<ulong> AddTokenToVocabularyAsync(ulong vocabularyId, ulong tokenId)
+        {
+            try
+            {
+                _logger.LogInformation("Adding token {TokenId} to vocabulary {VocabularyId}", tokenId, vocabularyId);
+
+                // Create vocabulary node: (VocabularyType, vocabularyId)
+                var vocabularyIdLink = await CreateLinkAsync(VocabularyType, vocabularyId);
+                var vocabularyNode = await CreateLinkAsync(VocabularyType, vocabularyIdLink);
+
+                // Create token node: (TokenType, tokenId)
+                var tokenIdLink = await CreateLinkAsync(TokenType, tokenId);
+                var tokenNode = await CreateLinkAsync(TokenType, tokenIdLink);
+
+                // Link vocabulary to token: (vocabularyNode, ContainsRelation, tokenNode)
+                var vocabularyToToken = await CreateLinkAsync(vocabularyNode, tokenNode);
+                var vocabularyTokenRelation = await CreateLinkAsync(vocabularyToToken, ContainsRelation);
+
+                _logger.LogInformation("Successfully added token {TokenId} to vocabulary {VocabularyId} with link {LinkId}",
+                    tokenId, vocabularyId, vocabularyTokenRelation);
+
+                return vocabularyTokenRelation;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to add token {TokenId} to vocabulary {VocabularyId}", tokenId, vocabularyId);
+                throw;
             }
         }
 

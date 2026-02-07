@@ -82,6 +82,14 @@ namespace SpaceDb.Services
         /// <param name="resourceLinkId">Root resource link ID</param>
         /// <returns>Resource hierarchy data</returns>
         Task<ResourceHierarchy?> GetResourceHierarchyAsync(ulong resourceLinkId);
+
+        /// <summary>
+        /// Add a token to vocabulary in the graph (Vocabulary => Token*)
+        /// </summary>
+        /// <param name="vocabularyId">Vocabulary identifier</param>
+        /// <param name="tokenId">Token identifier</param>
+        /// <returns>Link ID representing the Vocabulary->Token relationship</returns>
+        Task<ulong> AddTokenToVocabularyAsync(ulong vocabularyId, ulong tokenId);
     }
 
     /// <summary>

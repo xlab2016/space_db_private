@@ -8,11 +8,11 @@ namespace SpaceDb.Services;
 public class RocksDbService : IRocksDbService
 {
     private readonly RocksDb _db;
-    private readonly Microsoft.Extensions.Logging.ILogger _logger;
+    private readonly ILogger _logger;
     private readonly string _dbPath;
     private bool _disposed = false;
 
-    public RocksDbService(string dbPath, Microsoft.Extensions.Logging.ILogger logger)
+    public RocksDbService(string dbPath, ILogger logger)
     {
         _dbPath = dbPath ?? throw new ArgumentNullException(nameof(dbPath));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -96,19 +96,19 @@ public class RocksDbService : IRocksDbService
             {
                 var result = new List<KeyValuePair<string, byte[]>>();
                 using var iterator = _db.NewIterator();
-                
+
                 iterator.Seek(startKey);
                 while (iterator.Valid())
                 {
                     var key = iterator.StringKey();
                     if (string.Compare(key, endKey, StringComparison.Ordinal) > 0)
                         break;
-                        
+
                     var value = iterator.StringValue();
                     result.Add(new KeyValuePair<string, byte[]>(key, Convert.FromBase64String(value)));
                     iterator.Next();
                 }
-                
+
                 return result;
             });
         }
@@ -127,7 +127,7 @@ public class RocksDbService : IRocksDbService
             {
                 var result = new List<KeyValuePair<string, byte[]>>();
                 using var iterator = _db.NewIterator();
-                
+
                 iterator.SeekToFirst();
                 while (iterator.Valid())
                 {
@@ -135,7 +135,7 @@ public class RocksDbService : IRocksDbService
                     result.Add(new KeyValuePair<string, byte[]>(iterator.StringKey(), Convert.FromBase64String(value)));
                     iterator.Next();
                 }
-                
+
                 return result;
             });
         }
@@ -154,14 +154,14 @@ public class RocksDbService : IRocksDbService
             {
                 long count = 0;
                 using var iterator = _db.NewIterator();
-                
+
                 iterator.SeekToFirst();
                 while (iterator.Valid())
                 {
                     count++;
                     iterator.Next();
                 }
-                
+
                 return count;
             });
         }
@@ -230,7 +230,7 @@ public class RocksDbService : IRocksDbService
         {
             var jsonBytes = await GetAsync(key);
             if (jsonBytes == null)
-                return default(T);
+                return default;
 
             var json = Encoding.UTF8.GetString(jsonBytes);
             return JsonSerializer.Deserialize<T>(json, options);
@@ -238,7 +238,7 @@ public class RocksDbService : IRocksDbService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Ошибка при чтении JSON ключа {Key} из RocksDB", key);
-            return default(T);
+            return default;
         }
     }
 
@@ -355,3 +355,4 @@ public class RocksDbService : IRocksDbService
         }
     }
 }
+

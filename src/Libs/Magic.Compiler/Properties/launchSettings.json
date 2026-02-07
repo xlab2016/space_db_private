@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Magic.Compiler": {
+      "commandName": "Project",
+      "commandLineArgs": "\"@AGI 0.0.1.agi\""
+    }
+  }
+}
