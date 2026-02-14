@@ -32,9 +32,27 @@ namespace Magic.Kernel.Compilation
             }
             else if (instruction.Opcode == "pop" || instruction.Opcode == "push")
             {
-                // Специальная обработка для pop/push - формат [0]
-                var parameters = ParseMemoryParameters(parametersPart);
+                // push: [0] | stream | file | 1 | string: "..."
+                var parameters = instruction.Opcode == "push"
+                    ? ParsePushParameters(parametersPart)
+                    : ParseMemoryParameters(parametersPart);
                 instruction.Parameters = parameters;
+            }
+            else if (instruction.Opcode == "def" || instruction.Opcode == "awaitobj")
+            {
+                instruction.Parameters = new List<ParameterNode>();
+            }
+            else if (instruction.Opcode == "defgen")
+            {
+                instruction.Parameters = new List<ParameterNode>();
+            }
+            else if (instruction.Opcode == "callobj")
+            {
+                // callobj "open" — имя метода в кавычках
+                var name = parametersPart.Trim();
+                if (name.Length >= 2 && name.StartsWith("\"") && name.EndsWith("\""))
+                    name = name.Substring(1, name.Length - 2).Replace("\\\"", "\"");
+                instruction.Parameters = new List<ParameterNode> { new FunctionNameParameterNode { FunctionName = name } };
             }
             else
             {
@@ -632,6 +650,25 @@ namespace Magic.Kernel.Compilation
 
                     if (paramValueStart >= remainingPart.Length) break;
 
+                    // Проверяем, является ли значение строковым литералом " ... "
+                    if (paramValueStart < remainingPart.Length && remainingPart[paramValueStart] == '"')
+                    {
+                        var strStart = paramValueStart + 1;
+                        var strEnd = strStart;
+                        while (strEnd < remainingPart.Length && remainingPart[strEnd] != '"')
+                        {
+                            if (remainingPart[strEnd] == '\\' && strEnd + 1 < remainingPart.Length)
+                                strEnd += 2;
+                            else
+                                strEnd++;
+                        }
+                        var strValue = strEnd > strStart ? remainingPart.Substring(strStart, strEnd - strStart) : "";
+                        if (strEnd < remainingPart.Length) strEnd++;
+                        parameters.Add(new StringParameterNode { Name = paramName, Value = strValue });
+                        paramStart = strEnd;
+                        continue;
+                    }
+
                     // Проверяем, является ли значение вложенной структурой { ... }
                     if (paramValueStart < remainingPart.Length && remainingPart[paramValueStart] == '{')
                     {
@@ -849,6 +886,40 @@ namespace Magic.Kernel.Compilation
             }
 
             return parameters;
+        }
+
+        private List<ParameterNode> ParsePushParameters(string parametersPart)
+        {
+            var part = parametersPart.Trim();
+            if (string.IsNullOrEmpty(part))
+                return new List<ParameterNode>();
+
+            // [0] — слот
+            if (part.StartsWith("["))
+                return ParseMemoryParameters(parametersPart);
+
+            // string: "..."
+            if (part.StartsWith("string:", StringComparison.OrdinalIgnoreCase))
+            {
+                var after = part.Substring(7).Trim();
+                if (after.Length >= 2 && after.StartsWith("\"") && after.EndsWith("\""))
+                {
+                    var value = after.Substring(1, after.Length - 2).Replace("\\\"", "\"");
+                    return new List<ParameterNode> { new StringParameterNode { Name = "string", Value = value } };
+                }
+            }
+
+            // целое число (в т.ч. для arity)
+            var numStart = 0;
+            if (part.Length > 0 && part[0] == '-') numStart = 1;
+            var allDigits = numStart < part.Length;
+            for (var j = numStart; j < part.Length && allDigits; j++)
+                allDigits = char.IsDigit(part[j]);
+            if (allDigits && part.Length > 0 && long.TryParse(part, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var numVal))
+                return new List<ParameterNode> { new IndexParameterNode { Name = "int", Value = numVal } };
+
+            // тип: stream, file, ...
+            return new List<ParameterNode> { new TypeLiteralParameterNode { TypeName = part } };
         }
 
         private List<ParameterNode> ParseMemoryParameters(string parametersPart)
@@ -1517,14 +1588,17 @@ namespace Magic.Kernel.Compilation
             var escaped = false;
             var opcodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             {
-                // базовые инструкции ядра
                 "addvertex",
                 "addrelation",
                 "addshape",
                 "call",
                 "pop",
                 "push",
-                "nop"
+                "nop",
+                "def",
+                "defgen",
+                "callobj",
+                "awaitobj"
             };
 
             for (var i = 0; i < asmText.Length; i++)
@@ -1757,50 +1831,85 @@ namespace Magic.Kernel.Compilation
         {
             var asmInstructions = new List<string>();
             var lines = highLevelCode.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            // varName -> (kind,index) where kind in: vertex|relation|shape|memory
+            // varName -> (kind,index) where kind in: vertex|relation|shape|memory|stream
             var vars = new Dictionary<string, (string Kind, int Index)>(StringComparer.Ordinal);
             var vertexCounter = 1;
             var relationCounter = 1;
             var shapeCounter = 1;
+            var memorySlotCounter = 0;
             var inVarBlock = false;
             var varBlockLines = new List<string>();
 
             foreach (var rawLine in lines)
             {
                 var line = rawLine.Trim();
-                if (string.IsNullOrWhiteSpace(line) || line.StartsWith("//"))
+                if (string.IsNullOrWhiteSpace(line) || line.StartsWith("//") || line == "{" || line == "}")
                     continue;
 
-                // Парсим var блок
-                if (line == "var" || line.StartsWith("var"))
+                // Парсим var блок (var на отдельной строке или "var stream1 := stream<file>;" на одной строке)
+                if (line == "var")
                 {
                     inVarBlock = true;
                     varBlockLines.Clear();
                     continue;
                 }
+                if (line.StartsWith("var "))
+                {
+                    var rest = line.Substring(4).Trim().TrimEnd(';');
+                    var singleStreamDecl = System.Text.RegularExpressions.Regex.IsMatch(rest, @"^(\w+)\s*:=\s*stream\s*<\s*\w+\s*>\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (singleStreamDecl)
+                    {
+                        inVarBlock = true;
+                        varBlockLines.Clear();
+                        varBlockLines.Add(rest);
+                        continue;
+                    }
+                }
 
                 if (inVarBlock)
                 {
-                    // В high-level синтаксисе var-блок заканчивается при первой НЕ-декларации.
                     var declLine = line.TrimEnd(';');
-                    var isDecl = System.Text.RegularExpressions.Regex.IsMatch(
+                    var isEntityDecl = System.Text.RegularExpressions.Regex.IsMatch(
                         declLine,
                         @"^(\w+)\s*:\s*(vertex|relation|shape)\s*=\s*(.+)$",
                         System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    var isStreamDecl = System.Text.RegularExpressions.Regex.IsMatch(
+                        declLine.Trim(),
+                        @"^(\w+)\s*:=\s*stream\s*<\s*\w+\s*>\s*$",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
-                    if (isDecl)
+                    if (isEntityDecl || isStreamDecl)
                     {
                         varBlockLines.Add(line);
                         continue;
                     }
 
                     inVarBlock = false;
-                    var varAsm = CompileVarBlock(varBlockLines, vars, ref vertexCounter, ref relationCounter, ref shapeCounter);
+                    var varAsm = CompileVarBlock(varBlockLines, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter);
                     asmInstructions.AddRange(varAsm);
-                    // продолжаем обработку текущей строки как statement (без continue)
                 }
 
-                // Декларации разрешены и вне var-блока: `b: shape = {...};`
+                // Декларация stream вне var-блока: stream1 := stream<file>;
+                var streamDeclMatch = System.Text.RegularExpressions.Regex.Match(line.Trim().TrimEnd(';'), @"^(\w+)\s*:=\s*stream\s*<\s*(\w+)\s*>\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (streamDeclMatch.Success)
+                {
+                    var streamName = streamDeclMatch.Groups[1].Value;
+                    var elementType = streamDeclMatch.Groups[2].Value.ToLowerInvariant();
+                    var baseSlot = memorySlotCounter++;
+                    var streamSlot = memorySlotCounter++;
+                    vars[streamName] = ("stream", streamSlot);
+                    asmInstructions.Add("push stream");
+                    asmInstructions.Add("def");
+                    asmInstructions.Add($"pop [{baseSlot}]");
+                    asmInstructions.Add($"push [{baseSlot}]");
+                    asmInstructions.Add($"push {elementType}");
+                    asmInstructions.Add("push 1");
+                    asmInstructions.Add("defgen");
+                    asmInstructions.Add($"pop [{streamSlot}]");
+                    continue;
+                }
+
+                // Декларации vertex/relation/shape вне var-блока
                 var declLine2 = line.TrimEnd(';');
                 var isDecl2 = System.Text.RegularExpressions.Regex.IsMatch(
                     declLine2,
@@ -1808,24 +1917,50 @@ namespace Magic.Kernel.Compilation
                     System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                 if (isDecl2)
                 {
-                    var declAsm = CompileVarBlock(new List<string> { line }, vars, ref vertexCounter, ref relationCounter, ref shapeCounter);
+                    var declAsm = CompileVarBlock(new List<string> { line }, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter);
                     asmInstructions.AddRange(declAsm);
                     continue;
                 }
 
-                // Парсим присваивания
+                // Вызов метода: stream1.open("stream1"); → push [obj], push string: "...", push 1, callobj "open"
+                var methodMatch = System.Text.RegularExpressions.Regex.Match(line.Trim(), @"^(\w+)\.(\w+)\(([^)]*)\)\s*;?$");
+                if (methodMatch.Success && vars.TryGetValue(methodMatch.Groups[1].Value, out var objVar))
+                {
+                    var method = methodMatch.Groups[2].Value;
+                    var arg = methodMatch.Groups[3].Value.Trim();
+                    asmInstructions.Add($"push [{objVar.Index}]");
+                    if (arg.Length >= 2 && arg.StartsWith("\"") && arg.EndsWith("\""))
+                        asmInstructions.Add($"push string: {arg}");
+                    else
+                        asmInstructions.Add($"push string: \"{arg.Replace("\"", "\\\"")}\"");
+                    asmInstructions.Add("push 1");
+                    asmInstructions.Add($"callobj \"{method}\"");
+                    continue;
+                }
+
+                // Присваивания (включая await и compile); нормализуем var x := y в x = y
                 if (line.Contains("=") && !line.Contains("=>"))
                 {
-                    var assignmentAsm = CompileAssignment(line, vars, ref shapeCounter, ref vertexCounter);
+                    var trimmedForAssign = line.Trim().TrimEnd(';');
+                    var varAssignMatch = System.Text.RegularExpressions.Regex.Match(trimmedForAssign, @"^var\s+(\w+)\s*:=\s*(.+)$");
+                    if (varAssignMatch.Success)
+                        trimmedForAssign = varAssignMatch.Groups[1].Value + " = " + varAssignMatch.Groups[2].Value.Trim();
+                    else
+                    {
+                        varAssignMatch = System.Text.RegularExpressions.Regex.Match(trimmedForAssign, @"^var\s+(\w+)\s*=\s*(.+)$");
+                        if (varAssignMatch.Success)
+                            trimmedForAssign = varAssignMatch.Groups[1].Value + " = " + varAssignMatch.Groups[2].Value.Trim();
+                    }
+                    var assignmentAsm = CompileAssignment(trimmedForAssign, vars, ref shapeCounter, ref vertexCounter, ref memorySlotCounter);
                     asmInstructions.AddRange(assignmentAsm);
                 }
-                // Парсим вызовы функций
+                // Вызовы функций (print и т.д.)
                 else if (line.Contains("(") && line.Contains(")"))
                 {
                     var callAsm = CompileFunctionCall(line, vars);
                     asmInstructions.AddRange(callAsm);
                 }
-                // Парсим вызовы процедур
+                // Вызовы процедур
                 else if (!string.IsNullOrWhiteSpace(line) && !line.Contains("{") && !line.Contains("}"))
                 {
                     var procName = line.Trim().TrimEnd(';');
@@ -1833,17 +1968,16 @@ namespace Magic.Kernel.Compilation
                 }
             }
 
-            // Обрабатываем оставшийся var блок
             if (inVarBlock && varBlockLines.Count > 0)
             {
-                var varAsm = CompileVarBlock(varBlockLines, vars, ref vertexCounter, ref relationCounter, ref shapeCounter);
+                var varAsm = CompileVarBlock(varBlockLines, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter);
                 asmInstructions.AddRange(varAsm);
             }
 
             return asmInstructions;
         }
 
-        private List<string> CompileVarBlock(List<string> varLines, Dictionary<string, (string Kind, int Index)> vars, ref int vertexCounter, ref int relationCounter, ref int shapeCounter)
+        private List<string> CompileVarBlock(List<string> varLines, Dictionary<string, (string Kind, int Index)> vars, ref int vertexCounter, ref int relationCounter, ref int shapeCounter, ref int memorySlotCounter)
         {
             var asm = new List<string>();
 
@@ -1851,6 +1985,26 @@ namespace Magic.Kernel.Compilation
             {
                 var trimmed = line.Trim().TrimEnd(';');
                 if (string.IsNullOrWhiteSpace(trimmed)) continue;
+
+                // Парсим stream: name := stream<file>;
+                var streamMatch = System.Text.RegularExpressions.Regex.Match(trimmed, @"^(\w+)\s*:=\s*stream\s*<\s*(\w+)\s*>\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (streamMatch.Success)
+                {
+                    var streamName = streamMatch.Groups[1].Value;
+                    var elementType = streamMatch.Groups[2].Value.ToLowerInvariant();
+                    var baseSlot = memorySlotCounter++;
+                    var streamSlot = memorySlotCounter++;
+                    vars[streamName] = ("stream", streamSlot);
+                    asm.Add("push stream");
+                    asm.Add("def");
+                    asm.Add($"pop [{baseSlot}]");
+                    asm.Add($"push [{baseSlot}]");
+                    asm.Add($"push {elementType}");
+                    asm.Add("push 1");
+                    asm.Add("defgen");
+                    asm.Add($"pop [{streamSlot}]");
+                    continue;
+                }
 
                 // Парсим: name: type = { ... };
                 var match = System.Text.RegularExpressions.Regex.Match(trimmed, @"^(\w+)\s*:\s*(\w+)\s*=\s*(.+)$");
@@ -2033,7 +2187,10 @@ namespace Magic.Kernel.Compilation
                     var tempIndex = vertexCounter++;
                     var dims = ExtractDimensionsFromInit(v);
                     var dimsStr = string.Join(", ", dims);
-                    asm.Add($"addvertex index: {tempIndex}, dimensions: [{dimsStr}], weight: 0.5");
+                    var line = $"addvertex index: {tempIndex}, dimensions: [{dimsStr}]";
+                    if (v.Contains("W:"))
+                        line += $", weight: {ExtractWeightFromInit(v).ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+                    asm.Add(line);
                     indices.Add(tempIndex);
                 }
                 if (indices.Count > 0)
@@ -2068,7 +2225,7 @@ namespace Magic.Kernel.Compilation
             return asm;
         }
 
-        private List<string> CompileAssignment(string line, Dictionary<string, (string Kind, int Index)> vars, ref int shapeCounter, ref int vertexCounter)
+        private List<string> CompileAssignment(string line, Dictionary<string, (string Kind, int Index)> vars, ref int shapeCounter, ref int vertexCounter, ref int memorySlotCounter)
         {
             var asm = new List<string>();
             var trimmed = line.Trim().TrimEnd(';');
@@ -2079,6 +2236,31 @@ namespace Magic.Kernel.Compilation
 
             var varName = match.Groups[1].Value;
             var expression = match.Groups[2].Value.Trim();
+
+            // var data = await stream1;
+            var awaitMatch = System.Text.RegularExpressions.Regex.Match(expression, @"^await\s+(\w+)\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (awaitMatch.Success && vars.TryGetValue(awaitMatch.Groups[1].Value, out var streamVar) && streamVar.Kind == "stream")
+            {
+                var dataSlot = memorySlotCounter++;
+                vars[varName] = ("memory", dataSlot);
+                asm.Add($"push [{streamVar.Index}]");
+                asm.Add("awaitobj");
+                asm.Add($"pop [{dataSlot}]");
+                return asm;
+            }
+
+            // var semantic_file_system = compile(data); → push [data], push 1, call compile, pop [result]
+            var compileMatch = System.Text.RegularExpressions.Regex.Match(expression, @"^compile\s*\(\s*(\w+)\s*\)\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (compileMatch.Success && vars.TryGetValue(compileMatch.Groups[1].Value, out var dataVar) && (dataVar.Kind == "memory" || dataVar.Kind == "stream"))
+            {
+                var resultSlot = memorySlotCounter++;
+                vars[varName] = ("memory", resultSlot);
+                asm.Add($"push [{dataVar.Index}]");
+                asm.Add("push 1");
+                asm.Add("call compile");
+                asm.Add($"pop [{resultSlot}]");
+                return asm;
+            }
 
             // Оператор ] для origin
             if (expression.Contains("]") && !expression.Contains("|"))
@@ -2154,7 +2336,9 @@ namespace Magic.Kernel.Compilation
                     if (vars.ContainsKey(arg) && vars[arg].Kind == "memory")
                     {
                         var memIdx = vars[arg].Index;
-                        asm.Add($"call \"print\", [{memIdx}]");
+                        asm.Add($"push [{memIdx}]");
+                        asm.Add("push 1");
+                        asm.Add("call print");
                     }
                 }
             }

@@ -1,4 +1,4 @@
-﻿using Magic.Kernel.Processor;
+using Magic.Kernel.Processor;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -13,6 +13,8 @@ namespace Magic.Kernel.Compilation
         public string Version { get; set; } = "0.0.1";
         public string? Name { get; set; }
         public string? Module { get; set; }
+        /// <summary>Output format when saving: "agic" (default, binary/JSON) or "agiasm" (text assembly).</summary>
+        public string? OutputFormat { get; set; }
 
         public ExecutionBlock EntryPoint { get; set; } = new ExecutionBlock();
 
@@ -24,8 +26,18 @@ namespace Magic.Kernel.Compilation
 
         public async Task SaveAsync(string filePath)
         {
-            var data = await SerializeAsync();
-            await File.WriteAllBytesAsync(filePath, data);
+            var useAgiasm = string.Equals(OutputFormat, "agiasm", StringComparison.OrdinalIgnoreCase)
+                || filePath.EndsWith(".agiasm", StringComparison.OrdinalIgnoreCase);
+            if (useAgiasm)
+            {
+                var text = ExecutableUnitTextSerializer.Serialize(this);
+                await File.WriteAllTextAsync(filePath, text, Encoding.UTF8);
+            }
+            else
+            {
+                var data = await SerializeAsync();
+                await File.WriteAllBytesAsync(filePath, data);
+            }
         }
 
         public async Task<byte[]> SerializeAsync()
@@ -36,12 +48,23 @@ namespace Magic.Kernel.Compilation
 
         public static async Task<ExecutableUnit> LoadAsync(string filePath)
         {
+            if (filePath.EndsWith(".agiasm", StringComparison.OrdinalIgnoreCase))
+            {
+                var text = await File.ReadAllTextAsync(filePath);
+                return ExecutableUnitTextSerializer.Deserialize(text);
+            }
             var data = await File.ReadAllBytesAsync(filePath);
             return await DeserializeAsync(data);
         }
 
         public async static Task<ExecutableUnit> DeserializeAsync(byte[] data)
         {
+            // 0) AGI Assembly text format (@AGIASM)
+            if (ExecutableUnitTextSerializer.IsAgiasmFormat(data))
+            {
+                var text = Encoding.UTF8.GetString(data);
+                return ExecutableUnitTextSerializer.Deserialize(text);
+            }
             // 1) Новый typed JSON формат (с $format header)
             if (ExecutableUnitJsonSerializer.IsTypedJson(data))
             {

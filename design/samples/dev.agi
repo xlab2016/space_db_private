@@ -1,0 +1,98 @@
+@AGI 0.0.1
+
+library dev;
+module infer;
+
+procedure Main {
+	asm {
+		addvertex index: 1, name: "orchestrator", data: json: {
+			role: "You are orchestrator. Command with other agents. Current task: %task. History: %history. You should call other roles: [designer, developer]. Return as: { role: \"<next role to call>\", task: \"<next task to give to agent>\", isFinished: \"True or False if task is completed or not\" }"
+		};	
+
+		addvertex index: 2, name: "designer", data: json: {
+			role: "You are designer. Split big task to smaller tasks. And plan work for developer agents. Current task: %task"
+		};
+		addvertex index: 3, name: "developer", data: json: {
+			role: "You are developer. Please perform given task: %task"
+		};
+		// vertex: 1: V1 & vertex: 2: V2 related to vertex: 3: image
+		addrelation index: 1, from: vertex: index: 1, to: vertex: index: 2;
+		addrelation index: 2, from: vertex: index: 2, to: vertex: index: 3;
+
+		// can make shape of vertices
+		addshape index: 1, vertices: indices: [1, 2, 3], name: "workflow";
+	}
+}
+
+function infer_orchestrate(task: json: {description, history}) {
+	asm {
+		// [0] - task
+		pop [0];
+		call "infer_act", task: json: [0], dev_role: "orchestrator";
+		// [1] - orchestration result: {role, task}
+		pop [1];
+		call "opjson", source: json: [1], operation: "get", path: "role";
+		call "opjson", source: json: [1], operation: "get", path: "task";
+		// R2 task
+		pop R2;
+		// R1 role
+		pop R1;
+		call "opjson", source: json: [0], operation: "get", path: "history";
+		// unpack task.history to R3 register
+		pop R3;
+		call "infer_act", task: json: {
+			description: R2,
+			history: R3
+		}, dev_role: R1;
+		pop [2];
+		call "opjson", source: json: [1], operation: "get", path: "isFinished";
+		// unpack isFinished to R4 register
+		pop R4;
+		
+		ret json: {
+			result: text: [2],
+			isFinished: R4
+		}
+
+	}
+}
+
+function infer_act(task: json: {description, history}, dev_role: string) {
+	asm {
+		// [0] - dev_role
+		pop [0];
+		// [1] - task: json: {description, history}
+		pop [1];
+		call "opjson", source: json: [1], operation: "get", path: "description";
+		call "opjson", source: json: [1], operation: "get", path: "history";
+		// task.history
+		pop R1;
+		// task.description
+		pop R2;
+		// [1] - task.description
+		move [1], R2;
+		// [2] - task.history
+		move [2], R1;
+		
+		// get vertex by role
+		getvertex name: text: [0];
+		// [2] - vertex: {role}
+		pop [3];
+		call "opjson", source: address: [3], operation: "get", path: "role";
+		// [3] - vertex.role
+		pop [3];
+		call "format", source: address: [3], replaces: [[1], [2]];
+		// [3] - vertex.role, formatted by task
+		pop [3];
+		call "print", type: "infer", text: address: [3];
+		ret address: [3];
+	}
+} 
+
+entrypoint {
+	asm {
+		call Main;
+	}
+}
+
+export infer_orchestrate;

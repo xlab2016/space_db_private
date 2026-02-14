@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -18,6 +18,10 @@ namespace Magic.Kernel.Processor
         SysCall = 7,
         Ret = 8,
         Move = 9,
-        GetVertex = 10
+        GetVertex = 10,
+        Def = 11,
+        DefGen = 12,
+        CallObj = 13,
+        AwaitObj = 14
     }
 }

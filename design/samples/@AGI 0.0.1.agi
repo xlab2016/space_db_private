@@ -1,0 +1,46 @@
+@AGI 0.0.1
+
+program L0;
+module L/L0;
+
+procedure Main {
+	asm {
+		addvertex index: 1, dimensions: [1, 0, 0, 0], weight: 0.5, data: text: "V1";
+		addvertex index: 2, dimensions: [1, 1, 0, 0], weight: 0.5, data: text: "V2";
+		addvertex index: 3, dimensions: [1, 2, 0, 0], weight: 0.8, data: binary: base64: "sdsfdsgfg==";
+
+		// vertex: 1: V1 & vertex: 2: V2 related to vertex: 3: image
+		addrelation index: 1, from: vertex: index: 1, to: vertex: index: 2, weight: 0.6;
+		addrelation index: 2, from: vertex: index: 1, to: vertex: index: 3, weight: 0.6;
+		addrelation index: 3, from: vertex: index: 2, to: vertex: index: 3, weight: 0.6;
+	
+		// can make relation between even relations theyself!
+		addrelation index: 4, from: relation: index: 1, to: relation: index: 3, weight: 0.2;
+
+		// can make shape of vertices
+		addshape index: 1, vertices: indices: [1, 2, 3];
+
+		// can call system functions for example origin, result in stack
+		call "origin", shape: index: 1;
+		// pop from stack to memory: [0]
+		pop [0];
+		// print memory, this can use llm or AGI for textual inference
+		call "print", [0];
+
+		// intersect with line
+		call "intersect", shapeA: shape: index: 1, shapeB: shape: {
+			vertices: [
+				{ dimensions: [1, 0, 0, 0] },
+				{ dimensions: [1, 2, 0, 0] },
+			]
+		}
+		pop [1];
+		call "print", [1];
+	}
+}
+
+entrypoint {
+	asm {
+		call Main;
+	}
+}

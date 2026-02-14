@@ -1,3 +1,5 @@
+using System;
+using System.IO;
 using FluentAssertions;
 using Magic.Kernel.Compilation;
 using Magic.Kernel.Processor;
@@ -84,6 +86,41 @@ entrypoint {
             shapeB.Vertices!.Should().HaveCount(2);
             shapeB.Vertices[0].Position!.Dimensions.Should().BeEquivalentTo(new[] { 1f, 0f, 0f, 0f });
             shapeB.Vertices[1].Position!.Dimensions.Should().BeEquivalentTo(new[] { 1f, 2f, 0f, 0f });
+        }
+
+        [Fact]
+        public async Task SaveAsync_WithOutputFormatAgiasm_ShouldWriteTextFile()
+        {
+            var compiler = new Compiler();
+            var source = @"@AGI 0.0.1
+program Test;
+module Test/Test;
+procedure Main { asm { nop; } }
+entrypoint { asm { call Main; } }
+";
+            var result = await compiler.CompileAsync(source);
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            result.Result!.OutputFormat = "agiasm";
+
+            var path = Path.Combine(Path.GetTempPath(), $"agiasm_test_{Guid.NewGuid():N}.agiasm");
+            try
+            {
+                await result.Result.SaveAsync(path);
+                var text = await File.ReadAllTextAsync(path);
+                text.Should().StartWith("@AGIASM");
+                text.Should().Contain("program Test");
+                text.Should().Contain("module Test/Test");
+                text.Should().Contain("entrypoint");
+                text.Should().Contain("procedure Main");
+
+                var loaded = await ExecutableUnit.LoadAsync(path);
+                loaded.Name.Should().Be("Test");
+                loaded.Module.Should().Be("Test/Test");
+            }
+            finally
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
         }
     }
 }

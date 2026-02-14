@@ -1,0 +1,21 @@
+﻿@AGIASM 1
+@AGI 0.0.1
+module infer
+entrypoint
+call Main
+procedure Main
+addvertex index: 1, dimensions: [1, 0, 0, 0], weight: 0.5
+addvertex index: 2, dimensions: [1, 0, 0, 0], weight: 0.5
+call role:
+addvertex index: 3, dimensions: [1, 0, 0, 0], weight: 0.5
+call role:
+addrelation index: 1, from: vertex: index: 1, to: vertex: index: 2, weight: 0.5
+addrelation index: 2, from: vertex: index: 1, to: vertex: index: 3, weight: 0.5
+addshape index: 1, vertices: indices: [1, 2, 3]
+function orchestrate(task:
+call description:
+call history:
+call result:
+call isFinished:
+function act(task:
+call return

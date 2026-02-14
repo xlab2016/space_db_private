@@ -5,6 +5,7 @@ using Magic.Kernel.Functions;
 using Magic.Kernel;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -41,9 +42,111 @@ namespace Magic.Kernel.Interpretation
                     await ExecuteIntersectAsync(callInfo);
                     return true;
 
+                case "stream_open":
+                    await ExecuteStreamOpenAsync(callInfo);
+                    return true;
+
+                case "stream_await":
+                    await ExecuteStreamAwaitAsync(callInfo);
+                    return true;
+
+                case "compile":
+                    await ExecuteCompileAsync(callInfo);
+                    return true;
+
                 default:
                     return false;
             }
+        }
+
+        private Task ExecuteStreamOpenAsync(CallInfo callInfo)
+        {
+            if (!callInfo.Parameters.TryGetValue("path", out var pathParam))
+            {
+                throw new InvalidOperationException("stream_open requires path parameter.");
+            }
+            var path = pathParam is string s ? s : pathParam?.ToString() ?? "";
+            var handle = new StreamHandle { Path = path };
+            _stack.Add(handle);
+            return Task.CompletedTask;
+        }
+
+        private Task ExecuteStreamAwaitAsync(CallInfo callInfo)
+        {
+            if (_stack.Count == 0)
+                throw new InvalidOperationException("stream_await requires stream on stack (push stream before call).");
+            var streamObj = _stack[_stack.Count - 1];
+            _stack.RemoveAt(_stack.Count - 1);
+            if (streamObj is MemoryAddress ma && ma.Index.HasValue && _memory.TryGetValue(ma.Index.Value, out var memVal))
+                streamObj = memVal;
+            if (streamObj is not StreamHandle handle)
+                throw new InvalidOperationException("stream_await expects a stream handle.");
+            var data = ReadStreamData(handle);
+            _stack.Add(data);
+            return Task.CompletedTask;
+        }
+
+        private Task ExecuteCompileAsync(CallInfo callInfo)
+        {
+            object? dataObj = null;
+            if (_stack.Count > 0)
+            {
+                dataObj = _stack[_stack.Count - 1];
+                _stack.RemoveAt(_stack.Count - 1);
+            }
+            else if (callInfo.Parameters?.TryGetValue("0", out var p) == true)
+            {
+                dataObj = p is MemoryAddress memAddr && memAddr.Index.HasValue && _memory.TryGetValue(memAddr.Index.Value, out var memVal) ? memVal : p;
+            }
+            if (dataObj == null)
+                dataObj = new Dictionary<string, object> { ["content"] = "" };
+            var ssfs = CompileToSsfs(dataObj);
+            _stack.Add(ssfs);
+            return Task.CompletedTask;
+        }
+
+        private static object ReadStreamData(StreamHandle handle)
+        {
+            if (string.IsNullOrEmpty(handle.Path))
+                return new Dictionary<string, object> { ["content"] = "" };
+            try
+            {
+                if (File.Exists(handle.Path))
+                {
+                    var content = File.ReadAllText(handle.Path);
+                    return new Dictionary<string, object> { ["content"] = content, ["path"] = handle.Path };
+                }
+            }
+            catch
+            {
+                // fallback for tests: path may be logical name
+            }
+            return new Dictionary<string, object> { ["content"] = "", ["path"] = handle.Path };
+        }
+
+        private static object CompileToSsfs(object data)
+        {
+            var dict = new Dictionary<string, object>(StringComparer.Ordinal)
+            {
+                ["type"] = "SSFS",
+                ["structural_layer"] = new Dictionary<string, object>(StringComparer.Ordinal),
+                ["semantic_layer"] = new Dictionary<string, object>(StringComparer.Ordinal),
+                ["ontology_layer"] = new Dictionary<string, object>(StringComparer.Ordinal)
+            };
+            if (data is Dictionary<string, object> dataDict && dataDict.TryGetValue("content", out var content))
+            {
+                ((Dictionary<string, object>)dict["semantic_layer"])["source"] = content;
+            }
+            else
+            {
+                ((Dictionary<string, object>)dict["semantic_layer"])["source"] = data?.ToString() ?? "";
+            }
+            return dict;
+        }
+
+        private sealed class StreamHandle
+        {
+            public string Path { get; set; } = "";
         }
 
         private async Task ExecuteOriginAsync(CallInfo callInfo)

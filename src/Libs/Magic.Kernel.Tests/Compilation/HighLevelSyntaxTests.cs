@@ -465,5 +465,43 @@ entrypoint {
             var callInfo = main.Body[0].Operand1.Should().BeOfType<CallInfo>().Subject;
             callInfo.FunctionName.Should().Be("Helper");
         }
+
+        [Fact]
+        public async Task CompileAsync_WithCompileStreamProgram_ShouldCompileToStreamOpenAwaitCompilePrint()
+        {
+            var source = @"@AGI 0.0.1;
+
+program compile_stream;
+module samples/streams/compile_stream;
+
+procedure Main {
+	var stream1 := stream<file>;
+	stream1.open(""stream1"");
+	var data = await stream1;
+	var semantic_file_system = compile(data);
+
+	print(semantic_file_system);
+}
+
+entrypoint {
+	Main;
+}";
+
+            var result = await _compiler.CompileAsync(source);
+
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            result.Result!.Procedures.Should().ContainKey("Main");
+            var main = result.Result.Procedures["Main"];
+            main.Body.Should().NotBeEmpty();
+
+            var calls = main.Body.Where(c => c.Opcode == Opcodes.Call).Select(c => (CallInfo)c.Operand1!).ToList();
+            calls.Select(c => c.FunctionName).Should().Contain("stream_open");
+            calls.Select(c => c.FunctionName).Should().Contain("stream_await");
+            calls.Select(c => c.FunctionName).Should().Contain("compile");
+            calls.Select(c => c.FunctionName).Should().Contain("print");
+
+            main.Body.Should().Contain(c => c.Opcode == Opcodes.Pop);
+            main.Body.Should().Contain(c => c.Opcode == Opcodes.Push);
+        }
     }
 }

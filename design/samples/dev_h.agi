@@ -1,0 +1,58 @@
+@AGI 0.0.1
+
+library dev;
+module infer;
+
+procedure Main {
+	var
+		v1: vertex = {NAME:"orchestrator", DATA:JSON: {
+				role: "You are orchestrator. Command with other agents. Current task: %task. History: %history. You should call other roles: [designer, developer]. Return as: { role: \"<next role to call>\", task: \"<next task to give to agent>\",
+				isFinished: \"True or False if task is completed or not\" }"
+			}
+		};
+		v2: vertex = {NAME:"designer", DATA:JSON: {
+				role: "You are designer. Split big task to smaller tasks. And plan work for developer agents. Current task: %task"
+			}
+		};
+		v3: vertex = {NAME:"developer", DATA:JSON: {
+				role: "You are developer. Please perform given task: %task"
+			}
+		};
+		r1: relation = {v1=>v2};
+		r2: relation = {v1=>v3};
+
+		s: shape = { [v1,v2,v3], NAME: "workflow" };
+}
+
+function orchestrate(task: json: {description, history}) {
+	var
+		orchestrationResult = act(task, role: "orchestrator");
+		actionRole = orchestrationResult.role;
+		actionTask = orchestrationResult.task;
+		isFinished = orchestrationResult.isFinished;
+		actionResult = act(task: {
+			description: actionTask.description,
+			history: actionTask.history
+		}, role: actionRole);
+
+		return json: {
+			result: actionResult,
+			isFinished: isFinished
+		}
+}
+
+function act(task: json: {description, history}, role: string) {
+	var
+		roleVertex = vertex.find(NAME: role);
+		roleString = roleVertex.data().role;
+		formattedRoleString = format(roleString, task.description, task.history);
+		// this is ANY LLM (inference device) calling
+		result = print(type: infer, text: formattedRoleString);
+		return result;
+}
+
+entrypoint {
+	Main;
+}
+
+export orchestrate;

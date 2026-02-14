@@ -1,0 +1,422 @@
+2026/01/30-11:53:14.754033 afac RocksDB version: 10.4.2
+2026/01/30-11:53:14.754623 afac Git sha 410c5623195ecbe4699b9b5a5f622c7325cec6fe
+2026/01/30-11:53:14.754638 afac Compile date 2025-07-09 11:14:20
+2026/01/30-11:53:14.754649 afac DB SUMMARY
+2026/01/30-11:53:14.754658 afac Host name (Env):  DESKTOP-SKPE0OD
+2026/01/30-11:53:14.754665 afac DB Session ID:  C3CIBT8XHX575CLOWI2S
+2026/01/30-11:53:14.754888 afac SST files in C:\dev\DTAI\space_db_private\rocksdb dir, Total Num: 0, files: 
+2026/01/30-11:53:14.754907 afac Write Ahead Log file in C:\dev\DTAI\space_db_private\rocksdb: 
+2026/01/30-11:53:14.754919 afac                         Options.error_if_exists: 0
+2026/01/30-11:53:14.754929 afac                       Options.create_if_missing: 1
+2026/01/30-11:53:14.755072 afac                         Options.paranoid_checks: 1
+2026/01/30-11:53:14.755079 afac             Options.flush_verify_memtable_count: 1
+2026/01/30-11:53:14.755082 afac          Options.compaction_verify_record_count: 1
+2026/01/30-11:53:14.755084 afac                               Options.track_and_verify_wals_in_manifest: 0
+2026/01/30-11:53:14.755087 afac                               Options.track_and_verify_wals: 0
+2026/01/30-11:53:14.755090 afac        Options.verify_sst_unique_id_in_manifest: 1
+2026/01/30-11:53:14.755092 afac                                     Options.env: 000001C2801151F0
+2026/01/30-11:53:14.755098 afac                                      Options.fs: WinFS
+2026/01/30-11:53:14.755101 afac                                Options.info_log: 000001C283461F00
+2026/01/30-11:53:14.755104 afac                Options.max_file_opening_threads: 16
+2026/01/30-11:53:14.755106 afac                              Options.statistics: 0000000000000000
+2026/01/30-11:53:14.755109 afac                               Options.use_fsync: 0
+2026/01/30-11:53:14.755111 afac                       Options.max_log_file_size: 0
+2026/01/30-11:53:14.755114 afac                  Options.max_manifest_file_size: 1073741824
+2026/01/30-11:53:14.755117 afac                   Options.log_file_time_to_roll: 0
+2026/01/30-11:53:14.755120 afac                       Options.keep_log_file_num: 1000
+2026/01/30-11:53:14.755122 afac                    Options.recycle_log_file_num: 0
+2026/01/30-11:53:14.755125 afac                         Options.allow_fallocate: 1
+2026/01/30-11:53:14.755127 afac                        Options.allow_mmap_reads: 0
+2026/01/30-11:53:14.755130 afac                       Options.allow_mmap_writes: 0
+2026/01/30-11:53:14.755133 afac                        Options.use_direct_reads: 0
+2026/01/30-11:53:14.755135 afac                        Options.use_direct_io_for_flush_and_compaction: 0
+2026/01/30-11:53:14.755138 afac          Options.create_missing_column_families: 1
+2026/01/30-11:53:14.755140 afac                              Options.db_log_dir: 
+2026/01/30-11:53:14.755144 afac                                 Options.wal_dir: 
+2026/01/30-11:53:14.755147 afac                Options.table_cache_numshardbits: 6
+2026/01/30-11:53:14.755150 afac                         Options.WAL_ttl_seconds: 0
+2026/01/30-11:53:14.755152 afac                       Options.WAL_size_limit_MB: 0
+2026/01/30-11:53:14.755155 afac                        Options.max_write_batch_group_size_bytes: 1048576
+2026/01/30-11:53:14.755158 afac             Options.manifest_preallocation_size: 4194304
+2026/01/30-11:53:14.755160 afac                     Options.is_fd_close_on_exec: 1
+2026/01/30-11:53:14.755163 afac                   Options.advise_random_on_open: 1
+2026/01/30-11:53:14.755166 afac                    Options.db_write_buffer_size: 0
+2026/01/30-11:53:14.755168 afac                    Options.write_buffer_manager: 000001C2801153D0
+2026/01/30-11:53:14.755171 afac                      Options.use_adaptive_mutex: 0
+2026/01/30-11:53:14.755173 afac                            Options.rate_limiter: 0000000000000000
+2026/01/30-11:53:14.755176 afac     Options.sst_file_manager.rate_bytes_per_sec: 0
+2026/01/30-11:53:14.755179 afac                       Options.wal_recovery_mode: 2
+2026/01/30-11:53:14.755182 afac                  Options.enable_thread_tracking: 0
+2026/01/30-11:53:14.755202 afac                  Options.enable_pipelined_write: 0
+2026/01/30-11:53:14.755206 afac                  Options.unordered_write: 0
+2026/01/30-11:53:14.755208 afac         Options.allow_concurrent_memtable_write: 1
+2026/01/30-11:53:14.755211 afac      Options.enable_write_thread_adaptive_yield: 1
+2026/01/30-11:53:14.755213 afac             Options.write_thread_max_yield_usec: 100
+2026/01/30-11:53:14.755216 afac            Options.write_thread_slow_yield_usec: 3
+2026/01/30-11:53:14.755219 afac                               Options.row_cache: None
+2026/01/30-11:53:14.755221 afac                              Options.wal_filter: None
+2026/01/30-11:53:14.755224 afac             Options.avoid_flush_during_recovery: 0
+2026/01/30-11:53:14.755227 afac             Options.allow_ingest_behind: 0
+2026/01/30-11:53:14.755229 afac             Options.two_write_queues: 0
+2026/01/30-11:53:14.755232 afac             Options.manual_wal_flush: 0
+2026/01/30-11:53:14.755234 afac             Options.wal_compression: 0
+2026/01/30-11:53:14.755237 afac             Options.background_close_inactive_wals: 0
+2026/01/30-11:53:14.755239 afac             Options.atomic_flush: 0
+2026/01/30-11:53:14.755242 afac             Options.avoid_unnecessary_blocking_io: 0
+2026/01/30-11:53:14.755245 afac             Options.prefix_seek_opt_in_only: 0
+2026/01/30-11:53:14.755247 afac                 Options.persist_stats_to_disk: 0
+2026/01/30-11:53:14.755250 afac                 Options.write_dbid_to_manifest: 1
+2026/01/30-11:53:14.755252 afac                 Options.write_identity_file: 1
+2026/01/30-11:53:14.755255 afac                 Options.log_readahead_size: 0
+2026/01/30-11:53:14.755258 afac                 Options.file_checksum_gen_factory: Unknown
+2026/01/30-11:53:14.755260 afac                 Options.best_efforts_recovery: 0
+2026/01/30-11:53:14.755263 afac                Options.max_bgerror_resume_count: 2147483647
+2026/01/30-11:53:14.755265 afac            Options.bgerror_resume_retry_interval: 1000000
+2026/01/30-11:53:14.755268 afac             Options.allow_data_in_errors: 0
+2026/01/30-11:53:14.755270 afac             Options.db_host_id: __hostname__
+2026/01/30-11:53:14.755273 afac             Options.enforce_single_del_contracts: true
+2026/01/30-11:53:14.755279 afac             Options.metadata_write_temperature: kUnknown
+2026/01/30-11:53:14.755281 afac             Options.wal_write_temperature: kUnknown
+2026/01/30-11:53:14.755284 afac             Options.max_background_jobs: 2
+2026/01/30-11:53:14.755286 afac             Options.max_background_compactions: -1
+2026/01/30-11:53:14.755289 afac             Options.max_subcompactions: 1
+2026/01/30-11:53:14.755292 afac             Options.avoid_flush_during_shutdown: 0
+2026/01/30-11:53:14.755294 afac           Options.writable_file_max_buffer_size: 1048576
+2026/01/30-11:53:14.755297 afac             Options.delayed_write_rate : 16777216
+2026/01/30-11:53:14.755300 afac             Options.max_total_wal_size: 0
+2026/01/30-11:53:14.755302 afac             Options.delete_obsolete_files_period_micros: 21600000000
+2026/01/30-11:53:14.755305 afac                   Options.stats_dump_period_sec: 600
+2026/01/30-11:53:14.755308 afac                 Options.stats_persist_period_sec: 600
+2026/01/30-11:53:14.755310 afac                 Options.stats_history_buffer_size: 1048576
+2026/01/30-11:53:14.755313 afac                          Options.max_open_files: -1
+2026/01/30-11:53:14.755315 afac                          Options.bytes_per_sync: 0
+2026/01/30-11:53:14.755318 afac                      Options.wal_bytes_per_sync: 0
+2026/01/30-11:53:14.755320 afac                   Options.strict_bytes_per_sync: 0
+2026/01/30-11:53:14.755323 afac       Options.compaction_readahead_size: 2097152
+2026/01/30-11:53:14.755325 afac                  Options.max_background_flushes: -1
+2026/01/30-11:53:14.755328 afac Options.daily_offpeak_time_utc: 
+2026/01/30-11:53:14.755332 afac Compression algorithms supported:
+2026/01/30-11:53:14.755335 afac 	kZSTD supported: 1
+2026/01/30-11:53:14.755350 afac 	kCustomCompressionA3 supported: 0
+2026/01/30-11:53:14.755354 afac 	kSnappyCompression supported: 1
+2026/01/30-11:53:14.755357 afac 	kCustomCompressionA5 supported: 0
+2026/01/30-11:53:14.755360 afac 	kBZip2Compression supported: 0
+2026/01/30-11:53:14.755363 afac 	kZlibCompression supported: 1
+2026/01/30-11:53:14.755365 afac 	kLZ4Compression supported: 1
+2026/01/30-11:53:14.755368 afac 	kXpressCompression supported: 0
+2026/01/30-11:53:14.755371 afac 	kCustomCompressionA7 supported: 0
+2026/01/30-11:53:14.755373 afac 	kLZ4HCCompression supported: 1
+2026/01/30-11:53:14.755376 afac 	kCustomCompressionB2 supported: 0
+2026/01/30-11:53:14.755379 afac 	kCustomCompression9C supported: 0
+2026/01/30-11:53:14.755382 afac 	kCustomCompression80 supported: 0
+2026/01/30-11:53:14.755384 afac 	kCustomCompressionB3 supported: 0
+2026/01/30-11:53:14.755387 afac 	kCustomCompression9B supported: 0
+2026/01/30-11:53:14.755390 afac 	kCustomCompression81 supported: 0
+2026/01/30-11:53:14.755393 afac 	kCustomCompressionB0 supported: 0
+2026/01/30-11:53:14.755395 afac 	kCustomCompression9A supported: 0
+2026/01/30-11:53:14.755398 afac 	kCustomCompression82 supported: 0
+2026/01/30-11:53:14.755401 afac 	kCustomCompressionB1 supported: 0
+2026/01/30-11:53:14.755404 afac 	kCustomCompression83 supported: 0
+2026/01/30-11:53:14.755407 afac 	kCustomCompressionB6 supported: 0
+2026/01/30-11:53:14.755409 afac 	kCustomCompression84 supported: 0
+2026/01/30-11:53:14.755412 afac 	kCustomCompressionB7 supported: 0
+2026/01/30-11:53:14.755415 afac 	kCustomCompression9F supported: 0
+2026/01/30-11:53:14.755417 afac 	kCustomCompression85 supported: 0
+2026/01/30-11:53:14.755420 afac 	kCustomCompressionB4 supported: 0
+2026/01/30-11:53:14.755423 afac 	kCustomCompression9E supported: 0
+2026/01/30-11:53:14.755425 afac 	kCustomCompression86 supported: 0
+2026/01/30-11:53:14.755428 afac 	kCustomCompressionB5 supported: 0
+2026/01/30-11:53:14.755431 afac 	kCustomCompression9D supported: 0
+2026/01/30-11:53:14.755433 afac 	kCustomCompression87 supported: 0
+2026/01/30-11:53:14.755436 afac 	kCustomCompression88 supported: 0
+2026/01/30-11:53:14.755438 afac 	kCustomCompression89 supported: 0
+2026/01/30-11:53:14.755441 afac 	kCustomCompression92 supported: 0
+2026/01/30-11:53:14.755444 afac 	kCustomCompression8A supported: 0
+2026/01/30-11:53:14.755446 afac 	kCustomCompression91 supported: 0
+2026/01/30-11:53:14.755449 afac 	kCustomCompression8B supported: 0
+2026/01/30-11:53:14.755452 afac 	kCustomCompression90 supported: 0
+2026/01/30-11:53:14.755455 afac 	kCustomCompression8C supported: 0
+2026/01/30-11:53:14.755457 afac 	kCustomCompression97 supported: 0
+2026/01/30-11:53:14.755460 afac 	kCustomCompression8D supported: 0
+2026/01/30-11:53:14.755462 afac 	kCustomCompression96 supported: 0
+2026/01/30-11:53:14.755465 afac 	kCustomCompression8E supported: 0
+2026/01/30-11:53:14.755468 afac 	kCustomCompression95 supported: 0
+2026/01/30-11:53:14.755471 afac 	kCustomCompression8F supported: 0
+2026/01/30-11:53:14.755473 afac 	kCustomCompression93 supported: 0
+2026/01/30-11:53:14.755476 afac 	kCustomCompression94 supported: 0
+2026/01/30-11:53:14.755479 afac 	kCustomCompression98 supported: 0
+2026/01/30-11:53:14.755482 afac 	kCustomCompression99 supported: 0
+2026/01/30-11:53:14.755484 afac 	kCustomCompressionA0 supported: 0
+2026/01/30-11:53:14.755487 afac 	kCustomCompressionA1 supported: 0
+2026/01/30-11:53:14.755490 afac 	kCustomCompressionA2 supported: 0
+2026/01/30-11:53:14.755492 afac 	kCustomCompressionA4 supported: 0
+2026/01/30-11:53:14.755495 afac 	kCustomCompressionA6 supported: 0
+2026/01/30-11:53:14.755498 afac 	kCustomCompressionA8 supported: 0
+2026/01/30-11:53:14.755500 afac 	kCustomCompressionA9 supported: 0
+2026/01/30-11:53:14.755503 afac 	kCustomCompressionAA supported: 0
+2026/01/30-11:53:14.755505 afac 	kCustomCompressionAB supported: 0
+2026/01/30-11:53:14.755508 afac 	kCustomCompressionAC supported: 0
+2026/01/30-11:53:14.755511 afac 	kCustomCompressionAD supported: 0
+2026/01/30-11:53:14.755513 afac 	kCustomCompressionAE supported: 0
+2026/01/30-11:53:14.755516 afac 	kCustomCompressionAF supported: 0
+2026/01/30-11:53:14.755520 afac 	kCustomCompressionB8 supported: 0
+2026/01/30-11:53:14.755523 afac 	kCustomCompressionB9 supported: 0
+2026/01/30-11:53:14.755525 afac 	kCustomCompressionBA supported: 0
+2026/01/30-11:53:14.755528 afac 	kCustomCompressionBB supported: 0
+2026/01/30-11:53:14.755531 afac 	kCustomCompressionBC supported: 0
+2026/01/30-11:53:14.755534 afac 	kCustomCompressionBD supported: 0
+2026/01/30-11:53:14.755536 afac 	kCustomCompressionBE supported: 0
+2026/01/30-11:53:14.755540 afac 	kCustomCompressionBF supported: 0
+2026/01/30-11:53:14.755544 afac 	kCustomCompressionC0 supported: 0
+2026/01/30-11:53:14.755548 afac 	kCustomCompressionC1 supported: 0
+2026/01/30-11:53:14.755552 afac 	kCustomCompressionC2 supported: 0
+2026/01/30-11:53:14.755556 afac 	kCustomCompressionC3 supported: 0
+2026/01/30-11:53:14.755559 afac 	kCustomCompressionC4 supported: 0
+2026/01/30-11:53:14.755563 afac 	kCustomCompressionC5 supported: 0
+2026/01/30-11:53:14.755566 afac 	kCustomCompressionC6 supported: 0
+2026/01/30-11:53:14.755570 afac 	kCustomCompressionC7 supported: 0
+2026/01/30-11:53:14.755574 afac 	kCustomCompressionC8 supported: 0
+2026/01/30-11:53:14.755577 afac 	kCustomCompressionC9 supported: 0
+2026/01/30-11:53:14.755587 afac 	kCustomCompressionCA supported: 0
+2026/01/30-11:53:14.755591 afac 	kCustomCompressionCB supported: 0
+2026/01/30-11:53:14.755593 afac 	kCustomCompressionCC supported: 0
+2026/01/30-11:53:14.755596 afac 	kCustomCompressionCD supported: 0
+2026/01/30-11:53:14.755599 afac 	kCustomCompressionCE supported: 0
+2026/01/30-11:53:14.755602 afac 	kCustomCompressionCF supported: 0
+2026/01/30-11:53:14.755604 afac 	kCustomCompressionD0 supported: 0
+2026/01/30-11:53:14.755607 afac 	kCustomCompressionD1 supported: 0
+2026/01/30-11:53:14.755610 afac 	kCustomCompressionD2 supported: 0
+2026/01/30-11:53:14.755612 afac 	kCustomCompressionD3 supported: 0
+2026/01/30-11:53:14.755615 afac 	kCustomCompressionD4 supported: 0
+2026/01/30-11:53:14.755618 afac 	kCustomCompressionD5 supported: 0
+2026/01/30-11:53:14.755620 afac 	kCustomCompressionD6 supported: 0
+2026/01/30-11:53:14.755623 afac 	kCustomCompressionD7 supported: 0
+2026/01/30-11:53:14.755626 afac 	kCustomCompressionD8 supported: 0
+2026/01/30-11:53:14.755628 afac 	kCustomCompressionD9 supported: 0
+2026/01/30-11:53:14.755631 afac 	kCustomCompressionDA supported: 0
+2026/01/30-11:53:14.755634 afac 	kCustomCompressionDB supported: 0
+2026/01/30-11:53:14.755636 afac 	kCustomCompressionDC supported: 0
+2026/01/30-11:53:14.755639 afac 	kCustomCompressionDD supported: 0
+2026/01/30-11:53:14.755642 afac 	kCustomCompressionDE supported: 0
+2026/01/30-11:53:14.755645 afac 	kCustomCompressionDF supported: 0
+2026/01/30-11:53:14.755647 afac 	kCustomCompressionE0 supported: 0
+2026/01/30-11:53:14.755650 afac 	kCustomCompressionE1 supported: 0
+2026/01/30-11:53:14.755652 afac 	kCustomCompressionE2 supported: 0
+2026/01/30-11:53:14.755655 afac 	kCustomCompressionE3 supported: 0
+2026/01/30-11:53:14.755658 afac 	kCustomCompressionE4 supported: 0
+2026/01/30-11:53:14.755660 afac 	kCustomCompressionE5 supported: 0
+2026/01/30-11:53:14.755663 afac 	kCustomCompressionE6 supported: 0
+2026/01/30-11:53:14.755666 afac 	kCustomCompressionE7 supported: 0
+2026/01/30-11:53:14.755668 afac 	kCustomCompressionE8 supported: 0
+2026/01/30-11:53:14.755671 afac 	kCustomCompressionE9 supported: 0
+2026/01/30-11:53:14.755674 afac 	kCustomCompressionEA supported: 0
+2026/01/30-11:53:14.755676 afac 	kCustomCompressionEB supported: 0
+2026/01/30-11:53:14.755679 afac 	kCustomCompressionEC supported: 0
+2026/01/30-11:53:14.755682 afac 	kCustomCompressionED supported: 0
+2026/01/30-11:53:14.755684 afac 	kCustomCompressionEE supported: 0
+2026/01/30-11:53:14.755687 afac 	kCustomCompressionEF supported: 0
+2026/01/30-11:53:14.755690 afac 	kCustomCompressionF0 supported: 0
+2026/01/30-11:53:14.755692 afac 	kCustomCompressionF1 supported: 0
+2026/01/30-11:53:14.755695 afac 	kCustomCompressionF2 supported: 0
+2026/01/30-11:53:14.755698 afac 	kCustomCompressionF3 supported: 0
+2026/01/30-11:53:14.755700 afac 	kCustomCompressionF4 supported: 0
+2026/01/30-11:53:14.755720 afac 	kCustomCompressionF5 supported: 0
+2026/01/30-11:53:14.755723 afac 	kCustomCompressionF6 supported: 0
+2026/01/30-11:53:14.755726 afac 	kCustomCompressionF7 supported: 0
+2026/01/30-11:53:14.755729 afac 	kCustomCompressionF8 supported: 0
+2026/01/30-11:53:14.755731 afac 	kCustomCompressionF9 supported: 0
+2026/01/30-11:53:14.755734 afac 	kCustomCompressionFA supported: 0
+2026/01/30-11:53:14.755737 afac 	kCustomCompressionFB supported: 0
+2026/01/30-11:53:14.755739 afac 	kCustomCompressionFC supported: 0
+2026/01/30-11:53:14.755742 afac 	kCustomCompressionFD supported: 0
+2026/01/30-11:53:14.755745 afac 	kCustomCompressionFE supported: 0
+2026/01/30-11:53:14.755751 afac Fast CRC32 supported: Not supported on x86
+2026/01/30-11:53:14.755753 afac DMutex implementation: std::mutex
+2026/01/30-11:53:14.755756 afac Jemalloc supported: 0
+2026/01/30-11:53:14.761435 afac [db\db_impl\db_impl_open.cc:318] Creating manifest 1 
+2026/01/30-11:53:14.784455 afac [db\version_set.cc:6116] Recovering from manifest file: C:\dev\DTAI\space_db_private\rocksdb/MANIFEST-000001
+2026/01/30-11:53:14.784741 afac [db\column_family.cc:692] --------------- Options for column family [default]:
+2026/01/30-11:53:14.784761 afac               Options.comparator: leveldb.BytewiseComparator
+2026/01/30-11:53:14.784768 afac           Options.merge_operator: None
+2026/01/30-11:53:14.784774 afac        Options.compaction_filter: None
+2026/01/30-11:53:14.784779 afac        Options.compaction_filter_factory: None
+2026/01/30-11:53:14.784784 afac  Options.sst_partitioner_factory: None
+2026/01/30-11:53:14.784789 afac         Options.memtable_factory: SkipListFactory
+2026/01/30-11:53:14.784794 afac            Options.table_factory: BlockBasedTable
+2026/01/30-11:53:14.784861 afac            table_factory options:   flush_block_policy_factory: FlushBlockBySizePolicyFactory (000001C282767770)
+  cache_index_and_filter_blocks: 0
+  cache_index_and_filter_blocks_with_high_priority: 1
+  pin_l0_filter_and_index_blocks_in_cache: 0
+  pin_top_level_index_and_filter: 1
+  index_type: 0
+  data_block_index_type: 0
+  index_shortening: 1
+  data_block_hash_table_util_ratio: 0.750000
+  checksum: 4
+  no_block_cache: 0
+  block_cache: 000001C28280DAC0
+  block_cache_name: LRUCache
+  block_cache_options:
+    capacity : 33554432
+    num_shard_bits : 6
+    strict_capacity_limit : 0
+    memory_allocator : None
+    high_pri_pool_ratio: 0.500
+    low_pri_pool_ratio: 0.000
+  persistent_cache: 0000000000000000
+  block_size: 4096
+  block_size_deviation: 10
+  block_restart_interval: 16
+  index_block_restart_interval: 1
+  metadata_block_size: 4096
+  partition_filters: 0
+  use_delta_encoding: 1
+  filter_policy: nullptr
+  whole_key_filtering: 1
+  verify_compression: 0
+  read_amp_bytes_per_bit: 0
+  format_version: 6
+  enable_index_compression: 1
+  block_align: 0
+  max_auto_readahead_size: 262144
+  prepopulate_block_cache: 0
+  initial_auto_readahead_size: 8192
+  num_file_reads_for_auto_readahead: 2
+2026/01/30-11:53:14.784868 afac        Options.write_buffer_size: 67108864
+2026/01/30-11:53:14.784873 afac  Options.max_write_buffer_number: 3
+2026/01/30-11:53:14.784881 afac          Options.compression: Snappy
+2026/01/30-11:53:14.784885 afac                  Options.bottommost_compression: Disabled
+2026/01/30-11:53:14.784891 afac       Options.prefix_extractor: nullptr
+2026/01/30-11:53:14.784897 afac   Options.memtable_insert_with_hint_prefix_extractor: nullptr
+2026/01/30-11:53:14.784902 afac             Options.num_levels: 7
+2026/01/30-11:53:14.784907 afac        Options.min_write_buffer_number_to_merge: 1
+2026/01/30-11:53:14.784912 afac     Options.max_write_buffer_size_to_maintain: 0
+2026/01/30-11:53:14.784917 afac            Options.bottommost_compression_opts.window_bits: -14
+2026/01/30-11:53:14.784922 afac                  Options.bottommost_compression_opts.level: 32767
+2026/01/30-11:53:14.784927 afac               Options.bottommost_compression_opts.strategy: 0
+2026/01/30-11:53:14.784932 afac         Options.bottommost_compression_opts.max_dict_bytes: 0
+2026/01/30-11:53:14.784944 afac         Options.bottommost_compression_opts.zstd_max_train_bytes: 0
+2026/01/30-11:53:14.784951 afac         Options.bottommost_compression_opts.parallel_threads: 1
+2026/01/30-11:53:14.784956 afac                  Options.bottommost_compression_opts.enabled: false
+2026/01/30-11:53:14.784961 afac         Options.bottommost_compression_opts.max_dict_buffer_bytes: 0
+2026/01/30-11:53:14.784966 afac         Options.bottommost_compression_opts.use_zstd_dict_trainer: true
+2026/01/30-11:53:14.784971 afac            Options.compression_opts.window_bits: -14
+2026/01/30-11:53:14.784975 afac                  Options.compression_opts.level: 32767
+2026/01/30-11:53:14.784980 afac               Options.compression_opts.strategy: 0
+2026/01/30-11:53:14.784985 afac         Options.compression_opts.max_dict_bytes: 0
+2026/01/30-11:53:14.784989 afac         Options.compression_opts.zstd_max_train_bytes: 0
+2026/01/30-11:53:14.784994 afac         Options.compression_opts.use_zstd_dict_trainer: true
+2026/01/30-11:53:14.784999 afac         Options.compression_opts.parallel_threads: 1
+2026/01/30-11:53:14.785004 afac                  Options.compression_opts.enabled: false
+2026/01/30-11:53:14.785009 afac         Options.compression_opts.max_dict_buffer_bytes: 0
+2026/01/30-11:53:14.785014 afac      Options.level0_file_num_compaction_trigger: 4
+2026/01/30-11:53:14.785019 afac          Options.level0_slowdown_writes_trigger: 20
+2026/01/30-11:53:14.785027 afac              Options.level0_stop_writes_trigger: 36
+2026/01/30-11:53:14.785031 afac                   Options.target_file_size_base: 67108864
+2026/01/30-11:53:14.785036 afac             Options.target_file_size_multiplier: 1
+2026/01/30-11:53:14.785041 afac                Options.max_bytes_for_level_base: 268435456
+2026/01/30-11:53:14.785046 afac Options.level_compaction_dynamic_level_bytes: 1
+2026/01/30-11:53:14.785050 afac          Options.max_bytes_for_level_multiplier: 10.000000
+2026/01/30-11:53:14.785059 afac Options.max_bytes_for_level_multiplier_addtl[0]: 1
+2026/01/30-11:53:14.785064 afac Options.max_bytes_for_level_multiplier_addtl[1]: 1
+2026/01/30-11:53:14.785068 afac Options.max_bytes_for_level_multiplier_addtl[2]: 1
+2026/01/30-11:53:14.785073 afac Options.max_bytes_for_level_multiplier_addtl[3]: 1
+2026/01/30-11:53:14.785078 afac Options.max_bytes_for_level_multiplier_addtl[4]: 1
+2026/01/30-11:53:14.785082 afac Options.max_bytes_for_level_multiplier_addtl[5]: 1
+2026/01/30-11:53:14.785087 afac Options.max_bytes_for_level_multiplier_addtl[6]: 1
+2026/01/30-11:53:14.785092 afac       Options.max_sequential_skip_in_iterations: 8
+2026/01/30-11:53:14.785096 afac          Options.memtable_op_scan_flush_trigger: 0
+2026/01/30-11:53:14.785102 afac      Options.memtable_avg_op_scan_flush_trigger: 0
+2026/01/30-11:53:14.785107 afac                    Options.max_compaction_bytes: 1677721600
+2026/01/30-11:53:14.785111 afac                        Options.arena_block_size: 1048576
+2026/01/30-11:53:14.785116 afac   Options.soft_pending_compaction_bytes_limit: 68719476736
+2026/01/30-11:53:14.785121 afac   Options.hard_pending_compaction_bytes_limit: 274877906944
+2026/01/30-11:53:14.785126 afac                Options.disable_auto_compactions: 0
+2026/01/30-11:53:14.785133 afac                        Options.compaction_style: kCompactionStyleLevel
+2026/01/30-11:53:14.785139 afac                          Options.compaction_pri: kMinOverlappingRatio
+2026/01/30-11:53:14.785144 afac Options.compaction_options_universal.size_ratio: 1
+2026/01/30-11:53:14.785148 afac Options.compaction_options_universal.min_merge_width: 2
+2026/01/30-11:53:14.785153 afac Options.compaction_options_universal.max_merge_width: 4294967295
+2026/01/30-11:53:14.785158 afac Options.compaction_options_universal.max_size_amplification_percent: 200
+2026/01/30-11:53:14.785163 afac Options.compaction_options_universal.compression_size_percent: -1
+2026/01/30-11:53:14.785168 afac Options.compaction_options_universal.stop_style: kCompactionStopStyleTotalSize
+2026/01/30-11:53:14.785173 afac Options.compaction_options_universal.max_read_amp: -1
+2026/01/30-11:53:14.785180 afac Options.compaction_options_universal.reduce_file_locking: 0
+2026/01/30-11:53:14.785185 afac Options.compaction_options_fifo.max_table_files_size: 1073741824
+2026/01/30-11:53:14.785190 afac Options.compaction_options_fifo.allow_compaction: 0
+2026/01/30-11:53:14.785197 afac                   Options.table_properties_collectors: 
+2026/01/30-11:53:14.785202 afac                   Options.inplace_update_support: 0
+2026/01/30-11:53:14.785207 afac                 Options.inplace_update_num_locks: 10000
+2026/01/30-11:53:14.785211 afac               Options.memtable_prefix_bloom_size_ratio: 0.000000
+2026/01/30-11:53:14.785217 afac               Options.memtable_whole_key_filtering: 0
+2026/01/30-11:53:14.785221 afac   Options.memtable_huge_page_size: 0
+2026/01/30-11:53:14.785226 afac                           Options.bloom_locality: 0
+2026/01/30-11:53:14.785231 afac                    Options.max_successive_merges: 0
+2026/01/30-11:53:14.785235 afac             Options.strict_max_successive_merges: 0
+2026/01/30-11:53:14.785240 afac                Options.optimize_filters_for_hits: 0
+2026/01/30-11:53:14.785244 afac                Options.paranoid_file_checks: 0
+2026/01/30-11:53:14.785249 afac                Options.force_consistency_checks: 1
+2026/01/30-11:53:14.785254 afac                Options.report_bg_io_stats: 0
+2026/01/30-11:53:14.785259 afac                Options.disallow_memtable_writes: 0
+2026/01/30-11:53:14.785263 afac                               Options.ttl: 2592000
+2026/01/30-11:53:14.785268 afac          Options.periodic_compaction_seconds: 0
+2026/01/30-11:53:14.785274 afac                        Options.default_temperature: kUnknown
+2026/01/30-11:53:14.785279 afac  Options.preclude_last_level_data_seconds: 0
+2026/01/30-11:53:14.785283 afac    Options.preserve_internal_time_seconds: 0
+2026/01/30-11:53:14.785288 afac                       Options.enable_blob_files: false
+2026/01/30-11:53:14.785293 afac                           Options.min_blob_size: 0
+2026/01/30-11:53:14.785297 afac                          Options.blob_file_size: 268435456
+2026/01/30-11:53:14.785302 afac                   Options.blob_compression_type: NoCompression
+2026/01/30-11:53:14.785307 afac          Options.enable_blob_garbage_collection: false
+2026/01/30-11:53:14.785312 afac      Options.blob_garbage_collection_age_cutoff: 0.250000
+2026/01/30-11:53:14.785317 afac Options.blob_garbage_collection_force_threshold: 1.000000
+2026/01/30-11:53:14.785322 afac          Options.blob_compaction_readahead_size: 0
+2026/01/30-11:53:14.785327 afac                Options.blob_file_starting_level: 0
+2026/01/30-11:53:14.785331 afac         Options.experimental_mempurge_threshold: 0.000000
+2026/01/30-11:53:14.785336 afac            Options.memtable_max_range_deletions: 0
+2026/01/30-11:53:14.786848 afac [db\version_set.cc:6174] Recovered from manifest file:C:\dev\DTAI\space_db_private\rocksdb/MANIFEST-000001 succeeded,manifest_file_number is 1, next_file_number is 3, last_sequence is 0, log_number is 0,prev_log_number is 0,max_column_family is 0,min_log_number_to_keep is 0
+2026/01/30-11:53:14.786872 afac [db\version_set.cc:6183] Column family [default] (ID 0), log number is 0
+2026/01/30-11:53:14.786883 afac [db\db_impl\db_impl_open.cc:692] DB ID: f73457bc-fd9f-11f0-ac3b-3c0af3ef9fa8
+2026/01/30-11:53:14.788336 afac [db\version_set.cc:5624] Creating manifest 5
+2026/01/30-11:53:14.823092 afac [db\db_impl\db_impl_open.cc:2632] SstFileManager instance 000001C2828158A0
+2026/01/30-11:53:14.824294 afac DB pointer 000001C283471400
+2026/01/30-11:53:14.824722 3b6c [db\db_impl\db_impl.cc:1117] ------- DUMPING STATS -------
+2026/01/30-11:53:14.824741 3b6c [db\db_impl\db_impl.cc:1118] 
+** DB Stats **
+Uptime(secs): 0.0 total, 0.0 interval
+Cumulative writes: 0 writes, 0 keys, 0 commit groups, 0.0 writes per commit group, ingest: 0.00 GB, 0.00 MB/s
+Cumulative WAL: 0 writes, 0 syncs, 0.00 writes per sync, written: 0.00 GB, 0.00 MB/s
+Cumulative stall: 00:00:0.000 H:M:S, 0.0 percent
+Interval writes: 0 writes, 0 keys, 0 commit groups, 0.0 writes per commit group, ingest: 0.00 MB, 0.00 MB/s
+Interval WAL: 0 writes, 0 syncs, 0.00 writes per sync, written: 0.00 GB, 0.00 MB/s
+Interval stall: 00:00:0.000 H:M:S, 0.0 percent
+Write Stall (count): write-buffer-manager-limit-stops: 0
+
+** Compaction Stats [default] **
+Level    Files   Size     Score Read(GB)  Rn(GB) Rnp1(GB) Write(GB) WPreComp(GB) Wnew(GB) Moved(GB) W-Amp Rd(MB/s) Wr(MB/s) Comp(sec) CompMergeCPU(sec) Comp(cnt) Avg(sec) KeyIn KeyDrop Rblob(GB) Wblob(GB)
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Sum      0/0      0.00 KB   0.0      0.0     0.0      0.0       0.0       0.0      0.0       0.0   0.0      0.0      0.0      0.00              0.00         0    0.000       0      0       0.0       0.0
+ Int      0/0      0.00 KB   0.0      0.0     0.0      0.0       0.0       0.0      0.0       0.0   0.0      0.0      0.0      0.00              0.00         0    0.000       0      0       0.0       0.0
+
+** Compaction Stats [default] **
+Priority    Files   Size     Score Read(GB)  Rn(GB) Rnp1(GB) Write(GB) WPreComp(GB) Wnew(GB) Moved(GB) W-Amp Rd(MB/s) Wr(MB/s) Comp(sec) CompMergeCPU(sec) Comp(cnt) Avg(sec) KeyIn KeyDrop Rblob(GB) Wblob(GB)
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Blob file count: 0, total size: 0.0 GB, garbage size: 0.0 GB, space amp: 0.0
+
+Uptime(secs): 0.0 total, 0.0 interval
+Flush(GB): cumulative 0.000, interval 0.000
+AddFile(GB): cumulative 0.000, interval 0.000
+AddFile(Total Files): cumulative 0, interval 0
+AddFile(L0 Files): cumulative 0, interval 0
+AddFile(Keys): cumulative 0, interval 0
+Cumulative compaction: 0.00 GB write, 0.00 MB/s write, 0.00 GB read, 0.00 MB/s read, 0.0 seconds
+Interval compaction: 0.00 GB write, 0.00 MB/s write, 0.00 GB read, 0.00 MB/s read, 0.0 seconds
+Estimated pending compaction bytes: 0
+Write Stall (count): cf-l0-file-count-limit-delays-with-ongoing-compaction: 0, cf-l0-file-count-limit-stops-with-ongoing-compaction: 0, l0-file-count-limit-delays: 0, l0-file-count-limit-stops: 0, memtable-limit-delays: 0, memtable-limit-stops: 0, pending-compaction-bytes-delays: 0, pending-compaction-bytes-stops: 0, total-delays: 0, total-stops: 0
+Block cache LRUCache@000001C28280DAC0#37184 capacity: 32.00 MB seed: 153092193 usage: 0.08 KB table_size: 1024 occupancy: 1 collections: 1 last_copies: 0 last_secs: 7.3e-05 secs_since: 0
+Block cache entry stats(count,size,portion): Misc(1,0.00 KB,0%)
+
+** File Read Latency Histogram By Level [default] **
+2026/01/30-11:53:14.899564 4438 [db\db_impl\db_impl.cc:467] Shutdown: canceling all background work
+2026/01/30-11:53:14.905098 4438 [db\db_impl\db_impl.cc:681] Shutdown complete

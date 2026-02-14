@@ -1,0 +1,17 @@
+@AGI 0.0.1;
+
+program compile_stream;
+module samples/streams/compile_stream;
+
+procedure Main {
+	var stream1 := stream<file>;
+	stream1.open("stream1");
+	var data := await stream1;
+	var semantic_file_system := compile(data);
+
+	print(semantic_file_system);
+}
+
+entrypoint {
+	Main;
+}

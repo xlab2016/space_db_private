@@ -1,0 +1,24 @@
+﻿@AGIASM 1
+@AGI 0.0.1
+program L0
+module L/L0
+entrypoint
+call Main
+procedure Main
+addvertex index: 1, dimensions: [1, 0, 0, 0], weight: 0.5, data: text: "V1"
+addvertex index: 2, dimensions: [1, 1, 0, 0], weight: 0.5, data: text: "V1"
+addvertex index: 3, dimensions: [1, 2, 0, 0], weight: 0.5, data: binary: base64: "sdsfdsgfg=="
+addrelation index: 1, from: vertex: index: 1, to: vertex: index: 2, weight: 0.6
+addrelation index: 2, from: vertex: index: 1, to: vertex: index: 3, weight: 0.6
+addrelation index: 3, from: vertex: index: 2, to: vertex: index: 3, weight: 0.6
+addrelation index: 4, from: relation: index: 1, to: relation: index: 3, weight: 0.6
+addshape index: 1, vertices: indices: [1, 2, 3]
+call origin, shape: shape: index: 1
+pop [0]
+call print, [0]
+addvertex index: 4, dimensions: [1, 0, 0, 0]
+addvertex index: 5, dimensions: [1, 2, 0, 0]
+addshape index: 2, vertices: indices: [4, 5]
+call intersect, shapeA: shape: index: 1, shapeB: shape: index: 2
+pop [1]
+call print, [1]

@@ -1,0 +1,18 @@
+@AGI 0.0.1;
+
+program compile_stream;
+module samples/streams/compile_stream;
+
+procedure Main {
+	var stream1 := stream<file>;
+	stream1.open("stream1");
+
+	for streamwait by delta (stream1, delta, aggregate) {
+		var semantic_file_system_delta = await compile(delta);
+		print(semantic_file_system);
+	}
+}
+
+entrypoint {
+	Main;
+}

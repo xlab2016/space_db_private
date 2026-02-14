@@ -1,0 +1,49 @@
+@AGI 0.0.1
+
+program agent1;
+
+procedure Main {
+	asm {
+		addvertex index: 1, name: "main", data: json: {
+			role: "You are agent to analyze text: %text and file: %fileBase64. Analyze and give answer."
+		};
+
+		// can make shape of vertices
+		addshape index: 1, vertices: indices: [1], name: "agent";
+	}
+}
+
+function infer(input: json: {text, fileBase64}) {
+	asm {
+		// R1 - text
+		pop R1;
+		// R2 - fileBase64
+		pop R2;
+
+		getvertex name: "main";
+		// R3 - vertex
+		pop R3;
+		call "opjson", source: json: R3, operation: "get", path: "role";
+		// R3 - vertex.role
+		pop R3;
+		call "format", source: string: R3, replaces: [string: R1, string: R2];
+		// R3 - formatted role
+		pop R3;
+
+		call "print", type: "infer", text: string: R3;
+		pop R4;
+		
+		ret string: R4;
+
+	}
+}
+
+entrypoint {
+	asm {
+		call Main;
+	}
+}
+
+// inject infer to api module
+// so you call POST: /api/execute { instruction: "print text: json: { text: \"Hello world\", fileBase64: \"\" }" }, it automatically uses infer impl
+export api: infer;

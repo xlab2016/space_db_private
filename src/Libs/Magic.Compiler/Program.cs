@@ -31,8 +31,10 @@ namespace Magic.Compiler
             var noAnim = args.Any(a => string.Equals(a, "--no-anim", StringComparison.OrdinalIgnoreCase));
             var demoDelayArg = args.FirstOrDefault(a => a.StartsWith("--demo-delay-ms=", StringComparison.OrdinalIgnoreCase));
             var demoDelayMs = ParseDemoDelayMs(demoDelayArg) ?? ParseDemoDelayMsFromEnv() ?? 0;
+            var outputFormat = GetOutputFormatFromArgs(args);
             args = args.Where(a => !string.Equals(a, "--no-anim", StringComparison.OrdinalIgnoreCase)).ToArray();
             args = args.Where(a => !a.StartsWith("--demo-delay-ms=", StringComparison.OrdinalIgnoreCase)).ToArray();
+            args = FilterOutputFormatArgs(args);
 
             if (args.Length == 0)
             {
@@ -104,10 +106,12 @@ namespace Magic.Compiler
                     return 1;
                 }
 
-                // Определяем имя выходного файла
-                var outputFile = Path.ChangeExtension(inputFile, ".agic");
+                // Формат вывода из args (--output agiasm|agic), по умолчанию agic
+                var format = outputFormat ?? "agic";
+                result.Result!.OutputFormat = format;
+                var outputFile = Path.ChangeExtension(inputFile, format == "agiasm" ? ".agiasm" : ".agic");
                 
-                PrintInfo($"Saving compiled output: {Path.GetFileName(outputFile)}");
+                PrintInfo($"Saving compiled output: {Path.GetFileName(outputFile)} ({format})");
                 
                 // Сохраняем скомпилированный результат
                 await result.Result.SaveAsync(outputFile);
@@ -152,12 +156,57 @@ namespace Magic.Compiler
         static void PrintUsage()
         {
             Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("Usage: Magic.Compiler <file.agi>");
-            Console.WriteLine("       Compiles .agi file and saves result to .agic file");
+            Console.WriteLine("Usage: Magic.Compiler [options] <file.agi>");
+            Console.WriteLine("       Compiles .agi file and saves result to .agic or .agiasm");
             Console.WriteLine("Options:");
+            Console.WriteLine("       --output agiasm|agic, -o agiasm|agic   Output format (default: agic)");
             Console.WriteLine("       --no-anim   Disable compile animation (also: MAGIC_NO_ANIM=1)");
             Console.WriteLine("       --demo-delay-ms=NNN   Artificial delay (ms) to visually check animation (also: MAGIC_DEMO_DELAY_MS)");
             Console.ResetColor();
+        }
+
+        static string? GetOutputFormatFromArgs(string[] args)
+        {
+            for (var i = 0; i < args.Length; i++)
+            {
+                var a = args[i];
+                if (string.Equals(a, "--output", StringComparison.OrdinalIgnoreCase) || string.Equals(a, "-o", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 < args.Length)
+                    {
+                        var val = args[i + 1].Trim().ToLowerInvariant();
+                        if (val is "agiasm" or "agic") return val;
+                    }
+                    return null;
+                }
+                if (a.StartsWith("--output=", StringComparison.OrdinalIgnoreCase))
+                {
+                    var val = a.Substring(9).Trim().ToLowerInvariant();
+                    if (val is "agiasm" or "agic") return val;
+                    return null;
+                }
+            }
+            return null;
+        }
+
+        static string[] FilterOutputFormatArgs(string[] args)
+        {
+            var list = new List<string>();
+            var skipNext = false;
+            for (var i = 0; i < args.Length; i++)
+            {
+                if (skipNext) { skipNext = false; continue; }
+                var a = args[i];
+                if (string.Equals(a, "--output", StringComparison.OrdinalIgnoreCase) || string.Equals(a, "-o", StringComparison.OrdinalIgnoreCase))
+                {
+                    skipNext = true;
+                    continue;
+                }
+                if (a.StartsWith("--output=", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                list.Add(a);
+            }
+            return list.ToArray();
         }
 
         static void PrintInfo(string message)

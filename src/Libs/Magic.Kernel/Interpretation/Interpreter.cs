@@ -1,4 +1,4 @@
-﻿using Magic.Kernel.Compilation;
+using Magic.Kernel.Compilation;
 using Magic.Kernel.Processor;
 using Magic.Kernel.Space;
 using Magic.Kernel.Devices;
@@ -113,6 +113,19 @@ namespace Magic.Kernel.Interpretation
                     await ExecutePushAsync(command);
                     break;
 
+                case Opcodes.Def:
+                    await ExecuteDefAsync(command);
+                    break;
+                case Opcodes.DefGen:
+                    await ExecuteDefGenAsync(command);
+                    break;
+                case Opcodes.CallObj:
+                    await ExecuteCallObjAsync(command);
+                    break;
+                case Opcodes.AwaitObj:
+                    await ExecuteAwaitObjAsync(command);
+                    break;
+
                 case Opcodes.SysCall:
                     await ExecuteSysCallAsync(command);
                     break;
@@ -191,6 +204,24 @@ namespace Magic.Kernel.Interpretation
             if (command.Operand1 is not CallInfo callInfo)
             {
                 throw new InvalidOperationException($"Call command expects CallInfo as Operand1, but got {command.Operand1?.GetType().Name ?? "null"}");
+            }
+
+            // Аргументы на стеке: сверху arity, под ним arg1, arg2, ...
+            if ((callInfo.Parameters == null || callInfo.Parameters.Count == 0) && Stack.Count >= 1)
+            {
+                var arityObj = Stack[Stack.Count - 1];
+                Stack.RemoveAt(Stack.Count - 1);
+                var n = arityObj is long l ? (int)l : (arityObj is int k ? k : 0);
+                if (n > 0 && Stack.Count >= n)
+                {
+                    callInfo.Parameters ??= new Dictionary<string, object>();
+                    for (var j = 0; j < n; j++)
+                    {
+                        var v = Stack[Stack.Count - 1];
+                        Stack.RemoveAt(Stack.Count - 1);
+                        callInfo.Parameters[$"{n - 1 - j}"] = v!;
+                    }
+                }
             }
 
             // 1) User-defined procedure/function in current executable unit
@@ -280,22 +311,69 @@ namespace Magic.Kernel.Interpretation
 
         private Task ExecutePushAsync(Command command)
         {
-            if (command.Operand1 is not MemoryAddress memoryAddress)
+            if (command.Operand1 is MemoryAddress memoryAddress)
             {
-                throw new InvalidOperationException($"Push command expects MemoryAddress as Operand1, but got {command.Operand1?.GetType().Name ?? "null"}");
+                if (memoryAddress.Index == null)
+                    throw new InvalidOperationException("Memory address index is not specified.");
+                if (!Memory.TryGetValue(memoryAddress.Index.Value, out var value))
+                    throw new InvalidOperationException($"Memory[{memoryAddress.Index.Value}] is not set. Cannot push.");
+                Stack.Add(value);
+                return Task.CompletedTask;
             }
-
-            if (memoryAddress.Index == null)
+            if (command.Operand1 is PushOperand po)
             {
-                throw new InvalidOperationException("Memory address index is not specified.");
+                object? val = po.Kind switch
+                {
+                    "Type" => po.Value,
+                    "IntLiteral" => po.Value,
+                    "StringLiteral" => po.Value,
+                    _ => null
+                };
+                Stack.Add(val);
+                return Task.CompletedTask;
             }
+            throw new InvalidOperationException($"Push command expects MemoryAddress or PushOperand, but got {command.Operand1?.GetType().Name ?? "null"}");
+        }
 
-            if (!Memory.TryGetValue(memoryAddress.Index.Value, out var value))
-            {
-                throw new InvalidOperationException($"Memory[{memoryAddress.Index.Value}] is not set. Cannot push.");
-            }
+        private Task ExecuteDefAsync(Command command)
+        {
+            if (Stack.Count < 1) throw new InvalidOperationException("Def: stack underflow.");
+            var typeObj = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            Stack.Add(typeObj);
+            return Task.CompletedTask;
+        }
 
-            Stack.Add(value);
+        private Task ExecuteDefGenAsync(Command command)
+        {
+            if (Stack.Count < 2) throw new InvalidOperationException("DefGen: stack underflow.");
+            var arity = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            var typeArg = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            if (Stack.Count < 1) throw new InvalidOperationException("DefGen: base type missing.");
+            var baseObj = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            Stack.Add(baseObj);
+            return Task.CompletedTask;
+        }
+
+        private Task ExecuteCallObjAsync(Command command)
+        {
+            if (Stack.Count < 1) throw new InvalidOperationException("CallObj: stack underflow.");
+            var arity = Stack[Stack.Count - 1];
+            var n = arity is long l ? (int)l : (arity is int k ? k : 0);
+            if (Stack.Count < 1 + n + 1) throw new InvalidOperationException("CallObj: not enough args on stack.");
+            for (var j = 0; j < n + 2; j++) Stack.RemoveAt(Stack.Count - 1);
+            Stack.Add(null!);
+            return Task.CompletedTask;
+        }
+
+        private Task ExecuteAwaitObjAsync(Command command)
+        {
+            if (Stack.Count < 1) throw new InvalidOperationException("AwaitObj: stack underflow.");
+            Stack.RemoveAt(Stack.Count - 1);
+            Stack.Add(null!);
             return Task.CompletedTask;
         }
     }

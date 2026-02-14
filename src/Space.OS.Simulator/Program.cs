@@ -1,4 +1,4 @@
-﻿using Magic.Kernel;
+using Magic.Kernel;
 using Magic.Kernel.Interpretation;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -15,6 +15,30 @@ static string? GetFirstNonOptionArg(string[] args)
     return null;
 }
 
+static string? GetOutputFormatFromArgs(string[] args)
+{
+    for (var i = 0; i < args.Length; i++)
+    {
+        var a = args[i];
+        if (string.Equals(a, "--output", StringComparison.OrdinalIgnoreCase) || string.Equals(a, "-o", StringComparison.OrdinalIgnoreCase))
+        {
+            if (i + 1 < args.Length)
+            {
+                var val = args[i + 1].Trim().ToLowerInvariant();
+                if (val is "agiasm" or "agic") return val;
+            }
+            return null;
+        }
+        if (a.StartsWith("--output=", StringComparison.OrdinalIgnoreCase))
+        {
+            var val = a.Substring(9).Trim().ToLowerInvariant();
+            if (val is "agiasm" or "agic") return val;
+            return null;
+        }
+    }
+    return null;
+}
+
 static long? GetLong(Microsoft.Extensions.Configuration.IConfiguration cfg, string key)
 {
     var raw = cfg[key];
@@ -22,14 +46,18 @@ static long? GetLong(Microsoft.Extensions.Configuration.IConfiguration cfg, stri
     return long.TryParse(raw, out var v) ? v : null;
 }
 
-var filePath = GetFirstNonOptionArg(args) ?? "file.agic";
+var filePath = GetFirstNonOptionArg(args);
 
-if (args.Any(a => a is "--help" or "-h" or "/?"))
+if (args.Length == 0 || filePath is null || args.Any(a => a is "--help" or "-h" or "/?"))
 {
-    Console.WriteLine("Usage: Space.OS.Simulator [file.agi|file.agic]");
+    Console.WriteLine("Usage: Space.OS.Simulator [options] [file.agi|file.agic|file.agiasm]");
     Console.WriteLine();
-    Console.WriteLine("  file.agi   - Source file (will be compiled and executed)");
-    Console.WriteLine("  file.agic  - Compiled file (executed directly)");
+    Console.WriteLine("  file.agi    - Source file (will be compiled and executed)");
+    Console.WriteLine("  file.agic   - Compiled file binary/JSON (executed directly)");
+    Console.WriteLine("  file.agiasm - Compiled file text assembly (executed directly)");
+    Console.WriteLine();
+    Console.WriteLine("Options (when compiling .agi):");
+    Console.WriteLine("  --output agiasm|agic, -o agiasm|agic   Output format (default: agiasm)");
     Console.WriteLine();
     Console.WriteLine("Config:");
     Console.WriteLine("  RocksDb:Path            (or env ROCKSDB_PATH)");
@@ -65,9 +93,9 @@ defaultDisk.Configuration.ShapeSequenceIndex ??= GetLong(builder.Configuration, 
 InterpretationResult result;
 var extension = Path.GetExtension(filePath).ToLowerInvariant();
 
-if (extension == ".agic")
+if (extension == ".agic" || extension == ".agiasm")
 {
-    // Execute compiled file directly
+    // Execute compiled file directly (binary/JSON or text assembly)
     result = await kernel.InterpreteCompiledFileAsync(filePath);
 }
 else if (extension == ".agi")
@@ -82,8 +110,10 @@ else if (extension == ".agi")
         return;
     }
     
-    // Save compiled file to disk for caching
-    var compiledPath = Path.ChangeExtension(filePath, ".agic");
+    // Save compiled file to disk: формат вывода из args (--output agiasm|agic), по умолчанию agiasm
+    var outputFormat = GetOutputFormatFromArgs(args) ?? "agiasm";
+    compilationResult.Result!.OutputFormat = outputFormat;
+    var compiledPath = Path.ChangeExtension(filePath, outputFormat == "agiasm" ? ".agiasm" : ".agic");
     await compilationResult.Result.SaveAsync(compiledPath);
     
     // Execute compiled structure directly from memory (not reading from disk)
@@ -91,7 +121,7 @@ else if (extension == ".agi")
 }
 else
 {
-    Console.Error.WriteLine($"Unsupported file extension: {extension}. Expected .agi or .agic");
+    Console.Error.WriteLine($"Unsupported file extension: {extension}. Expected .agi, .agic or .agiasm");
     Environment.ExitCode = 2;
     return;
 }

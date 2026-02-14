@@ -35,10 +35,19 @@ namespace Magic.Kernel.Compilation
                 var callInfo = BuildCallInfo(instruction.Parameters);
                 command.Operand1 = callInfo;
             }
-            else if (command.Opcode == Opcodes.Pop || command.Opcode == Opcodes.Push)
+            else if (command.Opcode == Opcodes.CallObj)
+            {
+                var methodName = instruction.Parameters?.OfType<FunctionNameParameterNode>().FirstOrDefault()?.FunctionName ?? string.Empty;
+                command.Operand1 = methodName;
+            }
+            else if (command.Opcode == Opcodes.Pop)
             {
                 var memoryAddress = BuildMemoryAddress(instruction.Parameters);
                 command.Operand1 = memoryAddress;
+            }
+            else if (command.Opcode == Opcodes.Push)
+            {
+                command.Operand1 = BuildPushOperand(instruction.Parameters);
             }
 
             return command;
@@ -58,6 +67,10 @@ namespace Magic.Kernel.Compilation
                 "ret" => Opcodes.Ret,
                 "move" => Opcodes.Move,
                 "getvertex" => Opcodes.GetVertex,
+                "def" => Opcodes.Def,
+                "defgen" => Opcodes.DefGen,
+                "callobj" => Opcodes.CallObj,
+                "awaitobj" => Opcodes.AwaitObj,
                 _ => Opcodes.Nop
             };
         }
@@ -275,6 +288,11 @@ namespace Magic.Kernel.Compilation
                         }
                         break;
 
+                    case StringParameterNode stringParam:
+                        var stringParamName = !string.IsNullOrWhiteSpace(stringParam.Name) ? stringParam.Name : "path";
+                        callParams[stringParamName] = stringParam.Value ?? string.Empty;
+                        break;
+
                     case ComplexValueParameterNode complexParam:
                         var complexParamName = !string.IsNullOrWhiteSpace(complexParam.ParameterName) ? complexParam.ParameterName : complexParam.Name;
                         // Поддержка inline entity literals в call, например:
@@ -408,7 +426,7 @@ namespace Magic.Kernel.Compilation
         {
             var memoryAddress = new MemoryAddress();
 
-            foreach (var param in parameters)
+            foreach (var param in parameters ?? new List<ParameterNode>())
             {
                 if (param is MemoryParameterNode memoryParam)
                 {
@@ -418,6 +436,23 @@ namespace Magic.Kernel.Compilation
             }
 
             return memoryAddress;
+        }
+
+        private object BuildPushOperand(List<ParameterNode>? parameters)
+        {
+            if (parameters == null || parameters.Count == 0)
+                return new MemoryAddress { Index = 0 };
+
+            var p = parameters[0];
+            if (p is MemoryParameterNode mem)
+                return new MemoryAddress { Index = mem.Index };
+            if (p is TypeLiteralParameterNode typeNode)
+                return new PushOperand { Kind = "Type", Value = typeNode.TypeName };
+            if (p is IndexParameterNode idx && p.Name == "int")
+                return new PushOperand { Kind = "IntLiteral", Value = idx.Value };
+            if (p is StringParameterNode str && (p.Name == "string" || !string.IsNullOrEmpty(str.Value)))
+                return new PushOperand { Kind = "StringLiteral", Value = str.Value ?? "" };
+            return new MemoryAddress { Index = 0 };
         }
     }
 }

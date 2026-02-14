@@ -68,5 +68,43 @@ namespace Magic.Kernel.Tests.Integration
             
             spaceDiskMock.Verify(x => x.AddVertex(It.IsAny<Vertex>()), Times.Exactly(2));
         }
+
+        [Fact]
+        public async Task CompileAndInterpret_WithCompileStreamProgram_ShouldRunSuccessfully()
+        {
+            var sourceCode = @"@AGI 0.0.1;
+
+program compile_stream;
+module samples/streams/compile_stream;
+
+procedure Main {
+	var stream1 := stream<file>;
+	stream1.open(""stream1"");
+	var data = await stream1;
+	var semantic_file_system = compile(data);
+
+	print(semantic_file_system);
+}
+
+entrypoint {
+	Main;
+}";
+
+            var spaceDiskMock = new Mock<ISpaceDisk>();
+            spaceDiskMock
+                .Setup(x => x.AddVertex(It.IsAny<Vertex>()))
+                .ReturnsAsync(SpaceOperationResult.Success);
+
+            var kernel = new MagicKernel();
+            kernel.Configuration.DefaultDisk = spaceDiskMock.Object;
+            kernel.Devices.Add(spaceDiskMock.Object);
+            await kernel.StartKernel();
+
+            var compilationResult = await kernel.CompileAsync(sourceCode);
+            compilationResult.Success.Should().BeTrue(compilationResult.ErrorMessage);
+
+            var interpretationResult = await kernel.InterpreteSourceCodeAsync(sourceCode);
+            interpretationResult.Success.Should().BeTrue();
+        }
     }
 }
