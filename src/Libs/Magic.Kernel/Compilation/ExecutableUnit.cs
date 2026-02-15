@@ -13,6 +13,8 @@ namespace Magic.Kernel.Compilation
         public string Version { get; set; } = "0.0.1";
         public string? Name { get; set; }
         public string? Module { get; set; }
+        /// <summary>Space name for disk key prefix: module|program. Set at interpretation start from Module+Name.</summary>
+        public string? SpaceName { get; set; }
         /// <summary>Output format when saving: "agic" (default, binary/JSON) or "agiasm" (text assembly).</summary>
         public string? OutputFormat { get; set; }
 

@@ -1922,12 +1922,23 @@ namespace Magic.Kernel.Compilation
                     continue;
                 }
 
-                // Вызов метода: stream1.open("stream1"); → push [obj], push string: "...", push 1, callobj "open"
+                // Вызов метода: stream1.open("stream1"); → stream_open(path) или callobj "open"
                 var methodMatch = System.Text.RegularExpressions.Regex.Match(line.Trim(), @"^(\w+)\.(\w+)\(([^)]*)\)\s*;?$");
                 if (methodMatch.Success && vars.TryGetValue(methodMatch.Groups[1].Value, out var objVar))
                 {
                     var method = methodMatch.Groups[2].Value;
                     var arg = methodMatch.Groups[3].Value.Trim();
+                    if (objVar.Kind == "stream" && string.Equals(method, "open", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (arg.Length >= 2 && arg.StartsWith("\"") && arg.EndsWith("\""))
+                            asmInstructions.Add($"push string: {arg}");
+                        else
+                            asmInstructions.Add($"push string: \"{arg.Replace("\"", "\\\"")}\"");
+                        asmInstructions.Add("push 1");
+                        asmInstructions.Add("call stream_open");
+                        asmInstructions.Add($"pop [{objVar.Index}]");
+                        continue;
+                    }
                     asmInstructions.Add($"push [{objVar.Index}]");
                     if (arg.Length >= 2 && arg.StartsWith("\"") && arg.EndsWith("\""))
                         asmInstructions.Add($"push string: {arg}");
@@ -2237,14 +2248,15 @@ namespace Magic.Kernel.Compilation
             var varName = match.Groups[1].Value;
             var expression = match.Groups[2].Value.Trim();
 
-            // var data = await stream1;
+            // var data = await stream1; → push [stream], push 1, call stream_await, pop [data]
             var awaitMatch = System.Text.RegularExpressions.Regex.Match(expression, @"^await\s+(\w+)\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             if (awaitMatch.Success && vars.TryGetValue(awaitMatch.Groups[1].Value, out var streamVar) && streamVar.Kind == "stream")
             {
                 var dataSlot = memorySlotCounter++;
                 vars[varName] = ("memory", dataSlot);
                 asm.Add($"push [{streamVar.Index}]");
-                asm.Add("awaitobj");
+                asm.Add("push 1");
+                asm.Add("call stream_await");
                 asm.Add($"pop [{dataSlot}]");
                 return asm;
             }

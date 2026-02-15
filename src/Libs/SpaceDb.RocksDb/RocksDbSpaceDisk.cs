@@ -1,5 +1,6 @@
 using Magic.Kernel;
 using Magic.Kernel.Devices;
+using Magic.Kernel.Devices.SSC;
 using Magic.Kernel.Space;
 using System.Text.Json;
 
@@ -18,7 +19,9 @@ namespace SpaceDb.Services
             this.rocksDbService = rocksDbService;
         }
 
-        public async Task<SpaceOperationResult> AddVertex(Vertex vertex)
+        private static string KeyPrefix(string? spaceName) => string.IsNullOrEmpty(spaceName) ? "default" : spaceName;
+
+        public async Task<SpaceOperationResult> AddVertex(Vertex vertex, string? spaceName)
         {
             var index = vertex.Index;
 
@@ -47,7 +50,8 @@ namespace SpaceDb.Services
 
             // TODO: serialize data to S3
             var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
-            var result = await rocksDbService.PutJsonAsync($"vertices:index:{index}", vertex, jsonOptions);
+            var prefix = KeyPrefix(spaceName);
+            var result = await rocksDbService.PutJsonAsync($"{prefix}:vertices:index:{index}", vertex, jsonOptions);
 
             if (!result)
             {
@@ -61,7 +65,7 @@ namespace SpaceDb.Services
                     return SpaceOperationResult.NameLengthExceeded256;
                 }
 
-                result = await rocksDbService.PutJsonAsync($"vertices:name:{vertex.Name}", new EntityLink
+                result = await rocksDbService.PutJsonAsync($"{prefix}:vertices:name:{vertex.Name}", new EntityLink
                 {
                     Index = index.Value,
                     Type = EntityType.Vertex
@@ -75,7 +79,7 @@ namespace SpaceDb.Services
             return SpaceOperationResult.Success;
         }
 
-        public async Task<SpaceOperationResult> AddRelation(Relation relation)
+        public async Task<SpaceOperationResult> AddRelation(Relation relation, string? spaceName)
         {
             var index = relation.Index;
 
@@ -93,7 +97,7 @@ namespace SpaceDb.Services
             }
 
             var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
-
+            var prefix = KeyPrefix(spaceName);
             var fromTypeKey = KernelSystem.ToString(relation.FromType.Value);
             var toTypeKey = KernelSystem.ToString(relation.ToType.Value);
 
@@ -101,7 +105,7 @@ namespace SpaceDb.Services
             var outTypeKey = $"[{toTypeKey},{fromTypeKey}]";
 
             // Save both directions
-            var innerDeviceResult = await rocksDbService.PutJsonAsync($"relations:index:{relation.Index}", relation, jsonOptions);
+            var innerDeviceResult = await rocksDbService.PutJsonAsync($"{prefix}:relations:index:{relation.Index}", relation, jsonOptions);
 
             if (!innerDeviceResult)
             {
@@ -115,7 +119,7 @@ namespace SpaceDb.Services
             };
 
             innerDeviceResult = await rocksDbService.PutJsonAsync(
-                $"relations:index:in:{inTypeKey}:[{relation.FromIndex.Value},{relation.ToIndex.Value}]", relation, jsonOptions);
+                $"{prefix}:relations:index:in:{inTypeKey}:[{relation.FromIndex.Value},{relation.ToIndex.Value}]", relation, jsonOptions);
 
             if (!innerDeviceResult)
             {
@@ -123,7 +127,7 @@ namespace SpaceDb.Services
             }
 
             innerDeviceResult = await rocksDbService.PutJsonAsync(
-                $"relations:index:out:{outTypeKey}:[{relation.ToIndex.Value},{relation.FromIndex.Value}]", relation, jsonOptions);
+                $"{prefix}:relations:index:out:{outTypeKey}:[{relation.ToIndex.Value},{relation.FromIndex.Value}]", relation, jsonOptions);
 
             if (!innerDeviceResult)
             {
@@ -137,7 +141,7 @@ namespace SpaceDb.Services
                     return SpaceOperationResult.NameLengthExceeded256;
                 }
 
-                innerDeviceResult = await rocksDbService.PutJsonAsync($"relations:name:{relation.Name}", new EntityLink
+                innerDeviceResult = await rocksDbService.PutJsonAsync($"{prefix}:relations:name:{relation.Name}", new EntityLink
                 {
                     Index = index.Value,
                     Type = EntityType.Relation
@@ -151,22 +155,23 @@ namespace SpaceDb.Services
             return SpaceOperationResult.Success;
         }
 
-        public async Task<Vertex?> GetVertex(long? index, string? name)
+        public async Task<Vertex?> GetVertex(long? index, string? name, string? spaceName)
         {
             var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+            var prefix = KeyPrefix(spaceName);
 
             if (index.HasValue)
             {
-                var vertex = await rocksDbService.GetJsonAsync<Vertex>($"vertices:index:{index.Value}", jsonOptions);
+                var vertex = await rocksDbService.GetJsonAsync<Vertex>($"{prefix}:vertices:index:{index.Value}", jsonOptions);
                 return vertex;
             }
 
             if (!string.IsNullOrEmpty(name))
             {
-                var link = await rocksDbService.GetJsonAsync<EntityLink>($"vertices:name:{name}", jsonOptions);
+                var link = await rocksDbService.GetJsonAsync<EntityLink>($"{prefix}:vertices:name:{name}", jsonOptions);
                 if (link?.Index.HasValue == true)
                 {
-                    var vertex = await rocksDbService.GetJsonAsync<Vertex>($"vertices:index:{link.Index.Value}", jsonOptions);
+                    var vertex = await rocksDbService.GetJsonAsync<Vertex>($"{prefix}:vertices:index:{link.Index.Value}", jsonOptions);
                     return vertex;
                 }
             }
@@ -174,7 +179,7 @@ namespace SpaceDb.Services
             return null;
         }
 
-        public async Task<SpaceOperationResult> AddShape(Shape shape)
+        public async Task<SpaceOperationResult> AddShape(Shape shape, string? spaceName)
         {
             var index = shape.Index;
 
@@ -202,7 +207,8 @@ namespace SpaceDb.Services
             }
 
             var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
-            var result = await rocksDbService.PutJsonAsync($"shapes:index:{index}", shape, jsonOptions);
+            var prefix = KeyPrefix(spaceName);
+            var result = await rocksDbService.PutJsonAsync($"{prefix}:shapes:index:{index}", shape, jsonOptions);
 
             if (!result)
             {
@@ -216,7 +222,7 @@ namespace SpaceDb.Services
                     return SpaceOperationResult.NameLengthExceeded256;
                 }
 
-                result = await rocksDbService.PutJsonAsync($"shapes:name:{shape.Name}", new EntityLink
+                result = await rocksDbService.PutJsonAsync($"{prefix}:shapes:name:{shape.Name}", new EntityLink
                 {
                     Index = index.Value,
                     Type = EntityType.Shape
@@ -230,22 +236,23 @@ namespace SpaceDb.Services
             return SpaceOperationResult.Success;
         }
 
-        public async Task<Relation?> GetRelation(long? index, string? name)
+        public async Task<Relation?> GetRelation(long? index, string? name, string? spaceName)
         {
             var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+            var prefix = KeyPrefix(spaceName);
 
             if (index.HasValue)
             {
-                var relation = await rocksDbService.GetJsonAsync<Relation>($"relations:index:{index.Value}", jsonOptions);
+                var relation = await rocksDbService.GetJsonAsync<Relation>($"{prefix}:relations:index:{index.Value}", jsonOptions);
                 return relation;
             }
 
             if (!string.IsNullOrEmpty(name))
             {
-                var link = await rocksDbService.GetJsonAsync<EntityLink>($"relations:name:{name}", jsonOptions);
+                var link = await rocksDbService.GetJsonAsync<EntityLink>($"{prefix}:relations:name:{name}", jsonOptions);
                 if (link?.Index.HasValue == true)
                 {
-                    var relation = await rocksDbService.GetJsonAsync<Relation>($"relations:index:{link.Index.Value}", jsonOptions);
+                    var relation = await rocksDbService.GetJsonAsync<Relation>($"{prefix}:relations:index:{link.Index.Value}", jsonOptions);
                     return relation;
                 }
             }
@@ -253,22 +260,23 @@ namespace SpaceDb.Services
             return null;
         }
 
-        public async Task<Shape?> GetShape(long? index, string? name)
+        public async Task<Shape?> GetShape(long? index, string? name, string? spaceName)
         {
             var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
+            var prefix = KeyPrefix(spaceName);
 
             if (index.HasValue)
             {
-                var shape = await rocksDbService.GetJsonAsync<Shape>($"shapes:index:{index.Value}", jsonOptions);
+                var shape = await rocksDbService.GetJsonAsync<Shape>($"{prefix}:shapes:index:{index.Value}", jsonOptions);
                 return shape;
             }
 
             if (!string.IsNullOrEmpty(name))
             {
-                var link = await rocksDbService.GetJsonAsync<EntityLink>($"shapes:name:{name}", jsonOptions);
+                var link = await rocksDbService.GetJsonAsync<EntityLink>($"{prefix}:shapes:name:{name}", jsonOptions);
                 if (link?.Index.HasValue == true)
                 {
-                    var shape = await rocksDbService.GetJsonAsync<Shape>($"shapes:index:{link.Index.Value}", jsonOptions);
+                    var shape = await rocksDbService.GetJsonAsync<Shape>($"{prefix}:shapes:index:{link.Index.Value}", jsonOptions);
                     return shape;
                 }
             }
@@ -282,6 +290,12 @@ namespace SpaceDb.Services
                 return true;
 
             return false;
+        }
+
+        public async Task<SSCResult> CompileAsync(IStreamDevice device, ISSCompiler compiler)
+        {
+            await compiler.CompileAsync(device).ConfigureAwait(false);
+            return new SSCResult();
         }
     }
 }

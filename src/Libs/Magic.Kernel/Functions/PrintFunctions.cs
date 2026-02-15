@@ -246,14 +246,15 @@ namespace Magic.Kernel.Functions
                 {
                     if (_configuration?.DefaultDisk != null)
                     {
+                        var sn = _configuration.CurrentExecutableUnit?.SpaceName;
                         switch (entityType)
                         {
                             case EntityType.Vertex:
-                                return await _configuration.DefaultDisk.GetVertex(index, null);
+                                return await _configuration.DefaultDisk.GetVertex(index, null, sn);
                             case EntityType.Shape:
-                                return await _configuration.DefaultDisk.GetShape(index, null);
+                                return await _configuration.DefaultDisk.GetShape(index, null, sn);
                             case EntityType.Relation:
-                                return await _configuration.DefaultDisk.GetRelation(index, null);
+                                return await _configuration.DefaultDisk.GetRelation(index, null, sn);
                         }
                     }
                 }

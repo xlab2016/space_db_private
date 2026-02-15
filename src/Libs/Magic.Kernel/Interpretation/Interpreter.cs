@@ -54,6 +54,11 @@ namespace Magic.Kernel.Interpretation
             _currentBlock = executableUnit.EntryPoint ?? new ExecutionBlock();
             _callStack.Clear();
 
+            // SpaceName в ExecutableUnit: module|program для префикса ключей диска
+            executableUnit.SpaceName = BuildSpaceName(executableUnit.Module, executableUnit.Name);
+            if (_configuration != null)
+                _configuration.CurrentExecutableUnit = executableUnit;
+
             while (true)
             {
                 if (_currentBlock == null)
@@ -151,8 +156,8 @@ namespace Magic.Kernel.Interpretation
                 throw new InvalidOperationException("DefaultSpaceDisk is not configured. Cannot execute AddVertex command.");
             }
 
-            var result = await _configuration.DefaultDisk.AddVertex(vertex);
-            
+            var result = await _configuration.DefaultDisk.AddVertex(vertex, _unit!.SpaceName);
+
             if (result != SpaceOperationResult.Success)
             {
                 throw new InvalidOperationException($"Failed to add vertex: {result}");
@@ -171,8 +176,8 @@ namespace Magic.Kernel.Interpretation
                 throw new InvalidOperationException("DefaultSpaceDisk is not configured. Cannot execute AddRelation command.");
             }
 
-            var result = await _configuration.DefaultDisk.AddRelation(relation);
-            
+            var result = await _configuration.DefaultDisk.AddRelation(relation, _unit!.SpaceName);
+
             if (result != SpaceOperationResult.Success)
             {
                 throw new InvalidOperationException($"Failed to add relation: {result}");
@@ -191,8 +196,8 @@ namespace Magic.Kernel.Interpretation
                 throw new InvalidOperationException("DefaultSpaceDisk is not configured. Cannot execute AddShape command.");
             }
 
-            var result = await _configuration.DefaultDisk.AddShape(shape);
-            
+            var result = await _configuration.DefaultDisk.AddShape(shape, _unit!.SpaceName);
+
             if (result != SpaceOperationResult.Success)
             {
                 throw new InvalidOperationException($"Failed to add shape: {result}");
@@ -375,6 +380,17 @@ namespace Magic.Kernel.Interpretation
             Stack.RemoveAt(Stack.Count - 1);
             Stack.Add(null!);
             return Task.CompletedTask;
+        }
+
+        /// <summary>spaceName = module_name + "|" + program_name when both set; else single part or "default".</summary>
+        private static string BuildSpaceName(string? moduleName, string? programName)
+        {
+            var m = string.IsNullOrEmpty(moduleName) ? null : moduleName.Trim();
+            var p = string.IsNullOrEmpty(programName) ? null : programName.Trim();
+            if (m != null && p != null) return m + "|" + p;
+            if (p != null) return p;
+            if (m != null) return m;
+            return "default";
         }
     }
 }

@@ -317,8 +317,8 @@ entrypoint {
             // Assert
             result.Success.Should().BeTrue(result.ErrorMessage);
             var main = result.Result!.Procedures["Main"];
-            // 3 vertices + 1 shape + 1 call origin + 1 pop + 1 call print
-            main.Body.Should().HaveCount(7);
+            // 3 AddVertex + 1 AddShape + 1 Call origin + 1 Pop + 1 Push + 1 Push + 1 Call print = 9
+            main.Body.Should().HaveCount(9);
             
             var printCall = main.Body.Last();
             printCall.Opcode.Should().Be(Opcodes.Call);

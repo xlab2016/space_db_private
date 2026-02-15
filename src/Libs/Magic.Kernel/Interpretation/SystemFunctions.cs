@@ -1,6 +1,8 @@
 using Magic.Kernel.Processor;
 using Magic.Kernel.Space;
 using Magic.Kernel.Devices;
+using Magic.Kernel.Devices.SSC;
+using Magic.Kernel.Devices.Streams;
 using Magic.Kernel.Functions;
 using Magic.Kernel;
 using System;
@@ -61,7 +63,7 @@ namespace Magic.Kernel.Interpretation
 
         private Task ExecuteStreamOpenAsync(CallInfo callInfo)
         {
-            if (!callInfo.Parameters.TryGetValue("path", out var pathParam))
+            if (!callInfo.Parameters.TryGetValue("path", out var pathParam) && !callInfo.Parameters.TryGetValue("0", out pathParam))
             {
                 throw new InvalidOperationException("stream_open requires path parameter.");
             }
@@ -73,12 +75,18 @@ namespace Magic.Kernel.Interpretation
 
         private Task ExecuteStreamAwaitAsync(CallInfo callInfo)
         {
-            if (_stack.Count == 0)
-                throw new InvalidOperationException("stream_await requires stream on stack (push stream before call).");
-            var streamObj = _stack[_stack.Count - 1];
-            _stack.RemoveAt(_stack.Count - 1);
-            if (streamObj is MemoryAddress ma && ma.Index.HasValue && _memory.TryGetValue(ma.Index.Value, out var memVal))
-                streamObj = memVal;
+            object? streamObj = null;
+            if (callInfo.Parameters?.TryGetValue("0", out var p) == true)
+                streamObj = p is MemoryAddress ma && ma.Index.HasValue && _memory.TryGetValue(ma.Index.Value, out var memVal) ? memVal : p;
+            if (streamObj == null && _stack.Count > 0)
+            {
+                streamObj = _stack[_stack.Count - 1];
+                _stack.RemoveAt(_stack.Count - 1);
+            }
+            if (streamObj == null)
+                throw new InvalidOperationException("stream_await requires stream on stack or path parameter.");
+            if (streamObj is MemoryAddress ma2 && ma2.Index.HasValue && _memory.TryGetValue(ma2.Index.Value, out var memVal2))
+                streamObj = memVal2;
             if (streamObj is not StreamHandle handle)
                 throw new InvalidOperationException("stream_await expects a stream handle.");
             var data = ReadStreamData(handle);
@@ -86,7 +94,7 @@ namespace Magic.Kernel.Interpretation
             return Task.CompletedTask;
         }
 
-        private Task ExecuteCompileAsync(CallInfo callInfo)
+        private async Task ExecuteCompileAsync(CallInfo callInfo)
         {
             object? dataObj = null;
             if (_stack.Count > 0)
@@ -100,9 +108,18 @@ namespace Magic.Kernel.Interpretation
             }
             if (dataObj == null)
                 dataObj = new Dictionary<string, object> { ["content"] = "" };
+
+            // Если на стеке был stream handle — вызываем disk.CompileAsync(device, compiler)
+            if (dataObj is StreamHandle streamHandle && _configuration?.DefaultDisk != null && _configuration.DefaultSSCCompiler != null)
+            {
+                var device = new FileStreamDevice(streamHandle.Path);
+                var result = await _configuration.DefaultDisk.CompileAsync(device, _configuration.DefaultSSCCompiler).ConfigureAwait(false);
+                _stack.Add(result);
+                return;
+            }
+
             var ssfs = CompileToSsfs(dataObj);
             _stack.Add(ssfs);
-            return Task.CompletedTask;
         }
 
         private static object ReadStreamData(StreamHandle handle)
@@ -169,7 +186,7 @@ namespace Magic.Kernel.Interpretation
                     {
                         if (_configuration?.DefaultDisk != null)
                         {
-                            shape = await _configuration.DefaultDisk.GetShape(index, null);
+                            shape = await _configuration.DefaultDisk.GetShape(index, null, _configuration.CurrentExecutableUnit?.SpaceName);
                         }
                     }
                 }
@@ -215,7 +232,7 @@ namespace Magic.Kernel.Interpretation
                 {
                     foreach (var vertexIndex in shape.VertexIndices)
                     {
-                        var vertex = await _configuration.DefaultDisk.GetVertex(vertexIndex, null);
+                        var vertex = await _configuration.DefaultDisk.GetVertex(vertexIndex, null, _configuration.CurrentExecutableUnit?.SpaceName);
                         if (vertex?.Position != null)
                         {
                             positions.Add(vertex.Position);
@@ -273,7 +290,7 @@ namespace Magic.Kernel.Interpretation
             }
 
             // Вычисляем пересечение
-            var intersection = await MathFunctions.CalculateIntersectionAsync(shapeA, shapeB, _configuration?.DefaultDisk);
+            var intersection = await MathFunctions.CalculateIntersectionAsync(shapeA, shapeB, _configuration?.DefaultDisk, _configuration?.CurrentExecutableUnit?.SpaceName);
             _stack.Add(intersection);
         }
 
@@ -289,14 +306,15 @@ namespace Magic.Kernel.Interpretation
                 {
                     if (_configuration?.DefaultDisk != null)
                     {
+                        var sn = _configuration.CurrentExecutableUnit?.SpaceName;
                         switch (entityType)
                         {
                             case EntityType.Vertex:
-                                return await _configuration.DefaultDisk.GetVertex(index, null);
+                                return await _configuration.DefaultDisk.GetVertex(index, null, sn);
                             case EntityType.Shape:
-                                return await _configuration.DefaultDisk.GetShape(index, null);
+                                return await _configuration.DefaultDisk.GetShape(index, null, sn);
                             case EntityType.Relation:
-                                return await _configuration.DefaultDisk.GetRelation(index, null);
+                                return await _configuration.DefaultDisk.GetRelation(index, null, sn);
                         }
                     }
                 }

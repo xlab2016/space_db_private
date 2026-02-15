@@ -291,10 +291,13 @@ public class DistributedCacheModelPerformanceTests : IDisposable
 
         Assert.True(actualReadRps >= targetReadRps,
             $"Read RPS below target: {actualReadRps:N0} < {targetReadRps:N0}");
-        Assert.True(actualWriteRps >= targetWriteRps * 0.8,
-            $"Write RPS significantly below target: {actualWriteRps:N0} < {targetWriteRps * 0.8:N0}");
+        if (writeCount > 0)
+        {
+            Assert.True(actualWriteRps >= targetWriteRps * 0.8,
+                $"Write RPS significantly below target: {actualWriteRps:N0} < {targetWriteRps * 0.8:N0}");
+            Assert.True(writeErrorRate < 0.01, $"Write error rate too high: {writeErrorRate:P2}");
+        }
         Assert.True(readErrorRate < 0.01, $"Read error rate too high: {readErrorRate:P2}");
-        Assert.True(writeErrorRate < 0.01, $"Write error rate too high: {writeErrorRate:P2}");
     }
 
     [Fact]

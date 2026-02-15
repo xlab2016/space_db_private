@@ -1,4 +1,4 @@
-﻿using Api.AspNetCore.Filters;
+using Api.AspNetCore.Filters;
 using Api.AspNetCore.Helpers;
 using Api.AspNetCore.Models.Configuration;
 using Api.AspNetCore.Services;
@@ -150,16 +150,22 @@ using (var serviceScope = app.Services.GetRequiredService<IServiceScopeFactory>(
 {
     var kernel = serviceScope.ServiceProvider.GetService<MagicKernel>();
     var defaultSpaceDisk = serviceScope.ServiceProvider.GetService<RocksDbSpaceDisk>();
+    var defaultSSCCompiler = serviceScope.ServiceProvider.GetService<Magic.Kernel.Devices.SSC.ISSCompiler>();
     kernel.Devices.Add(defaultSpaceDisk);
     kernel.StartKernel().Wait();
+    if (kernel != null)
+        kernel.Configuration.DefaultSSCCompiler = defaultSSCCompiler;
 
     // Apply disk config AFTER StartKernel() (it overwrites ISpaceDisk.Configuration).
+    var spaceName = builder.Configuration["SpaceDisk:SpaceName"];
     var vSeq = builder.Configuration["SpaceDisk:VertexSequenceIndex"];
     var rSeq = builder.Configuration["SpaceDisk:RelationSequenceIndex"];
     var sSeq = builder.Configuration["SpaceDisk:ShapeSequenceIndex"];
 
     if (defaultSpaceDisk != null)
     {
+        if (!string.IsNullOrWhiteSpace(spaceName))
+            defaultSpaceDisk.Configuration.SpaceName = spaceName.Trim();
         defaultSpaceDisk.Configuration.VertexSequenceIndex ??= long.TryParse(vSeq, out var v) ? v : 0;
         defaultSpaceDisk.Configuration.RelationSequenceIndex ??= long.TryParse(rSeq, out var r) ? r : 0;
         defaultSpaceDisk.Configuration.ShapeSequenceIndex ??= long.TryParse(sSeq, out var s) ? s : 0;

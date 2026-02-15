@@ -61,6 +61,7 @@ if (args.Length == 0 || filePath is null || args.Any(a => a is "--help" or "-h" 
     Console.WriteLine();
     Console.WriteLine("Config:");
     Console.WriteLine("  RocksDb:Path            (or env ROCKSDB_PATH)");
+    Console.WriteLine("  SpaceDisk:SpaceName (key prefix; else from program: module|program)");
     Console.WriteLine("  SpaceDisk:VertexSequenceIndex / RelationSequenceIndex / ShapeSequenceIndex");
     return;
 }
@@ -86,6 +87,9 @@ kernel.Devices.Add(defaultDisk);
 await kernel.StartKernel();
 
 // Apply disk configuration AFTER StartKernel() (it overwrites ISpaceDisk.Configuration).
+var spaceNameFromConfig = builder.Configuration["SpaceDisk:SpaceName"];
+if (!string.IsNullOrWhiteSpace(spaceNameFromConfig))
+    defaultDisk.Configuration.SpaceName = spaceNameFromConfig.Trim();
 defaultDisk.Configuration.VertexSequenceIndex ??= GetLong(builder.Configuration, "SpaceDisk:VertexSequenceIndex") ?? 0;
 defaultDisk.Configuration.RelationSequenceIndex ??= GetLong(builder.Configuration, "SpaceDisk:RelationSequenceIndex") ?? 0;
 defaultDisk.Configuration.ShapeSequenceIndex ??= GetLong(builder.Configuration, "SpaceDisk:ShapeSequenceIndex") ?? 0;

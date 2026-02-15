@@ -13,7 +13,7 @@ namespace Magic.Kernel.Functions
         /// Загружает вершины из shape. Если у shape есть VertexIndices, загружает вершины по индексам.
         /// Если есть Vertices, возвращает их. Если есть и то и другое, объединяет.
         /// </summary>
-        public static async Task<List<Vertex>> LoadVerticesAsync(Shape shape, ISpaceDisk? disk)
+        public static async Task<List<Vertex>> LoadVerticesAsync(Shape shape, ISpaceDisk? disk, string? spaceName = null)
         {
             var vertices = new List<Vertex>();
 
@@ -28,7 +28,7 @@ namespace Magic.Kernel.Functions
             {
                 foreach (var vertexIndex in shape.VertexIndices)
                 {
-                    var vertex = await disk.GetVertex(vertexIndex, null);
+                    var vertex = await disk.GetVertex(vertexIndex, null, spaceName);
                     if (vertex != null)
                     {
                         // Проверяем, нет ли уже такой вершины (по индексу)
@@ -105,7 +105,7 @@ namespace Magic.Kernel.Functions
             return new Position { Dimensions = intersectionDimensions };
         }
 
-        public static async Task<Shape> CalculateIntersectionAsync(Shape shapeA, Shape shapeB, ISpaceDisk? disk = null)
+        public static async Task<Shape> CalculateIntersectionAsync(Shape shapeA, Shape shapeB, ISpaceDisk? disk = null, string? spaceName = null)
         {
             // Создаем новую shape для результата пересечения
             var intersection = new Shape
@@ -126,8 +126,8 @@ namespace Magic.Kernel.Functions
             }
 
             // Загружаем вершины из обеих shapes (включая загрузку по индексам)
-            var verticesA = await LoadVerticesAsync(shapeA, disk);
-            var verticesB = await LoadVerticesAsync(shapeB, disk);
+            var verticesA = await LoadVerticesAsync(shapeA, disk, spaceName);
+            var verticesB = await LoadVerticesAsync(shapeB, disk, spaceName);
 
             // Находим общие вершины
             if (verticesA.Count > 0 && verticesB.Count > 0)

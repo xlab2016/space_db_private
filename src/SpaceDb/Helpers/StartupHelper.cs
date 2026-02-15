@@ -1,6 +1,7 @@
-﻿using AI.Client;
+using AI.Client;
 using AI.Client.Configuration;
 using Magic.Kernel;
+using Magic.Kernel.Devices.SSC;
 using Microsoft.Extensions.Options;
 using SpaceDb.Mappings;
 using SpaceDb.Services;
@@ -51,6 +52,8 @@ namespace SpaceDb.Helpers
             services.AddRocksDb(configuration);
 
             services.AddSingleton<MagicKernel>();
+
+            services.AddSingleton<ISSCompiler>(sp => new SpaceDbSSCCompiler(sp.GetRequiredService<RocksDbSpaceDisk>()));
 
             // Qdrant Services
             services.Configure<QdrantConfig>(configuration.GetSection("Providers:Qdrant"));

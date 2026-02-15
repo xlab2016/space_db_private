@@ -18,7 +18,7 @@ namespace Magic.Kernel.Tests.Integration
             
             var spaceDiskMock = new Mock<ISpaceDisk>();
             spaceDiskMock
-                .Setup(x => x.AddVertex(It.IsAny<Vertex>()))
+                .Setup(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()))
                 .ReturnsAsync(SpaceOperationResult.Success);
 
             var kernel = new MagicKernel();
@@ -39,7 +39,7 @@ namespace Magic.Kernel.Tests.Integration
                 v.Position!.Dimensions.SequenceEqual(new[] { 1.0f, 0.0f, 0.0f, 0.0f }) &&
                 v.Weight == 0.5f &&
                 v.Data!.Data == "V1"
-            )), Times.Once);
+            ), It.IsAny<string?>()), Times.Once);
         }
 
         [Fact]
@@ -50,7 +50,7 @@ namespace Magic.Kernel.Tests.Integration
 
             var spaceDiskMock = new Mock<ISpaceDisk>();
             spaceDiskMock
-                .Setup(x => x.AddVertex(It.IsAny<Vertex>()))
+                .Setup(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()))
                 .ReturnsAsync(SpaceOperationResult.Success);
 
             var kernel = new MagicKernel();
@@ -66,7 +66,7 @@ namespace Magic.Kernel.Tests.Integration
             compilationResult.Success.Should().BeTrue();
             interpretationResult.Success.Should().BeTrue();
             
-            spaceDiskMock.Verify(x => x.AddVertex(It.IsAny<Vertex>()), Times.Exactly(2));
+            spaceDiskMock.Verify(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()), Times.Exactly(2));
         }
 
         [Fact]
@@ -92,7 +92,7 @@ entrypoint {
 
             var spaceDiskMock = new Mock<ISpaceDisk>();
             spaceDiskMock
-                .Setup(x => x.AddVertex(It.IsAny<Vertex>()))
+                .Setup(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()))
                 .ReturnsAsync(SpaceOperationResult.Success);
 
             var kernel = new MagicKernel();

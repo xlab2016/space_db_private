@@ -55,7 +55,7 @@ namespace Magic.Kernel.Tests.Interpretation
             };
 
             _spaceDiskMock
-                .Setup(x => x.AddVertex(It.IsAny<Vertex>()))
+                .Setup(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()))
                 .ReturnsAsync(SpaceOperationResult.Success);
 
             // Act
@@ -64,7 +64,7 @@ namespace Magic.Kernel.Tests.Interpretation
             // Assert
             result.Should().NotBeNull();
             result.Success.Should().BeTrue();
-            _spaceDiskMock.Verify(x => x.AddVertex(It.Is<Vertex>(v => v.Index == 1)), Times.Once);
+            _spaceDiskMock.Verify(x => x.AddVertex(It.Is<Vertex>(v => v.Index == 1), It.IsAny<string?>()), Times.Once);
         }
 
         [Fact]
@@ -96,9 +96,9 @@ namespace Magic.Kernel.Tests.Interpretation
 
             Vertex? capturedVertex = null;
             _spaceDiskMock
-                .Setup(x => x.AddVertex(It.IsAny<Vertex>()))
+                .Setup(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()))
                 .ReturnsAsync(SpaceOperationResult.Success)
-                .Callback<Vertex>(v => capturedVertex = v);
+                .Callback<Vertex, string?>((v, _) => capturedVertex = v);
 
             // Act
             await _interpreter.InterpreteAsync(executableUnit);
@@ -151,7 +151,7 @@ namespace Magic.Kernel.Tests.Interpretation
             };
 
             _spaceDiskMock
-                .Setup(x => x.AddVertex(It.IsAny<Vertex>()))
+                .Setup(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()))
                 .ReturnsAsync(SpaceOperationResult.Failed);
 
             // Act & Assert
@@ -196,7 +196,7 @@ namespace Magic.Kernel.Tests.Interpretation
             };
 
             _spaceDiskMock
-                .Setup(x => x.AddVertex(It.IsAny<Vertex>()))
+                .Setup(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()))
                 .ReturnsAsync(SpaceOperationResult.Success);
 
             // Act
@@ -204,7 +204,7 @@ namespace Magic.Kernel.Tests.Interpretation
 
             // Assert
             result.Success.Should().BeTrue();
-            _spaceDiskMock.Verify(x => x.AddVertex(It.IsAny<Vertex>()), Times.Exactly(2));
+            _spaceDiskMock.Verify(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()), Times.Exactly(2));
         }
 
         [Fact]
@@ -224,7 +224,7 @@ namespace Magic.Kernel.Tests.Interpretation
 
             // Assert
             result.Success.Should().BeTrue();
-            _spaceDiskMock.Verify(x => x.AddVertex(It.IsAny<Vertex>()), Times.Never);
+            _spaceDiskMock.Verify(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()), Times.Never);
         }
 
         [Fact]
@@ -260,7 +260,7 @@ namespace Magic.Kernel.Tests.Interpretation
             };
 
             _spaceDiskMock
-                .Setup(x => x.AddVertex(It.IsAny<Vertex>()))
+                .Setup(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()))
                 .ReturnsAsync(SpaceOperationResult.Success);
 
             // Act
@@ -268,8 +268,8 @@ namespace Magic.Kernel.Tests.Interpretation
 
             // Assert
             result.Success.Should().BeTrue();
-            _spaceDiskMock.Verify(x => x.AddVertex(It.Is<Vertex>(v => v.Index == 1)), Times.Once);
-            _spaceDiskMock.Verify(x => x.AddVertex(It.Is<Vertex>(v => v.Index == 2)), Times.Once);
+            _spaceDiskMock.Verify(x => x.AddVertex(It.Is<Vertex>(v => v.Index == 1), It.IsAny<string?>()), Times.Once);
+            _spaceDiskMock.Verify(x => x.AddVertex(It.Is<Vertex>(v => v.Index == 2), It.IsAny<string?>()), Times.Once);
         }
     }
 }

@@ -1,4 +1,5 @@
-﻿using Magic.Kernel.Space;
+using Magic.Kernel.Space;
+using Magic.Kernel.Devices.SSC;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -11,11 +12,12 @@ namespace Magic.Kernel.Devices
     {
         public SpaceDiskConfiguration Configuration { get; set; }
 
-        public Task<SpaceOperationResult> AddVertex(Vertex vertex);
-        public Task<SpaceOperationResult> AddRelation(Relation relation);
-        public Task<SpaceOperationResult> AddShape(Shape shape);
-        public Task<Vertex?> GetVertex(long? index, string? name);
-        public Task<Relation?> GetRelation(long? index, string? name);
-        public Task<Shape?> GetShape(long? index, string? name);
+        public Task<SpaceOperationResult> AddVertex(Vertex vertex, string? spaceName);
+        public Task<SpaceOperationResult> AddRelation(Relation relation, string? spaceName);
+        public Task<SpaceOperationResult> AddShape(Shape shape, string? spaceName);
+        public Task<Vertex?> GetVertex(long? index, string? name, string? spaceName);
+        public Task<Relation?> GetRelation(long? index, string? name, string? spaceName);
+        public Task<Shape?> GetShape(long? index, string? name, string? spaceName);
+        public Task<SSCResult> CompileAsync(IStreamDevice device, ISSCompiler compiler);
     }
 }
