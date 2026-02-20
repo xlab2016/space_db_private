@@ -35,76 +35,54 @@ namespace Magic.Kernel.Compilation
                 var semanticAnalyzer = new SemanticAnalyzer();
                 var executableUnit = new ExecutableUnit();
 
-                // Проверяем, является ли это структурой программы или просто набором инструкций
-                var hasProgramStructure = sourceCode.Contains("@AGI") || 
-                                         sourceCode.Contains("program") || 
-                                         sourceCode.Contains("procedure") || 
-                                         sourceCode.Contains("function") || 
-                                         sourceCode.Contains("entrypoint");
+                // Парсим структуру программы
+                var programStructure = parser.ParseProgram(sourceCode);
 
-                if (hasProgramStructure)
+                // Устанавливаем метаданные
+                executableUnit.Version = programStructure.Version;
+                executableUnit.Name = programStructure.ProgramName;
+                executableUnit.Module = programStructure.Module;
+
+                // Компилируем entrypoint
+                if (programStructure.EntryPoint != null && programStructure.EntryPoint.Count > 0)
                 {
-                    // Парсим структуру программы
-                    var programStructure = parser.ParseProgram(sourceCode);
-                    
-                    // Устанавливаем метаданные
-                    executableUnit.Version = programStructure.Version;
-                    executableUnit.Name = programStructure.ProgramName;
-                    executableUnit.Module = programStructure.Module;
-
-                    // Компилируем entrypoint
-                    if (programStructure.EntryPoint != null)
+                    foreach (var instruction in programStructure.EntryPoint)
                     {
-                        foreach (var instruction in programStructure.EntryPoint)
-                        {
-                            var ast = parser.Parse(instruction);
-                            var command = semanticAnalyzer.Analyze(ast);
-                            executableUnit.EntryPoint.Add(command);
-                        }
-                    }
-
-                    // Компилируем процедуры
-                    foreach (var proc in programStructure.Procedures)
-                    {
-                        var procedure = new Processor.Procedure { Name = proc.Key };
-                        foreach (var instruction in proc.Value)
-                        {
-                            var ast = parser.Parse(instruction);
-                            var command = semanticAnalyzer.Analyze(ast);
-                            procedure.Body.Add(command);
-                        }
-                        executableUnit.Procedures[proc.Key] = procedure;
-                    }
-
-                    // Компилируем функции
-                    foreach (var func in programStructure.Functions)
-                    {
-                        var function = new Processor.Function { Name = func.Key };
-                        foreach (var instruction in func.Value)
-                        {
-                            var ast = parser.Parse(instruction);
-                            var command = semanticAnalyzer.Analyze(ast);
-                            function.Body.Add(command);
-                        }
-                        executableUnit.Functions[func.Key] = function;
+                        var ast = parser.Parse(instruction);
+                        var command = semanticAnalyzer.Analyze(ast);
+                        executableUnit.EntryPoint.Add(command);
                     }
                 }
                 else
                 {
-                    // Обратная совместимость: парсим как набор инструкций
-                    var commands = new ExecutionBlock();
-                    var lines = sourceCode.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-                    foreach (var line in lines)
-                    {
-                        var trimmedLine = line.Trim();
-                        if (string.IsNullOrWhiteSpace(trimmedLine))
-                            continue;
+                    // Fallback: если EntryPoint пуст, парсим как набор инструкций (обратная совместимость)
+                    executableUnit.EntryPoint = CompileAsInstructionSet(sourceCode, parser, semanticAnalyzer);
+                }
 
-                        var ast = parser.Parse(trimmedLine);
+                // Компилируем процедуры
+                foreach (var proc in programStructure.Procedures)
+                {
+                    var procedure = new Processor.Procedure { Name = proc.Key };
+                    foreach (var instruction in proc.Value)
+                    {
+                        var ast = parser.Parse(instruction);
                         var command = semanticAnalyzer.Analyze(ast);
-                        commands.Add(command);
+                        procedure.Body.Add(command);
                     }
-                    executableUnit.EntryPoint = commands;
+                    executableUnit.Procedures[proc.Key] = procedure;
+                }
+
+                // Компилируем функции
+                foreach (var func in programStructure.Functions)
+                {
+                    var function = new Processor.Function { Name = func.Key };
+                    foreach (var instruction in func.Value)
+                    {
+                        var ast = parser.Parse(instruction);
+                        var command = semanticAnalyzer.Analyze(ast);
+                        function.Body.Add(command);
+                    }
+                    executableUnit.Functions[func.Key] = function;
                 }
 
                 return new CompilationResult
@@ -121,6 +99,23 @@ namespace Magic.Kernel.Compilation
                     ErrorMessage = ex.Message
                 };
             }
+        }
+
+        private ExecutionBlock CompileAsInstructionSet(string sourceCode, Parser parser, SemanticAnalyzer semanticAnalyzer)
+        {
+            var commands = new ExecutionBlock();
+            var lines = sourceCode.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var line in lines)
+            {
+                var trimmedLine = line.Trim();
+                if (string.IsNullOrWhiteSpace(trimmedLine))
+                    continue;
+
+                var ast = parser.Parse(trimmedLine);
+                var command = semanticAnalyzer.Analyze(ast);
+                commands.Add(command);
+            }
+            return commands;
         }
     }
 }

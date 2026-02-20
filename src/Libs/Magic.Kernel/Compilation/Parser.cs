@@ -1288,6 +1288,7 @@ namespace Magic.Kernel.Compilation
             var asmBuffer = new System.Text.StringBuilder();
             var blockBraceDepth = 0; // for procedure/function/entrypoint
             var highLevelLines = new List<string>();
+            var unprocessedLines = new List<string>(); // для обратной совместимости
 
             while (i < lines.Length)
             {
@@ -1306,6 +1307,7 @@ namespace Magic.Kernel.Compilation
                 {
                     var versionPart = line.Substring(4).Trim();
                     structure.Version = versionPart;
+                    structure.IsProgramStructure = true;
                     i++;
                     continue;
                 }
@@ -1315,6 +1317,7 @@ namespace Magic.Kernel.Compilation
                 {
                     var programPart = line.Substring(7).Trim().TrimEnd(';');
                     structure.ProgramName = programPart;
+                    structure.IsProgramStructure = true;
                     i++;
                     continue;
                 }
@@ -1324,6 +1327,7 @@ namespace Magic.Kernel.Compilation
                 {
                     var modulePart = line.Substring(6).Trim().TrimEnd(';');
                     structure.Module = modulePart;
+                    structure.IsProgramStructure = true;
                     i++;
                     continue;
                 }
@@ -1338,6 +1342,7 @@ namespace Magic.Kernel.Compilation
                     
                     currentProcedure = procPart.Substring(0, nameEnd).Trim();
                     structure.Procedures[currentProcedure] = new List<string>();
+                    structure.IsProgramStructure = true;
                     inProcedure = true;
                     inAsmBlock = false;
                     asmBraceDepth = 0;
@@ -1359,6 +1364,7 @@ namespace Magic.Kernel.Compilation
                     
                     currentFunction = funcPart.Substring(0, nameEnd).Trim();
                     structure.Functions[currentFunction] = new List<string>();
+                    structure.IsProgramStructure = true;
                     inFunction = true;
                     inAsmBlock = false;
                     asmBraceDepth = 0;
@@ -1373,6 +1379,7 @@ namespace Magic.Kernel.Compilation
                 if (line.StartsWith("entrypoint"))
                 {
                     structure.EntryPoint = new List<string>();
+                    structure.IsProgramStructure = true;
                     inEntryPoint = true;
                     inAsmBlock = false;
                     asmBraceDepth = 0;
@@ -1565,12 +1572,54 @@ namespace Magic.Kernel.Compilation
                     {
                         structure.EntryPoint ??= new List<string>();
                         structure.EntryPoint.Add($"call {stmt}");
+                        structure.IsProgramStructure = true;
                         i++;
                         continue;
+                    }
+                    
+                    // Если нет структуры программы и строка не была обработана - добавляем в необработанные
+                    if (!structure.IsProgramStructure)
+                    {
+                        unprocessedLines.Add(line);
                     }
                 }
 
                 i++;
+            }
+
+            // Если структуры программы нет, но есть необработанные строки - добавляем их в EntryPoint
+            if (!structure.IsProgramStructure)
+            {
+                // Если не было необработанных строк, собираем все строки которые не пустые и не комментарии
+                if (unprocessedLines.Count == 0)
+                {
+                    foreach (var rawLine in lines)
+                    {
+                        var trimmedLine = rawLine.Trim();
+                        if (!string.IsNullOrWhiteSpace(trimmedLine) && !trimmedLine.StartsWith("//"))
+                        {
+                            // Проверяем что это не ключевое слово (только начало строки)
+                            var firstWord = trimmedLine.Split(new[] { ' ', '\t', '{', '}' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+                            if (firstWord != null && 
+                                firstWord != "@AGI" && 
+                                firstWord != "program" && 
+                                firstWord != "module" && 
+                                firstWord != "procedure" && 
+                                firstWord != "function" && 
+                                firstWord != "entrypoint" &&
+                                trimmedLine != "{" && 
+                                trimmedLine != "}")
+                            {
+                                unprocessedLines.Add(trimmedLine);
+                            }
+                        }
+                    }
+                }
+                
+                if (unprocessedLines.Count > 0)
+                {
+                    structure.EntryPoint = unprocessedLines;
+                }
             }
 
             return structure;
