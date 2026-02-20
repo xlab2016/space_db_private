@@ -1,0 +1,64 @@
+@AGI 0.0.1;
+
+program telegram_to_db;
+system samples;
+module telegram;
+
+Messages<> : table {
+	Id: bigint;
+	Time: datetime;
+	User: nvarchar(250);
+	Message: json
+}
+
+Db> : database {
+	Messages<>;
+}
+
+procedure Main {
+	var stream1 := stream<messenger, telegram>;
+	var vault1 := vault;
+	var token := vault1.read("token");
+	stream1.open({
+		token: token
+	});
+	var connectionString := vault1.read("connectionString");
+	var db1 := database<postgres, Db>>;
+	db1.open(connectionString);
+
+	for streamwait by delta (stream1, delta, aggregate) {
+		var data := delta.data;
+		// !: accessor to anonymous type
+		var message := data!.message;
+		var user := data!.user;
+		var time = :time;
+
+		db1.Messages<> += {
+			Time: time,
+			User: user,
+			Message: message
+		};
+		// save data
+		await db1;
+
+		// untyped version:
+		//db1.write({
+		//	operation: "insert",
+		//	columns: "Time, User, Message",
+		//	data: {
+		//		Time: time,
+		//		User: user,
+		//		Message: message
+		//	}
+		//});
+		
+		// pipeline message to external code
+		streamwait print(message);
+	}
+}
+
+entrypoint {
+	asm {
+		call Main;
+	}
+}

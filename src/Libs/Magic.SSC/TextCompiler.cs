@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using Magic.Kernel.Devices;
+using Magic.Kernel.Devices.SSC;
 using Magic.Kernel.Space;
 
 namespace Magic.SSC
@@ -9,7 +11,7 @@ namespace Magic.SSC
     /// Compiles plain text into hierarchical structure: paragraphs and sentences as vertices.
     /// Vertices are ordered: paragraphs first, then sentences; RelationOrdinals link paragraph → sentence by list index.
     /// </summary>
-    public class TextCompiler
+    public class TextCompiler : ISSCompiler
     {
         private static readonly Regex SentenceSplitRegex = new Regex(
             @"(?<=[.!?])\s+(?=[^\s])|(?<=[.!?])$",
@@ -55,6 +57,68 @@ namespace Magic.SSC
                 Vertices = vertices,
                 RelationOrdinals = relationOrdinals
             };
+        }
+
+        /// <inheritdoc />
+        public async Task<SSCResult> CompileAsync(IStreamDevice device, ISpaceDisk disk)
+        {
+            if (device == null || disk == null)
+                return new SSCResult { IsSuccess = false, ErrorMessage = "Device or disk is null." };
+
+            var (result, chunk) = await device.ReadChunkAsync().ConfigureAwait(false);
+            if (!result.IsSuccess || chunk?.Data == null || chunk.Data.Length == 0)
+                return new SSCResult { IsSuccess = false, ErrorMessage = result.ErrorMessage ?? "No chunk data." };
+
+            if (chunk.DataFormat != DataFormat.Text)
+                throw new NotSupportedException($"Only DataFormat.Text is supported. Got: {chunk.DataFormat}.");
+
+            var content = Encoding.UTF8.GetString(chunk.Data);
+            var compiled = Compile(content);
+            var sscResult = new SSCResult { IsSuccess = true };
+            string? spaceName = null;
+
+            try
+            {
+                var indices = new List<long>();
+                foreach (var vertex in compiled.Vertices)
+                {
+                    var addResult = await disk.AddVertex(vertex, spaceName).ConfigureAwait(false);
+                    if (addResult != SpaceOperationResult.Success)
+                    {
+                        sscResult.IsSuccess = false;
+                        sscResult.ErrorMessage = $"AddVertex: {addResult}";
+                        return sscResult;
+                    }
+                    indices.Add(vertex.Index!.Value);
+                    sscResult.VertexIndices.Add(vertex.Index!.Value);
+                }
+
+                foreach (var (fromOrd, toOrd) in compiled.RelationOrdinals)
+                {
+                    var relation = new Relation
+                    {
+                        FromIndex = indices[fromOrd],
+                        ToIndex = indices[toOrd],
+                        FromType = EntityType.Vertex,
+                        ToType = EntityType.Vertex
+                    };
+                    var addRelResult = await disk.AddRelation(relation, spaceName).ConfigureAwait(false);
+                    if (addRelResult != SpaceOperationResult.Success)
+                    {
+                        sscResult.IsSuccess = false;
+                        sscResult.ErrorMessage = $"AddRelation({relation.FromIndex}->{relation.ToIndex}): {addRelResult}";
+                        return sscResult;
+                    }
+                    sscResult.RelationIndices.Add(relation.Index!.Value);
+                }
+            }
+            catch (Exception ex)
+            {
+                sscResult.IsSuccess = false;
+                sscResult.ErrorMessage = ex.Message;
+            }
+
+            return sscResult;
         }
 
         /// <summary>Split text into paragraphs (double newline).</summary>

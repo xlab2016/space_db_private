@@ -106,5 +106,37 @@ entrypoint {
             var interpretationResult = await kernel.InterpreteSourceCodeAsync(sourceCode);
             interpretationResult.Success.Should().BeTrue();
         }
+
+        [Fact]
+        public async Task Compile_WithVaultAndMessengerStreamProgram_ShouldSucceed()
+        {
+            var sourceCode = @"@AGI 0.0.1;
+
+program telegram_to_db_min;
+module samples/telegram_to_db_min;
+
+procedure Main {
+    var vault1 := vault;
+    var token := vault1.read(""token"");
+    var stream1 := stream<messenger, telegram>;
+}
+
+entrypoint {
+    Main;
+}";
+
+            var spaceDiskMock = new Mock<ISpaceDisk>();
+            spaceDiskMock
+                .Setup(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()))
+                .ReturnsAsync(SpaceOperationResult.Success);
+
+            var kernel = new MagicKernel();
+            kernel.Configuration.DefaultDisk = spaceDiskMock.Object;
+            kernel.Devices.Add(spaceDiskMock.Object);
+            await kernel.StartKernel();
+
+            var compilationResult = await kernel.CompileAsync(sourceCode);
+            compilationResult.Success.Should().BeTrue(compilationResult.ErrorMessage);
+        }
     }
 }

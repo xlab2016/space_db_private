@@ -1856,7 +1856,10 @@ namespace Magic.Kernel.Compilation
                 if (line.StartsWith("var "))
                 {
                     var rest = line.Substring(4).Trim().TrimEnd(';');
-                    var singleStreamDecl = System.Text.RegularExpressions.Regex.IsMatch(rest, @"^(\w+)\s*:=\s*stream\s*<\s*\w+\s*>\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    var singleStreamDecl = System.Text.RegularExpressions.Regex.IsMatch(
+                        rest,
+                        @"^(\w+)\s*:=\s*stream\s*<\s*\w+(?:\s*,\s*\w+)*\s*>\s*$",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                     if (singleStreamDecl)
                     {
                         inVarBlock = true;
@@ -1875,7 +1878,7 @@ namespace Magic.Kernel.Compilation
                         System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                     var isStreamDecl = System.Text.RegularExpressions.Regex.IsMatch(
                         declLine.Trim(),
-                        @"^(\w+)\s*:=\s*stream\s*<\s*\w+\s*>\s*$",
+                        @"^(\w+)\s*:=\s*stream\s*<\s*\w+(?:\s*,\s*\w+)*\s*>\s*$",
                         System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
                     if (isEntityDecl || isStreamDecl)
@@ -1997,8 +2000,11 @@ namespace Magic.Kernel.Compilation
                 var trimmed = line.Trim().TrimEnd(';');
                 if (string.IsNullOrWhiteSpace(trimmed)) continue;
 
-                // Парсим stream: name := stream<file>;
-                var streamMatch = System.Text.RegularExpressions.Regex.Match(trimmed, @"^(\w+)\s*:=\s*stream\s*<\s*(\w+)\s*>\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                // Парсим stream: name := stream<file>; / stream<messenger, telegram>;
+                var streamMatch = System.Text.RegularExpressions.Regex.Match(
+                    trimmed,
+                    @"^(\w+)\s*:=\s*stream\s*<\s*(\w+)(?:\s*,\s*\w+)*\s*>\s*$",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                 if (streamMatch.Success)
                 {
                     var streamName = streamMatch.Groups[1].Value;
@@ -2247,6 +2253,36 @@ namespace Magic.Kernel.Compilation
 
             var varName = match.Groups[1].Value;
             var expression = match.Groups[2].Value.Trim();
+
+            // var vault1 = vault; → декларация "хранилища" без байткода (используется только как маркер в vars)
+            if (string.Equals(expression, "vault", StringComparison.OrdinalIgnoreCase))
+            {
+                // Индекс не используется, но для единообразия создадим слот
+                var vaultSlot = memorySlotCounter++;
+                vars[varName] = ("vault", vaultSlot);
+                return asm;
+            }
+
+            // var token = vault1.read("token"); → push "token", push 1, call vault_read, pop [tokenSlot]
+            var vaultReadMatch = System.Text.RegularExpressions.Regex.Match(
+                expression,
+                @"^(\w+)\.read\(\s*""([^""]+)""\s*\)\s*$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (vaultReadMatch.Success)
+            {
+                var vaultVarName = vaultReadMatch.Groups[1].Value;
+                if (vars.TryGetValue(vaultVarName, out var vaultVar) && vaultVar.Kind == "vault")
+                {
+                    var tokenKey = vaultReadMatch.Groups[2].Value.Replace("\"", "\\\"");
+                    var resultSlot = memorySlotCounter++;
+                    vars[varName] = ("memory", resultSlot);
+                    asm.Add($"push string: \"{tokenKey}\"");
+                    asm.Add("push 1");
+                    asm.Add("call vault_read");
+                    asm.Add($"pop [{resultSlot}]");
+                    return asm;
+                }
+            }
 
             // var data = await stream1; → push [stream], push 1, call stream_await, pop [data]
             var awaitMatch = System.Text.RegularExpressions.Regex.Match(expression, @"^await\s+(\w+)\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);

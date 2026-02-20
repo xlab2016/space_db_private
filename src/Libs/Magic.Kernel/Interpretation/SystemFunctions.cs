@@ -13,19 +13,39 @@ using System.Threading.Tasks;
 
 namespace Magic.Kernel.Interpretation
 {
+    public interface IVaultReader
+    {
+        string? Read(string key);
+    }
+
+    public sealed class EnvironmentVaultReader : IVaultReader
+    {
+        public string? Read(string key)
+        {
+            return Environment.GetEnvironmentVariable(key);
+        }
+    }
+
     public class SystemFunctions
     {
         private readonly KernelConfiguration? _configuration;
         private readonly List<object> _stack;
         private readonly Dictionary<long, object> _memory;
         private readonly PrintFunctions _printFunctions;
+        private readonly IVaultReader _vaultReader;
 
         public SystemFunctions(KernelConfiguration? configuration, List<object> stack, Dictionary<long, object> memory)
+            : this(configuration, stack, memory, new EnvironmentVaultReader())
+        {
+        }
+
+        public SystemFunctions(KernelConfiguration? configuration, List<object> stack, Dictionary<long, object> memory, IVaultReader vaultReader)
         {
             _configuration = configuration;
             _stack = stack;
             _memory = memory;
             _printFunctions = new PrintFunctions(configuration, stack, memory);
+            _vaultReader = vaultReader ?? throw new ArgumentNullException(nameof(vaultReader));
         }
 
         public async Task<bool> ExecuteAsync(CallInfo callInfo)
@@ -54,6 +74,10 @@ namespace Magic.Kernel.Interpretation
 
                 case "compile":
                     await ExecuteCompileAsync(callInfo);
+                    return true;
+
+                case "vault_read":
+                    await ExecuteVaultReadAsync(callInfo);
                     return true;
 
                 default:
@@ -164,6 +188,22 @@ namespace Magic.Kernel.Interpretation
         private sealed class StreamHandle
         {
             public string Path { get; set; } = "";
+        }
+
+        private Task ExecuteVaultReadAsync(CallInfo callInfo)
+        {
+            if (!callInfo.Parameters.TryGetValue("0", out var keyParam))
+            {
+                throw new InvalidOperationException("vault_read requires key parameter at position 0.");
+            }
+
+            var key = keyParam?.ToString() ?? string.Empty;
+
+            // Чтение секрета делегируем IVaultReader, по умолчанию EnvironmentVaultReader.
+            var value = _vaultReader.Read(key) ?? string.Empty;
+            _stack.Add(value);
+
+            return Task.CompletedTask;
         }
 
         private async Task ExecuteOriginAsync(CallInfo callInfo)

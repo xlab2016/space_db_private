@@ -1,0 +1,28 @@
+@AGI 0.0.1;
+
+program use_telegram_to_db;
+system samples;
+module telegram;
+use telegram_to_db;
+
+procedure Main {
+	var stream1 := stream<program<messenger, telegram_to_db>>;
+
+	for streamwait by delta (stream1, delta, aggregate) {
+		var data := delta.data;
+		// !: accessor to anonymous type
+		var message := data!.message;
+		var user := data!.user;
+		// print without stream output
+		print($"{user},{message}");
+
+		// print directly to stream output
+		streamwait print(message);
+	}
+}
+
+entrypoint {
+	asm {
+		call Main;
+	}
+}
