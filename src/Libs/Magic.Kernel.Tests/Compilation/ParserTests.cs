@@ -432,5 +432,27 @@ namespace Magic.Kernel.Tests.Compilation
             var secondDimensions = secondVertex["dimensions"] as List<object>;
             secondDimensions.Should().BeEquivalentTo(new object[] { 1L, 2L, 0L, 0L });
         }
+
+        [Fact]
+        public void Parse_WithScanner_FirstTokenIsOpcode_WatchPreviousReturnsLastConsumed()
+        {
+            var source = "addvertex index: 1";
+            var parser = new Parser();
+            parser.Parse(source);
+            var prev = parser.Watch(-1);
+            prev.Should().NotBeNull();
+            prev!.Value.Kind.Should().Be(Magic.Kernel.Compilation.TokenKind.Identifier);
+            prev.Value.Value.Should().Be("addvertex");
+        }
+
+        [Fact]
+        public void Parse_WhenFirstTokenIsNotIdentifier_ThrowsCompilationException()
+        {
+            var source = "123 x";
+            var parser = new Parser();
+            var act = () => parser.Parse(source);
+            act.Should().Throw<CompilationException>()
+                .WithMessage("*Expected*Identifier*");
+        }
     }
 }

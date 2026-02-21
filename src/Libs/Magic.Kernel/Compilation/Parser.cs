@@ -8,21 +8,83 @@ namespace Magic.Kernel.Compilation
 {
     public class Parser
     {
+        private Scanner? _scanner;
+
+        /// <summary>Текущий токен (тот, который будет потреблён следующим Scan). Watch(0).</summary>
+        public Token CurrentToken() => _scanner?.Watch(0) ?? default;
+
+        /// <summary>Посмотреть токен относительно текущей позиции. Watch(-1) — предыдущий.</summary>
+        public Token? Watch(int offset) => _scanner?.Watch(offset);
+
+        /// <summary>Ожидать токен вида <paramref name="kind"/>; иначе ошибка компиляции.</summary>
+        private Token Expect(TokenKind kind)
+        {
+            var t = _scanner!.Scan();
+            if (t.Kind != kind)
+                throw new CompilationException($"Expected {kind}, got {t.Kind} at position {t.Start}.", t.Start);
+            return t;
+        }
+
+        /// <summary>Ожидать идентификатор с одним из значений; иначе ошибка компиляции.</summary>
+        private Token ExpectOneOf(params string[] values)
+        {
+            var t = _scanner!.Scan();
+            if (t.Kind != TokenKind.Identifier)
+                throw new CompilationException($"Expected one of [{string.Join(", ", values)}], got {t.Kind} at position {t.Start}.", t.Start);
+            var lower = t.Value.ToLowerInvariant();
+            foreach (var v in values)
+                if (v.Equals(lower, StringComparison.OrdinalIgnoreCase))
+                    return t;
+            throw new CompilationException($"Expected one of [{string.Join(", ", values)}], got '{t.Value}' at position {t.Start}.", t.Start);
+        }
+
+        /// <summary>BNF: попробовать альтернативы по порядку; первая успешная возвращает true и не откатывает.</summary>
+        private bool Or(params Func<bool>[] alternatives)
+        {
+            if (_scanner == null) return false;
+            var pos = _scanner.Save();
+            foreach (var tryBranch in alternatives)
+            {
+                _scanner.Restore(pos);
+                if (tryBranch())
+                    return true;
+            }
+            _scanner.Restore(pos);
+            return false;
+        }
+
+        /// <summary>BNF: ожидать последовательность токенов (kind + опционально value для Identifier). При несовпадении — ошибка компиляции.</summary>
+        private void Sequence(params (TokenKind kind, string? value)[] pattern)
+        {
+            foreach (var (kind, value) in pattern)
+            {
+                var t = _scanner!.Scan();
+                if (t.Kind != kind)
+                    throw new CompilationException($"Expected {kind}, got {t.Kind} at position {t.Start}.", t.Start);
+                if (value != null && !t.Value.Equals(value, StringComparison.OrdinalIgnoreCase))
+                    throw new CompilationException($"Expected '{value}', got '{t.Value}' at position {t.Start}.", t.Start);
+            }
+        }
+
         public InstructionNode Parse(string source)
         {
             source = source.Trim();
             var instruction = new InstructionNode();
-
-            // Извлекаем opcode (до первого пробела)
-            var spaceIndex = source.IndexOf(' ');
-            if (spaceIndex == -1)
+            if (string.IsNullOrEmpty(source))
             {
-                instruction.Opcode = source;
+                instruction.Opcode = "";
                 return instruction;
             }
 
-            instruction.Opcode = source.Substring(0, spaceIndex).ToLower();
-            var parametersPart = source.Substring(spaceIndex + 1).Trim();
+            _scanner = new Scanner(source);
+            // BNF: instruction = Identifier [parameters]
+            var opcodeTok = Expect(TokenKind.Identifier);
+            instruction.Opcode = opcodeTok.Value.ToLowerInvariant();
+
+            if (_scanner.Current.IsEndOfInput)
+                return instruction;
+
+            var parametersPart = source.Substring(_scanner.Current.Start).Trim();
 
             // Специальная обработка для call - имя функции в кавычках
             if (instruction.Opcode == "call")
