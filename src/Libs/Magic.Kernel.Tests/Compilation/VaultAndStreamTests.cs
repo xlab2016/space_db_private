@@ -1,6 +1,6 @@
 using FluentAssertions;
 using Magic.Kernel.Compilation;
-using Magic.Kernel.Compilation.Ast;
+using Magic.Kernel.Processor;
 using Xunit;
 
 namespace Magic.Kernel.Tests.Compilation
@@ -25,13 +25,15 @@ entrypoint {
 }";
 
             var parser = new Parser();
+            var semanticAnalyzer = new SemanticAnalyzer();
 
             // Act
             var structure = parser.ParseProgram(source);
+            var analyzed = semanticAnalyzer.AnalyzeProgram(structure, parser, source);
 
             // Assert
-            structure.Procedures.Should().ContainKey("Main");
-            var asm = structure.Procedures["Main"];
+            analyzed.Procedures.Should().ContainKey("Main");
+            var asm = analyzed.Procedures["Main"].Body;
             asm.Should().BeEmpty();
         }
 
@@ -54,19 +56,21 @@ entrypoint {
 }";
 
             var parser = new Parser();
+            var semanticAnalyzer = new SemanticAnalyzer();
 
             // Act
             var structure = parser.ParseProgram(source);
+            var analyzed = semanticAnalyzer.AnalyzeProgram(structure, parser, source);
 
             // Assert
-            structure.Procedures.Should().ContainKey("Main");
-            var asm = structure.Procedures["Main"];
+            analyzed.Procedures.Should().ContainKey("Main");
+            var asm = analyzed.Procedures["Main"].Body;
             asm.Should().HaveCount(4);
-            asm[0].Opcode.Should().Be("push");
-            asm[1].Opcode.Should().Be("push");
-            asm[2].Opcode.Should().Be("call");
-            asm[2].Parameters.Should().NotBeEmpty();
-            asm[3].Opcode.Should().Be("pop");
+            asm[0].Opcode.Should().Be(Opcodes.Push);
+            asm[1].Opcode.Should().Be(Opcodes.Push);
+            asm[2].Opcode.Should().Be(Opcodes.Call);
+            ((CallInfo)asm[2].Operand1!).FunctionName.Should().Be("vault_read");
+            asm[3].Opcode.Should().Be(Opcodes.Pop);
         }
 
         [Fact]
@@ -87,16 +91,24 @@ entrypoint {
 }";
 
             var parser = new Parser();
+            var semanticAnalyzer = new SemanticAnalyzer();
 
             // Act
             var structure = parser.ParseProgram(source);
+            var analyzed = semanticAnalyzer.AnalyzeProgram(structure, parser, source);
 
             // Assert
-            structure.Procedures.Should().ContainKey("Main");
-            var asm = structure.Procedures["Main"];
-            asm.Should().NotBeEmpty();
-            asm[0].Opcode.Should().Be("push");
-            asm.Should().Contain(node => node.Opcode == "defgen");
+            analyzed.Procedures.Should().ContainKey("Main");
+            var asm = analyzed.Procedures["Main"].Body;
+            asm.Should().HaveCount(8);
+            asm[0].Opcode.Should().Be(Opcodes.Push);
+            asm[1].Opcode.Should().Be(Opcodes.Def);
+            asm[2].Opcode.Should().Be(Opcodes.Pop);
+            asm[3].Opcode.Should().Be(Opcodes.Push);
+            asm[4].Opcode.Should().Be(Opcodes.Push);
+            asm[5].Opcode.Should().Be(Opcodes.Push);
+            asm[6].Opcode.Should().Be(Opcodes.DefGen);
+            asm[7].Opcode.Should().Be(Opcodes.Pop);
         }
     }
 }
