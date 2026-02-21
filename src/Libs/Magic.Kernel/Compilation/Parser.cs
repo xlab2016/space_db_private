@@ -1341,7 +1341,7 @@ namespace Magic.Kernel.Compilation
                     if (nameEnd == -1) nameEnd = procPart.Length;
                     
                     currentProcedure = procPart.Substring(0, nameEnd).Trim();
-                    structure.Procedures[currentProcedure] = new List<string>();
+                    structure.Procedures[currentProcedure] = new List<InstructionNode>();
                     structure.IsProgramStructure = true;
                     inProcedure = true;
                     inAsmBlock = false;
@@ -1363,7 +1363,7 @@ namespace Magic.Kernel.Compilation
                     if (nameEnd == -1) nameEnd = funcPart.Length;
                     
                     currentFunction = funcPart.Substring(0, nameEnd).Trim();
-                    structure.Functions[currentFunction] = new List<string>();
+                    structure.Functions[currentFunction] = new List<InstructionNode>();
                     structure.IsProgramStructure = true;
                     inFunction = true;
                     inAsmBlock = false;
@@ -1378,7 +1378,7 @@ namespace Magic.Kernel.Compilation
                 // Парсим entrypoint
                 if (line.StartsWith("entrypoint"))
                 {
-                    structure.EntryPoint = new List<string>();
+                    structure.EntryPoint = new List<InstructionNode>();
                     structure.IsProgramStructure = true;
                     inEntryPoint = true;
                     inAsmBlock = false;
@@ -1445,12 +1445,13 @@ namespace Magic.Kernel.Compilation
 
                         foreach (var instruction in compiledAsm)
                         {
+                            var astNode = Parse(instruction);
                             if (inProcedure && currentProcedure != null)
-                                structure.Procedures[currentProcedure].Add(instruction);
+                                structure.Procedures[currentProcedure].Add(astNode);
                             else if (inFunction && currentFunction != null)
-                                structure.Functions[currentFunction].Add(instruction);
+                                structure.Functions[currentFunction].Add(astNode);
                             else if (inEntryPoint)
-                                structure.EntryPoint!.Add(instruction);
+                                structure.EntryPoint!.Add(astNode);
                         }
 
                         highLevelLines.Clear();
@@ -1545,17 +1546,18 @@ namespace Magic.Kernel.Compilation
 
                         foreach (var instruction in instructions)
                         {
+                            var astNode = Parse(instruction);
                             if (inProcedure && currentProcedure != null)
                             {
-                                structure.Procedures[currentProcedure].Add(instruction);
+                                structure.Procedures[currentProcedure].Add(astNode);
                             }
                             else if (inFunction && currentFunction != null)
                             {
-                                structure.Functions[currentFunction].Add(instruction);
+                                structure.Functions[currentFunction].Add(astNode);
                             }
                             else if (inEntryPoint)
                             {
-                                structure.EntryPoint!.Add(instruction);
+                                structure.EntryPoint!.Add(astNode);
                             }
                         }
 
@@ -1570,8 +1572,9 @@ namespace Magic.Kernel.Compilation
                     var stmt = line.Trim().TrimEnd(';');
                     if (System.Text.RegularExpressions.Regex.IsMatch(stmt, @"^[A-Za-z_]\w*$"))
                     {
-                        structure.EntryPoint ??= new List<string>();
-                        structure.EntryPoint.Add($"call {stmt}");
+                        structure.EntryPoint ??= new List<InstructionNode>();
+                        var callInstruction = Parse($"call {stmt}");
+                        structure.EntryPoint.Add(callInstruction);
                         structure.IsProgramStructure = true;
                         i++;
                         continue;
@@ -1618,11 +1621,26 @@ namespace Magic.Kernel.Compilation
                 
                 if (unprocessedLines.Count > 0)
                 {
-                    structure.EntryPoint = unprocessedLines;
+                    structure.EntryPoint = unprocessedLines.Select(line => Parse(line)).ToList();
                 }
             }
 
             return structure;
+        }
+
+        /// <summary>Парсит исходный код как плоский набор инструкций (по строкам). Для обратной совместимости, когда нет program/entrypoint.</summary>
+        public List<InstructionNode> ParseAsInstructionSet(string sourceCode)
+        {
+            var nodes = new List<InstructionNode>();
+            var lines = sourceCode.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var line in lines)
+            {
+                var trimmedLine = line.Trim();
+                if (string.IsNullOrWhiteSpace(trimmedLine))
+                    continue;
+                nodes.Add(Parse(trimmedLine));
+            }
+            return nodes;
         }
 
         private static List<string> SplitAsmInstructions(string asmText)

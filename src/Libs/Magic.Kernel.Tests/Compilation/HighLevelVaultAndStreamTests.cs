@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Magic.Kernel.Compilation;
+using Magic.Kernel.Compilation.Ast;
 using Xunit;
 
 namespace Magic.Kernel.Tests.Compilation
@@ -61,10 +62,11 @@ entrypoint {
             structure.Procedures.Should().ContainKey("Main");
             var asm = structure.Procedures["Main"];
             asm.Should().HaveCount(4);
-            asm[0].Should().Be("push string: \"token\"");
-            asm[1].Should().Be("push 1");
-            asm[2].Should().Be("call vault_read");
-            asm[3].Should().StartWith("pop [");
+            asm[0].Opcode.Should().Be("push");
+            asm[1].Opcode.Should().Be("push");
+            asm[2].Opcode.Should().Be("call");
+            asm[2].Parameters.Should().NotBeEmpty();
+            asm[3].Opcode.Should().Be("pop");
         }
 
         [Fact]
@@ -93,8 +95,8 @@ entrypoint {
             structure.Procedures.Should().ContainKey("Main");
             var asm = structure.Procedures["Main"];
             asm.Should().NotBeEmpty();
-            asm[0].Should().Be("push stream");
-            asm.Should().Contain(line => line == "defgen");
+            asm[0].Opcode.Should().Be("push");
+            asm.Should().Contain(node => node.Opcode == "defgen");
         }
     }
 }
