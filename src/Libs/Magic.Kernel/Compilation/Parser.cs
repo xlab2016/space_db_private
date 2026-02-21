@@ -9,17 +9,21 @@ namespace Magic.Kernel.Compilation
     public class Parser
     {
         private readonly InstructionParser _instructionParser = new InstructionParser();
+        private Scanner? _scanner;
 
-        private static void SkipNewlines(Scanner s)
+        private Scanner CurrentScanner =>
+            _scanner ?? throw new InvalidOperationException("Scanner is not initialized.");
+
+        private void SkipNewlines()
         {
-            while (s.Current.Kind == TokenKind.Newline)
-                s.Scan();
+            while (CurrentScanner.Current.Kind == TokenKind.Newline)
+                CurrentScanner.Scan();
         }
 
-        private static void AddRangeAsStatement(string source, int start, int end, List<string> output)
+        private void AddRangeAsStatement(int start, int end, List<string> output)
         {
             if (start < 0 || end <= start) return;
-            var text = source.Substring(start, end - start).Trim();
+            var text = CurrentScanner.Slice(start, end).Trim();
             if (!string.IsNullOrWhiteSpace(text))
                 output.Add(text);
         }
@@ -78,7 +82,7 @@ namespace Magic.Kernel.Compilation
         }
 
         /// <summary>Потребляет обычный блок (после "{") и возвращает список statement-строк до парной "}".</summary>
-        private static List<string> ConsumeStatementBlockLines(Scanner s, string source)
+        private List<string> ConsumeStatementBlockLines()
         {
             var result = new List<string>();
             var depth = 1;
@@ -87,10 +91,10 @@ namespace Magic.Kernel.Compilation
 
             while (true)
             {
-                var tok = s.Scan();
+                var tok = CurrentScanner.Scan();
                 if (tok.Kind == TokenKind.EndOfInput)
                 {
-                    AddRangeAsStatement(source, currentStart, currentEnd, result);
+                    AddRangeAsStatement(currentStart, currentEnd, result);
                     break;
                 }
 
@@ -107,7 +111,7 @@ namespace Magic.Kernel.Compilation
                     depth--;
                     if (depth == 0)
                     {
-                        AddRangeAsStatement(source, currentStart, currentEnd, result);
+                        AddRangeAsStatement(currentStart, currentEnd, result);
                         break;
                     }
                     if (currentStart < 0) currentStart = tok.Start;
@@ -117,7 +121,7 @@ namespace Magic.Kernel.Compilation
 
                 if (depth == 1 && (tok.Kind == TokenKind.Semicolon || tok.Kind == TokenKind.Newline))
                 {
-                    AddRangeAsStatement(source, currentStart, currentEnd, result);
+                    AddRangeAsStatement(currentStart, currentEnd, result);
                     currentStart = -1;
                     currentEnd = -1;
                     continue;
@@ -131,7 +135,7 @@ namespace Magic.Kernel.Compilation
         }
 
         /// <summary>Потребляет asm-блок (после "asm {") и возвращает инструкции до парной "}".</summary>
-        private static List<string> ConsumeAsmBlockInstructions(Scanner s, string source)
+        private List<string> ConsumeAsmBlockInstructions()
         {
             var result = new List<string>();
             var braceDepth = 1;
@@ -142,11 +146,11 @@ namespace Magic.Kernel.Compilation
 
             while (true)
             {
-                var tok = s.Scan();
+                var tok = CurrentScanner.Scan();
                 switch (tok.Kind)
                 {
                     case TokenKind.EndOfInput:
-                        AddRangeAsStatement(source, currentStart, currentEnd, result);
+                        AddRangeAsStatement(currentStart, currentEnd, result);
                         return result;
                     case TokenKind.LBrace:
                         braceDepth++;
@@ -157,7 +161,7 @@ namespace Magic.Kernel.Compilation
                         braceDepth--;
                         if (braceDepth == 0)
                         {
-                            AddRangeAsStatement(source, currentStart, currentEnd, result);
+                            AddRangeAsStatement(currentStart, currentEnd, result);
                             return result;
                         }
                         if (currentStart < 0) currentStart = tok.Start;
@@ -186,7 +190,7 @@ namespace Magic.Kernel.Compilation
                     case TokenKind.Semicolon:
                         if (braceDepth == 1 && bracketDepth == 0 && parenDepth == 0)
                         {
-                            AddRangeAsStatement(source, currentStart, currentEnd, result);
+                            AddRangeAsStatement(currentStart, currentEnd, result);
                             currentStart = -1;
                             currentEnd = -1;
                         }
@@ -197,9 +201,9 @@ namespace Magic.Kernel.Compilation
                         }
                         break;
                     case TokenKind.Newline:
-                        if (braceDepth == 1 && bracketDepth == 0 && parenDepth == 0 && NextAsmTokenStartsOpcode(s))
+                        if (braceDepth == 1 && bracketDepth == 0 && parenDepth == 0 && NextAsmTokenStartsOpcode())
                         {
-                            AddRangeAsStatement(source, currentStart, currentEnd, result);
+                            AddRangeAsStatement(currentStart, currentEnd, result);
                             currentStart = -1;
                             currentEnd = -1;
                         }
@@ -213,32 +217,32 @@ namespace Magic.Kernel.Compilation
         }
 
         /// <summary>BNF: block = "{" (asm-block | statement-block) "}"</summary>
-        private bool TryParseBodyBlock(Scanner s, string source, out List<InstructionNode> instructions)
+        private bool TryParseBodyBlock(out List<InstructionNode> instructions)
         {
             instructions = new List<InstructionNode>();
-            if (s.Current.Kind != TokenKind.LBrace) return false;
-            s.Scan(); // consume outer "{"
-            SkipNewlines(s);
+            if (CurrentScanner.Current.Kind != TokenKind.LBrace) return false;
+            CurrentScanner.Scan(); // consume outer "{"
+            SkipNewlines();
 
             // asm-block = "asm" "{" asm-instructions "}"
-            if (s.Current.Kind == TokenKind.Identifier && string.Equals(s.Current.Value, "asm", StringComparison.OrdinalIgnoreCase))
+            if (CurrentScanner.Current.Kind == TokenKind.Identifier && string.Equals(CurrentScanner.Current.Value, "asm", StringComparison.OrdinalIgnoreCase))
             {
-                s.Scan();
-                SkipNewlines(s);
-                if (s.Current.Kind != TokenKind.LBrace)
-                    throw new CompilationException($"Expected '{{' after asm at position {s.Current.Start}.", s.Current.Start);
-                s.Scan(); // consume asm "{"
-                var asmList = ConsumeAsmBlockInstructions(s, source); // consumes asm "}"
+                CurrentScanner.Scan();
+                SkipNewlines();
+                if (CurrentScanner.Current.Kind != TokenKind.LBrace)
+                    throw new CompilationException($"Expected '{{' after asm at position {CurrentScanner.Current.Start}.", CurrentScanner.Current.Start);
+                CurrentScanner.Scan(); // consume asm "{"
+                var asmList = ConsumeAsmBlockInstructions(); // consumes asm "}"
                 instructions = asmList.Select(NormalizeInstructionText).Select(ParseWithContext).ToList();
-                SkipNewlines(s);
-                if (s.Current.Kind != TokenKind.RBrace)
-                    throw new CompilationException($"Expected '}}' to close block at position {s.Current.Start}.", s.Current.Start);
-                s.Scan(); // consume outer "}"
+                SkipNewlines();
+                if (CurrentScanner.Current.Kind != TokenKind.RBrace)
+                    throw new CompilationException($"Expected '}}' to close block at position {CurrentScanner.Current.Start}.", CurrentScanner.Current.Start);
+                CurrentScanner.Scan(); // consume outer "}"
                 return true;
             }
 
             // statement-block = { statements }
-            var statementLines = ConsumeStatementBlockLines(s, source); // consumes outer "}"
+            var statementLines = ConsumeStatementBlockLines(); // consumes outer "}"
             instructions = CompileStatementLines(statementLines).Select(NormalizeInstructionText).Select(ParseWithContext).ToList();
             return true;
         }
@@ -252,9 +256,9 @@ namespace Magic.Kernel.Compilation
             string.Equals(id, "entrypoint", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(id, "asm", StringComparison.OrdinalIgnoreCase);
 
-        private static Token ExpectToken(Scanner s, TokenKind kind, string? value = null)
+        private Token ExpectToken(TokenKind kind, string? value = null)
         {
-            var tok = s.Scan();
+            var tok = CurrentScanner.Scan();
             if (tok.Kind != kind)
                 throw new CompilationException($"Expected {kind}, got {tok.Kind} at position {tok.Start}.", tok.Start);
             if (value != null && !string.Equals(tok.Value, value, StringComparison.OrdinalIgnoreCase))
@@ -262,117 +266,117 @@ namespace Magic.Kernel.Compilation
             return tok;
         }
 
-        private static string ExpectNonEmptyHeaderValue(Scanner s, string source, string headerName)
+        private string ExpectNonEmptyHeaderValue(string headerName)
         {
-            var start = s.Current.Start;
+            var start = CurrentScanner.Current.Start;
             var end = start;
             var hasTokens = false;
-            while (!s.Current.IsEndOfInput && s.Current.Kind != TokenKind.Semicolon && s.Current.Kind != TokenKind.Newline)
+            while (!CurrentScanner.Current.IsEndOfInput && CurrentScanner.Current.Kind != TokenKind.Semicolon && CurrentScanner.Current.Kind != TokenKind.Newline)
             {
                 hasTokens = true;
-                end = s.Current.End;
-                s.Scan();
+                end = CurrentScanner.Current.End;
+                CurrentScanner.Scan();
             }
 
             if (!hasTokens)
-                throw new CompilationException($"Expected {headerName} at position {s.Current.Start}.", s.Current.Start);
+                throw new CompilationException($"Expected {headerName} at position {CurrentScanner.Current.Start}.", CurrentScanner.Current.Start);
 
-            var value = source.Substring(start, end - start).Trim();
+            var value = CurrentScanner.Slice(start, end).Trim();
             if (string.IsNullOrWhiteSpace(value))
                 throw new CompilationException($"Expected {headerName} at position {start}.", start);
 
             return value;
         }
 
-        private bool TryParseAgi(Scanner s, string source, ProgramStructure structure)
+        private bool TryParseAgi(ProgramStructure structure)
         {
-            if (s.Current.Kind != TokenKind.Identifier || s.Current.Value != "@") return false;
-            ExpectToken(s, TokenKind.Identifier, "@");
-            ExpectToken(s, TokenKind.Identifier, "AGI");
-            var versionStart = s.Current.Start;
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier || CurrentScanner.Current.Value != "@") return false;
+            ExpectToken(TokenKind.Identifier, "@");
+            ExpectToken(TokenKind.Identifier, "AGI");
+            var versionStart = CurrentScanner.Current.Start;
             var versionEnd = versionStart;
-            while (!s.Current.IsEndOfInput && s.Current.Kind != TokenKind.Newline)
+            while (!CurrentScanner.Current.IsEndOfInput && CurrentScanner.Current.Kind != TokenKind.Newline)
             {
-                versionEnd = s.Current.End;
-                s.Scan();
+                versionEnd = CurrentScanner.Current.End;
+                CurrentScanner.Scan();
             }
             structure.Version = versionEnd > versionStart
-                ? source.Substring(versionStart, versionEnd - versionStart).Trim()
+                ? CurrentScanner.Slice(versionStart, versionEnd).Trim()
                 : "";
-            if (s.Current.Kind == TokenKind.Newline) s.Scan();
+            if (CurrentScanner.Current.Kind == TokenKind.Newline) CurrentScanner.Scan();
             structure.IsProgramStructure = true;
             return true;
         }
 
-        private bool TryParseProgram(Scanner s, string source, ProgramStructure structure)
+        private bool TryParseProgram(ProgramStructure structure)
         {
-            if (s.Current.Kind != TokenKind.Identifier || !string.Equals(s.Current.Value, "program", StringComparison.OrdinalIgnoreCase)) return false;
-            ExpectToken(s, TokenKind.Identifier, "program");
-            var name = ExpectNonEmptyHeaderValue(s, source, "program name");
-            if (s.Current.Kind == TokenKind.Semicolon) s.Scan();
-            SkipNewlines(s);
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier || !string.Equals(CurrentScanner.Current.Value, "program", StringComparison.OrdinalIgnoreCase)) return false;
+            ExpectToken(TokenKind.Identifier, "program");
+            var name = ExpectNonEmptyHeaderValue("program name");
+            if (CurrentScanner.Current.Kind == TokenKind.Semicolon) CurrentScanner.Scan();
+            SkipNewlines();
             structure.ProgramName = name;
             structure.IsProgramStructure = true;
             return true;
         }
 
-        private bool TryParseModule(Scanner s, string source, ProgramStructure structure)
+        private bool TryParseModule(ProgramStructure structure)
         {
-            if (s.Current.Kind != TokenKind.Identifier || !string.Equals(s.Current.Value, "module", StringComparison.OrdinalIgnoreCase)) return false;
-            ExpectToken(s, TokenKind.Identifier, "module");
-            var name = ExpectNonEmptyHeaderValue(s, source, "module name");
-            if (s.Current.Kind == TokenKind.Semicolon) s.Scan();
-            SkipNewlines(s);
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier || !string.Equals(CurrentScanner.Current.Value, "module", StringComparison.OrdinalIgnoreCase)) return false;
+            ExpectToken(TokenKind.Identifier, "module");
+            var name = ExpectNonEmptyHeaderValue("module name");
+            if (CurrentScanner.Current.Kind == TokenKind.Semicolon) CurrentScanner.Scan();
+            SkipNewlines();
             structure.Module = name;
             structure.IsProgramStructure = true;
             return true;
         }
 
-        private bool TryParseProcedure(Scanner s, string source, ProgramStructure structure)
+        private bool TryParseProcedure(ProgramStructure structure)
         {
-            if (s.Current.Kind != TokenKind.Identifier || !string.Equals(s.Current.Value, "procedure", StringComparison.OrdinalIgnoreCase)) return false;
-            ExpectToken(s, TokenKind.Identifier, "procedure");
-            var name = ExpectToken(s, TokenKind.Identifier).Value ?? "";
-            SkipNewlines(s);
-            if (!TryParseBodyBlock(s, source, out var body))
-                throw new CompilationException($"Expected body block for procedure '{name}' at position {s.Current.Start}.", s.Current.Start);
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier || !string.Equals(CurrentScanner.Current.Value, "procedure", StringComparison.OrdinalIgnoreCase)) return false;
+            ExpectToken(TokenKind.Identifier, "procedure");
+            var name = ExpectToken(TokenKind.Identifier).Value ?? "";
+            SkipNewlines();
+            if (!TryParseBodyBlock(out var body))
+                throw new CompilationException($"Expected body block for procedure '{name}' at position {CurrentScanner.Current.Start}.", CurrentScanner.Current.Start);
             structure.Procedures[name] = body;
             structure.IsProgramStructure = true;
             return true;
         }
 
-        private bool TryParseFunction(Scanner s, string source, ProgramStructure structure)
+        private bool TryParseFunction(ProgramStructure structure)
         {
-            if (s.Current.Kind != TokenKind.Identifier || !string.Equals(s.Current.Value, "function", StringComparison.OrdinalIgnoreCase)) return false;
-            ExpectToken(s, TokenKind.Identifier, "function");
-            var name = ExpectToken(s, TokenKind.Identifier).Value ?? "";
-            SkipNewlines(s);
-            if (!TryParseBodyBlock(s, source, out var body))
-                throw new CompilationException($"Expected body block for function '{name}' at position {s.Current.Start}.", s.Current.Start);
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier || !string.Equals(CurrentScanner.Current.Value, "function", StringComparison.OrdinalIgnoreCase)) return false;
+            ExpectToken(TokenKind.Identifier, "function");
+            var name = ExpectToken(TokenKind.Identifier).Value ?? "";
+            SkipNewlines();
+            if (!TryParseBodyBlock(out var body))
+                throw new CompilationException($"Expected body block for function '{name}' at position {CurrentScanner.Current.Start}.", CurrentScanner.Current.Start);
             structure.Functions[name] = body;
             structure.IsProgramStructure = true;
             return true;
         }
 
-        private bool TryParseEntrypoint(Scanner s, string source, ProgramStructure structure)
+        private bool TryParseEntrypoint(ProgramStructure structure)
         {
-            if (s.Current.Kind != TokenKind.Identifier || !string.Equals(s.Current.Value, "entrypoint", StringComparison.OrdinalIgnoreCase)) return false;
-            ExpectToken(s, TokenKind.Identifier, "entrypoint");
-            SkipNewlines(s);
-            if (!TryParseBodyBlock(s, source, out var body))
-                throw new CompilationException($"Expected body block for entrypoint at position {s.Current.Start}.", s.Current.Start);
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier || !string.Equals(CurrentScanner.Current.Value, "entrypoint", StringComparison.OrdinalIgnoreCase)) return false;
+            ExpectToken(TokenKind.Identifier, "entrypoint");
+            SkipNewlines();
+            if (!TryParseBodyBlock(out var body))
+                throw new CompilationException($"Expected body block for entrypoint at position {CurrentScanner.Current.Start}.", CurrentScanner.Current.Start);
             structure.EntryPoint = body;
             structure.IsProgramStructure = true;
             return true;
         }
 
-        private bool TryParseTopLevelCall(Scanner s, ProgramStructure structure)
+        private bool TryParseTopLevelCall(ProgramStructure structure)
         {
-            if (s.Current.Kind != TokenKind.Identifier || IsProgramKeyword(s.Current.Value ?? "")) return false;
-            var name = s.Current.Value ?? "";
-            if (s.Watch(1)?.Kind != TokenKind.Semicolon) return false;
-            s.Scan();
-            s.Scan();
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier || IsProgramKeyword(CurrentScanner.Current.Value ?? "")) return false;
+            var name = CurrentScanner.Current.Value ?? "";
+            if (CurrentScanner.Watch(1)?.Kind != TokenKind.Semicolon) return false;
+            CurrentScanner.Scan();
+            CurrentScanner.Scan();
             structure.EntryPoint ??= new List<InstructionNode>();
             structure.EntryPoint.Add(new InstructionNode
             {
@@ -387,19 +391,19 @@ namespace Magic.Kernel.Compilation
                 }
             });
             structure.IsProgramStructure = true;
-            SkipNewlines(s);
+            SkipNewlines();
             return true;
         }
 
-        private static string ConsumeLineToUnprocessed(Scanner s, string source)
+        private string ConsumeLineToUnprocessed()
         {
-            if (s.Current.IsEndOfInput) return "";
-            var start = s.Current.Start;
-            while (!s.Current.IsEndOfInput && s.Current.Kind != TokenKind.Newline)
-                s.Scan();
-            var end = s.Current.IsEndOfInput ? source.Length : s.Current.Start;
-            if (s.Current.Kind == TokenKind.Newline) s.Scan();
-            return source.Substring(start, end - start).Trim();
+            if (CurrentScanner.Current.IsEndOfInput) return "";
+            var start = CurrentScanner.Current.Start;
+            while (!CurrentScanner.Current.IsEndOfInput && CurrentScanner.Current.Kind != TokenKind.Newline)
+                CurrentScanner.Scan();
+            var end = CurrentScanner.Current.IsEndOfInput ? CurrentScanner.SourceLength : CurrentScanner.Current.Start;
+            if (CurrentScanner.Current.Kind == TokenKind.Newline) CurrentScanner.Scan();
+            return CurrentScanner.Slice(start, end).Trim();
         }
 
         private InstructionNode ParseWithContext(string instructionText)
@@ -422,23 +426,23 @@ namespace Magic.Kernel.Compilation
             {
                 return structure;
             }
-            var scanner = new Scanner(source);
+            _scanner = new Scanner(source);
             var unprocessedLines = new List<string>();
 
-            while (!scanner.Current.IsEndOfInput)
+            while (!CurrentScanner.Current.IsEndOfInput)
             {
-                SkipNewlines(scanner);
-                if (scanner.Current.IsEndOfInput) break;
+                SkipNewlines();
+                if (CurrentScanner.Current.IsEndOfInput) break;
 
-                if (TryParseAgi(scanner, source, structure)) continue;
-                if (TryParseProgram(scanner, source, structure)) continue;
-                if (TryParseModule(scanner, source, structure)) continue;
-                if (TryParseProcedure(scanner, source, structure)) continue;
-                if (TryParseFunction(scanner, source, structure)) continue;
-                if (TryParseEntrypoint(scanner, source, structure)) continue;
-                if (TryParseTopLevelCall(scanner, structure)) continue;
+                if (TryParseAgi(structure)) continue;
+                if (TryParseProgram(structure)) continue;
+                if (TryParseModule(structure)) continue;
+                if (TryParseProcedure(structure)) continue;
+                if (TryParseFunction(structure)) continue;
+                if (TryParseEntrypoint(structure)) continue;
+                if (TryParseTopLevelCall(structure)) continue;
 
-                var line = ConsumeLineToUnprocessed(scanner, source);
+                var line = ConsumeLineToUnprocessed();
                 if (!string.IsNullOrWhiteSpace(line) && !structure.IsProgramStructure)
                     unprocessedLines.Add(line);
             }
@@ -484,85 +488,12 @@ namespace Magic.Kernel.Compilation
             "awaitobj"
         };
 
-        private static List<string> SplitAsmInstructions(string asmText)
-        {
-            // Делит asm-текст на инструкции по ';' и по newline, когда следующая строка начинается с opcode.
-            var result = new List<string>();
-            if (string.IsNullOrWhiteSpace(asmText))
-                return result;
-
-            var scanner = new Scanner(asmText);
-            var current = new List<string>();
-            var braceDepth = 0;
-            var bracketDepth = 0;
-            var parenDepth = 0;
-
-            void FlushInstruction()
-            {
-                if (current.Count == 0) return;
-                var instruction = string.Join(" ", current).Trim();
-                if (!string.IsNullOrWhiteSpace(instruction))
-                    result.Add(instruction);
-                current.Clear();
-            }
-
-            while (!scanner.Current.IsEndOfInput)
-            {
-                var tok = scanner.Scan();
-                switch (tok.Kind)
-                {
-                    case TokenKind.LBrace:
-                        braceDepth++;
-                        current.Add("{");
-                        break;
-                    case TokenKind.RBrace:
-                        if (braceDepth > 0) braceDepth--;
-                        current.Add("}");
-                        break;
-                    case TokenKind.LBracket:
-                        bracketDepth++;
-                        current.Add("[");
-                        break;
-                    case TokenKind.RBracket:
-                        if (bracketDepth > 0) bracketDepth--;
-                        current.Add("]");
-                        break;
-                    case TokenKind.LParen:
-                        parenDepth++;
-                        current.Add("(");
-                        break;
-                    case TokenKind.RParen:
-                        if (parenDepth > 0) parenDepth--;
-                        current.Add(")");
-                        break;
-                    case TokenKind.Semicolon:
-                        if (braceDepth == 0 && bracketDepth == 0 && parenDepth == 0)
-                            FlushInstruction();
-                        else
-                            current.Add(";");
-                        break;
-                    case TokenKind.Newline:
-                        if (braceDepth == 0 && bracketDepth == 0 && parenDepth == 0 && NextAsmTokenStartsOpcode(scanner))
-                            FlushInstruction();
-                        break;
-                    case TokenKind.EndOfInput:
-                        break;
-                    default:
-                        current.Add(RenderAsmToken(tok));
-                        break;
-                }
-            }
-
-            FlushInstruction();
-            return result;
-        }
-
-        private static bool NextAsmTokenStartsOpcode(Scanner scanner)
+        private bool NextAsmTokenStartsOpcode()
         {
             var offset = 0;
             while (true)
             {
-                var tok = scanner.Watch(offset);
+                var tok = CurrentScanner.Watch(offset);
                 if (tok == null || tok.Value.Kind == TokenKind.EndOfInput)
                     return false;
                 if (tok.Value.Kind == TokenKind.Newline)
@@ -572,21 +503,6 @@ namespace Magic.Kernel.Compilation
                 }
                 return tok.Value.Kind == TokenKind.Identifier && AsmOpcodes.Contains(tok.Value.Value ?? "");
             }
-        }
-
-        private static string RenderAsmToken(Token tok)
-        {
-            return tok.Kind switch
-            {
-                TokenKind.Colon => ":",
-                TokenKind.Comma => ",",
-                TokenKind.Dot => ".",
-                TokenKind.Assign => "=",
-                TokenKind.LessThan => "<",
-                TokenKind.GreaterThan => ">",
-                TokenKind.StringLiteral => "\"" + EscapeStringLiteral(tok.Value ?? "") + "\"",
-                _ => tok.Value ?? ""
-            };
         }
 
         private static string EscapeStringLiteral(string value)
@@ -697,15 +613,13 @@ namespace Magic.Kernel.Compilation
 
             foreach (var line in varLines)
             {
-                var scanner = new Scanner(line);
-                if (TryParseStreamDeclaration(scanner, out var streamName, out var elementType))
+                if (TryParseStreamDeclaration(line, out var streamName, out var elementType))
                 {
                     EmitStreamDeclaration(streamName, elementType, vars, ref memorySlotCounter, asm);
                     continue;
                 }
 
-                scanner = new Scanner(line);
-                if (!TryParseEntityDeclaration(line, scanner, out var varName, out var varType, out var initText))
+                if (!TryParseEntityDeclaration(line, out var varName, out var varType, out var initText))
                     continue;
 
                 if (varType == "vertex")
@@ -734,8 +648,7 @@ namespace Magic.Kernel.Compilation
         private List<string> CompileVertexInit(int index, string initValue)
         {
             var asm = new List<string>();
-            var scanner = new Scanner(initValue);
-            if (!TryParseVertexObject(scanner, out var spec))
+            if (!TryParseVertexObject(initValue, out var spec))
                 return asm;
 
             var dimsStr = string.Join(", ", spec.Dimensions);
@@ -753,8 +666,7 @@ namespace Magic.Kernel.Compilation
         private List<string> CompileRelationInit(int index, string initValue, Dictionary<string, (string Kind, int Index)> vars)
         {
             var asm = new List<string>();
-            var scanner = new Scanner(initValue);
-            if (!TryParseRelationObject(scanner, out var spec) || string.IsNullOrEmpty(spec.From) || string.IsNullOrEmpty(spec.To))
+            if (!TryParseRelationObject(initValue, out var spec) || string.IsNullOrEmpty(spec.From) || string.IsNullOrEmpty(spec.To))
                 return asm;
 
             if (!vars.TryGetValue(spec.From, out var fromVar) || !vars.TryGetValue(spec.To, out var toVar))
@@ -770,8 +682,7 @@ namespace Magic.Kernel.Compilation
         private List<string> CompileShapeInit(int index, string initValue, Dictionary<string, (string Kind, int Index)> vars, ref int vertexCounter)
         {
             var asm = new List<string>();
-            var scanner = new Scanner(initValue);
-            if (!TryParseShapeObject(scanner, out var spec))
+            if (!TryParseShapeObject(initValue, out var spec))
                 return asm;
 
             var indices = new List<int>();
@@ -805,116 +716,124 @@ namespace Magic.Kernel.Compilation
 
         private bool TryCompileAssignment(string line, Dictionary<string, (string Kind, int Index)> vars, ref int shapeCounter, ref int vertexCounter, ref int memorySlotCounter, List<string> asm)
         {
-            var scanner = new Scanner(line);
-            if (IsIdentifier(scanner.Current, "var"))
+            var previous = _scanner;
+            _scanner = new Scanner(line);
+            try
             {
-                scanner.Scan();
-            }
-
-            if (scanner.Current.Kind != TokenKind.Identifier)
-                return false;
-            var targetName = scanner.Scan().Value;
-
-            var hasAssign = scanner.Current.Kind == TokenKind.Assign;
-            var hasDefineAssign = scanner.Current.Kind == TokenKind.Colon && scanner.Watch(1)?.Kind == TokenKind.Assign;
-            if (!hasAssign && !hasDefineAssign)
-                return false;
-            if (hasDefineAssign)
-            {
-                scanner.Scan();
-                scanner.Scan();
-            }
-            else
-            {
-                scanner.Scan();
-            }
-
-            SkipSemicolon(scanner);
-            if (scanner.Current.IsEndOfInput)
-                return true;
-
-            if (IsIdentifier(scanner.Current, "vault"))
-            {
-                var vaultSlot = memorySlotCounter++;
-                vars[targetName] = ("vault", vaultSlot);
-                return true;
-            }
-
-            if (TryParseVaultReadExpression(scanner, out var vaultVarName, out var tokenKey) &&
-                vars.TryGetValue(vaultVarName, out var vaultVar) &&
-                vaultVar.Kind == "vault")
-            {
-                var resultSlot = memorySlotCounter++;
-                vars[targetName] = ("memory", resultSlot);
-                asm.Add($"push string: \"{EscapeStringLiteral(tokenKey)}\"");
-                asm.Add("push 1");
-                asm.Add("call vault_read");
-                asm.Add($"pop [{resultSlot}]");
-                return true;
-            }
-
-            if (TryParseAwaitExpression(scanner, out var awaitVarName) &&
-                vars.TryGetValue(awaitVarName, out var streamVar) &&
-                streamVar.Kind == "stream")
-            {
-                var dataSlot = memorySlotCounter++;
-                vars[targetName] = ("memory", dataSlot);
-                asm.Add($"push [{streamVar.Index}]");
-                asm.Add("awaitobj");
-                asm.Add($"pop [{dataSlot}]");
-                return true;
-            }
-
-            if (TryParseCompileExpression(scanner, out var compileArgName) &&
-                vars.TryGetValue(compileArgName, out var dataVar) &&
-                (dataVar.Kind == "memory" || dataVar.Kind == "stream"))
-            {
-                var resultSlot = memorySlotCounter++;
-                vars[targetName] = ("memory", resultSlot);
-                asm.Add($"push [{dataVar.Index}]");
-                asm.Add("push 1");
-                asm.Add("call compile");
-                asm.Add($"pop [{resultSlot}]");
-                return true;
-            }
-
-            if (TryParseOriginExpression(scanner, out var shapeVarName) &&
-                vars.TryGetValue(shapeVarName, out var shapeVar) &&
-                shapeVar.Kind == "shape")
-            {
-                asm.Add($"call \"origin\", shape: index: {shapeVar.Index}");
-                asm.Add("pop [0]");
-                vars[targetName] = ("memory", 0);
-                return true;
-            }
-
-            if (TryParseIntersectionExpression(scanner, line, out var shapeAName, out var shapeBText))
-            {
-                if (!vars.TryGetValue(shapeAName, out var shapeA) || shapeA.Kind != "shape")
-                    return true;
-
-                int? shapeBIndex = null;
-                if (vars.TryGetValue(shapeBText, out var shapeBVar) && shapeBVar.Kind == "shape")
+                if (IsIdentifier(CurrentScanner.Current, "var"))
                 {
-                    shapeBIndex = shapeBVar.Index;
+                    CurrentScanner.Scan();
+                }
+
+                if (CurrentScanner.Current.Kind != TokenKind.Identifier)
+                    return false;
+                var targetName = CurrentScanner.Scan().Value;
+
+                var hasAssign = CurrentScanner.Current.Kind == TokenKind.Assign;
+                var hasDefineAssign = CurrentScanner.Current.Kind == TokenKind.Colon && CurrentScanner.Watch(1)?.Kind == TokenKind.Assign;
+                if (!hasAssign && !hasDefineAssign)
+                    return false;
+                if (hasDefineAssign)
+                {
+                    CurrentScanner.Scan();
+                    CurrentScanner.Scan();
                 }
                 else
                 {
-                    var tempShapeIndex = shapeCounter++;
-                    asm.AddRange(CompileShapeInit(tempShapeIndex, shapeBText, vars, ref vertexCounter));
-                    shapeBIndex = tempShapeIndex;
+                    CurrentScanner.Scan();
                 }
 
-                if (shapeBIndex.HasValue)
+                SkipSemicolon();
+                if (CurrentScanner.Current.IsEndOfInput)
+                    return true;
+
+                if (IsIdentifier(CurrentScanner.Current, "vault"))
                 {
-                    asm.Add($"call \"intersect\", shapeA: shape: index: {shapeA.Index}, shapeB: shape: index: {shapeBIndex.Value}");
-                    asm.Add("pop [1]");
-                    vars[targetName] = ("memory", 1);
+                    var vaultSlot = memorySlotCounter++;
+                    vars[targetName] = ("vault", vaultSlot);
+                    return true;
                 }
+
+                if (TryParseVaultReadExpression(out var vaultVarName, out var tokenKey) &&
+                    vars.TryGetValue(vaultVarName, out var vaultVar) &&
+                    vaultVar.Kind == "vault")
+                {
+                    var resultSlot = memorySlotCounter++;
+                    vars[targetName] = ("memory", resultSlot);
+                    asm.Add($"push string: \"{EscapeStringLiteral(tokenKey)}\"");
+                    asm.Add("push 1");
+                    asm.Add("call vault_read");
+                    asm.Add($"pop [{resultSlot}]");
+                    return true;
+                }
+
+                if (TryParseAwaitExpression(out var awaitVarName) &&
+                    vars.TryGetValue(awaitVarName, out var streamVar) &&
+                    streamVar.Kind == "stream")
+                {
+                    var dataSlot = memorySlotCounter++;
+                    vars[targetName] = ("memory", dataSlot);
+                    asm.Add($"push [{streamVar.Index}]");
+                    asm.Add("awaitobj");
+                    asm.Add($"pop [{dataSlot}]");
+                    return true;
+                }
+
+                if (TryParseCompileExpression(out var compileArgName) &&
+                    vars.TryGetValue(compileArgName, out var dataVar) &&
+                    (dataVar.Kind == "memory" || dataVar.Kind == "stream"))
+                {
+                    var resultSlot = memorySlotCounter++;
+                    vars[targetName] = ("memory", resultSlot);
+                    asm.Add($"push [{dataVar.Index}]");
+                    asm.Add("push 1");
+                    asm.Add("call compile");
+                    asm.Add($"pop [{resultSlot}]");
+                    return true;
+                }
+
+                if (TryParseOriginExpression(out var shapeVarName) &&
+                    vars.TryGetValue(shapeVarName, out var shapeVar) &&
+                    shapeVar.Kind == "shape")
+                {
+                    asm.Add($"call \"origin\", shape: index: {shapeVar.Index}");
+                    asm.Add("pop [0]");
+                    vars[targetName] = ("memory", 0);
+                    return true;
+                }
+
+                if (TryParseIntersectionExpression(line, out var shapeAName, out var shapeBText))
+                {
+                    if (!vars.TryGetValue(shapeAName, out var shapeA) || shapeA.Kind != "shape")
+                        return true;
+
+                    int? shapeBIndex = null;
+                    if (vars.TryGetValue(shapeBText, out var shapeBVar) && shapeBVar.Kind == "shape")
+                    {
+                        shapeBIndex = shapeBVar.Index;
+                    }
+                    else
+                    {
+                        var tempShapeIndex = shapeCounter++;
+                        asm.AddRange(CompileShapeInit(tempShapeIndex, shapeBText, vars, ref vertexCounter));
+                        shapeBIndex = tempShapeIndex;
+                    }
+
+                    if (shapeBIndex.HasValue)
+                    {
+                        asm.Add($"call \"intersect\", shapeA: shape: index: {shapeA.Index}, shapeB: shape: index: {shapeBIndex.Value}");
+                        asm.Add("pop [1]");
+                        vars[targetName] = ("memory", 1);
+                    }
+                    return true;
+                }
+
                 return true;
             }
-
-            return true;
+            finally
+            {
+                _scanner = previous;
+            }
         }
 
         private bool TryCompileFunctionCall(string line, Dictionary<string, (string Kind, int Index)> vars, List<string> asm)
@@ -932,7 +851,8 @@ namespace Magic.Kernel.Compilation
             if (scanner.Current.Kind != TokenKind.RParen)
                 return false;
             scanner.Scan();
-            SkipSemicolon(scanner);
+            while (scanner.Current.Kind == TokenKind.Semicolon)
+                scanner.Scan();
             if (!scanner.Current.IsEndOfInput)
                 return false;
 
@@ -985,7 +905,8 @@ namespace Magic.Kernel.Compilation
             if (scanner.Current.Kind != TokenKind.RParen)
                 return false;
             scanner.Scan();
-            SkipSemicolon(scanner);
+            while (scanner.Current.Kind == TokenKind.Semicolon)
+                scanner.Scan();
             if (!scanner.Current.IsEndOfInput)
                 return false;
 
@@ -1016,9 +937,8 @@ namespace Magic.Kernel.Compilation
 
         private bool IsDeclarationStatement(string line)
         {
-            var scanner = new Scanner(line);
-            return TryParseStreamDeclaration(scanner, out _, out _) ||
-                   TryParseEntityDeclaration(line, new Scanner(line), out _, out _, out _);
+            return TryParseStreamDeclaration(line, out _, out _) ||
+                   TryParseEntityDeclaration(line, out _, out _, out _);
         }
 
         private bool TryParseVarKeywordOnly(string line)
@@ -1027,7 +947,8 @@ namespace Magic.Kernel.Compilation
             if (!IsIdentifier(scanner.Current, "var"))
                 return false;
             scanner.Scan();
-            SkipSemicolon(scanner);
+            while (scanner.Current.Kind == TokenKind.Semicolon)
+                scanner.Scan();
             return scanner.Current.IsEndOfInput;
         }
 
@@ -1053,279 +974,322 @@ namespace Magic.Kernel.Compilation
             return !string.IsNullOrEmpty(declarationLine);
         }
 
-        private bool TryParseStreamDeclaration(Scanner scanner, out string streamName, out string elementType)
+        private bool TryParseStreamDeclaration(string line, out string streamName, out string elementType)
         {
-            streamName = "";
-            elementType = "";
-
-            if (IsIdentifier(scanner.Current, "var"))
-                scanner.Scan();
-
-            if (scanner.Current.Kind != TokenKind.Identifier)
-                return false;
-            streamName = scanner.Scan().Value;
-
-            if (scanner.Current.Kind != TokenKind.Colon || scanner.Watch(1)?.Kind != TokenKind.Assign)
-                return false;
-            scanner.Scan();
-            scanner.Scan();
-
-            if (!IsIdentifier(scanner.Current, "stream"))
-                return false;
-            scanner.Scan();
-
-            if (scanner.Current.Kind != TokenKind.LessThan)
-                return false;
-            scanner.Scan();
-            if (scanner.Current.Kind != TokenKind.Identifier)
-                return false;
-            elementType = scanner.Scan().Value.ToLowerInvariant();
-
-            while (scanner.Current.Kind == TokenKind.Comma)
+            streamName = string.Empty;
+            elementType = string.Empty;
+            var previous = _scanner;
+            _scanner = new Scanner(line);
+            try
             {
-                scanner.Scan();
-                if (scanner.Current.Kind != TokenKind.Identifier)
-                    return false;
-                scanner.Scan();
-            }
+                if (IsIdentifier(CurrentScanner.Current, "var"))
+                    CurrentScanner.Scan();
 
-            if (scanner.Current.Kind != TokenKind.GreaterThan)
-                return false;
-            scanner.Scan();
-            SkipSemicolon(scanner);
-            return scanner.Current.IsEndOfInput;
+                if (CurrentScanner.Current.Kind != TokenKind.Identifier)
+                    return false;
+                streamName = CurrentScanner.Scan().Value;
+
+                if (CurrentScanner.Current.Kind != TokenKind.Colon || CurrentScanner.Watch(1)?.Kind != TokenKind.Assign)
+                    return false;
+                CurrentScanner.Scan();
+                CurrentScanner.Scan();
+
+                if (!IsIdentifier(CurrentScanner.Current, "stream"))
+                    return false;
+                CurrentScanner.Scan();
+
+                if (CurrentScanner.Current.Kind != TokenKind.LessThan)
+                    return false;
+                CurrentScanner.Scan();
+                if (CurrentScanner.Current.Kind != TokenKind.Identifier)
+                    return false;
+                elementType = CurrentScanner.Scan().Value.ToLowerInvariant();
+
+                while (CurrentScanner.Current.Kind == TokenKind.Comma)
+                {
+                    CurrentScanner.Scan();
+                    if (CurrentScanner.Current.Kind != TokenKind.Identifier)
+                        return false;
+                    CurrentScanner.Scan();
+                }
+
+                if (CurrentScanner.Current.Kind != TokenKind.GreaterThan)
+                    return false;
+                CurrentScanner.Scan();
+                SkipSemicolon();
+                return CurrentScanner.Current.IsEndOfInput;
+            }
+            finally
+            {
+                _scanner = previous;
+            }
         }
 
-        private bool TryParseEntityDeclaration(string sourceLine, Scanner scanner, out string varName, out string varType, out string initText)
+        private bool TryParseEntityDeclaration(string sourceLine, out string varName, out string varType, out string initText)
         {
             varName = "";
             varType = "";
             initText = "";
-
-            if (IsIdentifier(scanner.Current, "var"))
-                scanner.Scan();
-
-            if (scanner.Current.Kind != TokenKind.Identifier)
-                return false;
-            varName = scanner.Scan().Value;
-
-            if (scanner.Current.Kind != TokenKind.Colon)
-                return false;
-            scanner.Scan();
-            if (scanner.Current.Kind != TokenKind.Identifier)
-                return false;
-            varType = scanner.Scan().Value.ToLowerInvariant();
-            if (varType != "vertex" && varType != "relation" && varType != "shape")
-                return false;
-            if (scanner.Current.Kind != TokenKind.Assign)
-                return false;
-            scanner.Scan();
-
-            if (scanner.Current.IsEndOfInput)
-                return false;
-            var start = scanner.Current.Start;
-            var end = start;
-            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.Semicolon)
+            var previous = _scanner;
+            _scanner = new Scanner(sourceLine);
+            try
             {
-                end = scanner.Current.End;
-                scanner.Scan();
-            }
-            initText = start < end ? sourceLine.Substring(start, end - start).Trim() : "";
-            if (string.IsNullOrWhiteSpace(initText))
-                return false;
+                if (IsIdentifier(CurrentScanner.Current, "var"))
+                    CurrentScanner.Scan();
 
-            SkipSemicolon(scanner);
-            return scanner.Current.IsEndOfInput;
+                if (CurrentScanner.Current.Kind != TokenKind.Identifier)
+                    return false;
+                varName = CurrentScanner.Scan().Value;
+
+                if (CurrentScanner.Current.Kind != TokenKind.Colon)
+                    return false;
+                CurrentScanner.Scan();
+                if (CurrentScanner.Current.Kind != TokenKind.Identifier)
+                    return false;
+                varType = CurrentScanner.Scan().Value.ToLowerInvariant();
+                if (varType != "vertex" && varType != "relation" && varType != "shape")
+                    return false;
+                if (CurrentScanner.Current.Kind != TokenKind.Assign)
+                    return false;
+                CurrentScanner.Scan();
+
+                if (CurrentScanner.Current.IsEndOfInput)
+                    return false;
+                var start = CurrentScanner.Current.Start;
+                var end = start;
+                while (!CurrentScanner.Current.IsEndOfInput && CurrentScanner.Current.Kind != TokenKind.Semicolon)
+                {
+                    end = CurrentScanner.Current.End;
+                    CurrentScanner.Scan();
+                }
+                initText = start < end ? sourceLine.Substring(start, end - start).Trim() : "";
+                if (string.IsNullOrWhiteSpace(initText))
+                    return false;
+
+                SkipSemicolon();
+                return CurrentScanner.Current.IsEndOfInput;
+            }
+            finally
+            {
+                _scanner = previous;
+            }
         }
 
-        private bool TryParseVertexObject(Scanner scanner, out VertexInitSpec spec)
+        private bool TryParseVertexObject(string initValue, out VertexInitSpec spec)
         {
             spec = new VertexInitSpec();
-            if (scanner.Current.Kind != TokenKind.LBrace)
-                return false;
-            scanner.Scan();
-
-            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RBrace)
+            var previous = _scanner;
+            _scanner = new Scanner(initValue);
+            try
             {
-                if (scanner.Current.Kind == TokenKind.Comma)
-                {
-                    scanner.Scan();
-                    continue;
-                }
+                if (CurrentScanner.Current.Kind != TokenKind.LBrace)
+                    return false;
+                CurrentScanner.Scan();
 
-                if (IsIdentifier(scanner.Current, "DIM"))
+                while (!CurrentScanner.Current.IsEndOfInput && CurrentScanner.Current.Kind != TokenKind.RBrace)
                 {
-                    scanner.Scan();
-                    TryConsumeColon(scanner);
-                    var dims = ParseLongArray(scanner);
-                    if (dims.Count > 0)
+                    if (CurrentScanner.Current.Kind == TokenKind.Comma)
                     {
-                        spec.Dimensions.Clear();
-                        spec.Dimensions.AddRange(dims);
+                        CurrentScanner.Scan();
+                        continue;
                     }
-                    continue;
-                }
 
-                if (IsIdentifier(scanner.Current, "W"))
-                {
-                    scanner.Scan();
-                    TryConsumeColon(scanner);
-                    if (TryParseDoubleToken(scanner, out var weight))
-                        spec.Weight = weight;
-                    continue;
-                }
-
-                if (IsIdentifier(scanner.Current, "DATA"))
-                {
-                    scanner.Scan();
-                    TryConsumeColon(scanner);
-                    if (IsIdentifier(scanner.Current, "BIN"))
+                    if (IsIdentifier(CurrentScanner.Current, "DIM"))
                     {
-                        scanner.Scan();
-                        TryConsumeColon(scanner);
-                        if (scanner.Current.Kind == TokenKind.StringLiteral)
-                            spec.BinaryData = scanner.Scan().Value;
+                        CurrentScanner.Scan();
+                        TryConsumeColon();
+                        var dims = ParseLongArray();
+                        if (dims.Count > 0)
+                        {
+                            spec.Dimensions.Clear();
+                            spec.Dimensions.AddRange(dims);
+                        }
+                        continue;
                     }
-                    else if (scanner.Current.Kind == TokenKind.StringLiteral)
+
+                    if (IsIdentifier(CurrentScanner.Current, "W"))
                     {
-                        spec.TextData = scanner.Scan().Value;
+                        CurrentScanner.Scan();
+                        TryConsumeColon();
+                        if (TryParseDoubleToken(out var weight))
+                            spec.Weight = weight;
+                        continue;
                     }
-                    continue;
+
+                    if (IsIdentifier(CurrentScanner.Current, "DATA"))
+                    {
+                        CurrentScanner.Scan();
+                        TryConsumeColon();
+                        if (IsIdentifier(CurrentScanner.Current, "BIN"))
+                        {
+                            CurrentScanner.Scan();
+                            TryConsumeColon();
+                            if (CurrentScanner.Current.Kind == TokenKind.StringLiteral)
+                                spec.BinaryData = CurrentScanner.Scan().Value;
+                        }
+                        else if (CurrentScanner.Current.Kind == TokenKind.StringLiteral)
+                        {
+                            spec.TextData = CurrentScanner.Scan().Value;
+                        }
+                        continue;
+                    }
+
+                    CurrentScanner.Scan();
                 }
 
-                scanner.Scan();
+                if (CurrentScanner.Current.Kind != TokenKind.RBrace)
+                    return false;
+                CurrentScanner.Scan();
+                return CurrentScanner.Current.IsEndOfInput;
             }
-
-            if (scanner.Current.Kind != TokenKind.RBrace)
-                return false;
-            scanner.Scan();
-            return scanner.Current.IsEndOfInput;
+            finally
+            {
+                _scanner = previous;
+            }
         }
 
-        private bool TryParseRelationObject(Scanner scanner, out RelationInitSpec spec)
+        private bool TryParseRelationObject(string initValue, out RelationInitSpec spec)
         {
             spec = new RelationInitSpec();
-            if (scanner.Current.Kind != TokenKind.LBrace)
-                return false;
-            scanner.Scan();
-
-            if (scanner.Current.Kind == TokenKind.Identifier)
-                spec.From = scanner.Scan().Value;
-            if (scanner.Current.Kind != TokenKind.Assign || scanner.Watch(1)?.Kind != TokenKind.GreaterThan)
-                return false;
-            scanner.Scan();
-            scanner.Scan();
-            if (scanner.Current.Kind != TokenKind.Identifier)
-                return false;
-            spec.To = scanner.Scan().Value;
-
-            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RBrace)
+            var previous = _scanner;
+            _scanner = new Scanner(initValue);
+            try
             {
-                if (scanner.Current.Kind == TokenKind.Comma)
-                {
-                    scanner.Scan();
-                    continue;
-                }
-                if (IsIdentifier(scanner.Current, "W"))
-                {
-                    scanner.Scan();
-                    TryConsumeColon(scanner);
-                    if (TryParseDoubleToken(scanner, out var weight))
-                        spec.Weight = weight;
-                    continue;
-                }
-                scanner.Scan();
-            }
+                if (CurrentScanner.Current.Kind != TokenKind.LBrace)
+                    return false;
+                CurrentScanner.Scan();
 
-            if (scanner.Current.Kind != TokenKind.RBrace)
-                return false;
-            scanner.Scan();
-            return scanner.Current.IsEndOfInput;
+                if (CurrentScanner.Current.Kind == TokenKind.Identifier)
+                    spec.From = CurrentScanner.Scan().Value;
+                if (CurrentScanner.Current.Kind != TokenKind.Assign || CurrentScanner.Watch(1)?.Kind != TokenKind.GreaterThan)
+                    return false;
+                CurrentScanner.Scan();
+                CurrentScanner.Scan();
+                if (CurrentScanner.Current.Kind != TokenKind.Identifier)
+                    return false;
+                spec.To = CurrentScanner.Scan().Value;
+
+                while (!CurrentScanner.Current.IsEndOfInput && CurrentScanner.Current.Kind != TokenKind.RBrace)
+                {
+                    if (CurrentScanner.Current.Kind == TokenKind.Comma)
+                    {
+                        CurrentScanner.Scan();
+                        continue;
+                    }
+                    if (IsIdentifier(CurrentScanner.Current, "W"))
+                    {
+                        CurrentScanner.Scan();
+                        TryConsumeColon();
+                        if (TryParseDoubleToken(out var weight))
+                            spec.Weight = weight;
+                        continue;
+                    }
+                    CurrentScanner.Scan();
+                }
+
+                if (CurrentScanner.Current.Kind != TokenKind.RBrace)
+                    return false;
+                CurrentScanner.Scan();
+                return CurrentScanner.Current.IsEndOfInput;
+            }
+            finally
+            {
+                _scanner = previous;
+            }
         }
 
-        private bool TryParseShapeObject(Scanner scanner, out ShapeInitSpec spec)
+        private bool TryParseShapeObject(string initValue, out ShapeInitSpec spec)
         {
             spec = new ShapeInitSpec();
-            if (scanner.Current.Kind != TokenKind.LBrace)
-                return false;
-            scanner.Scan();
+            var previous = _scanner;
+            _scanner = new Scanner(initValue);
+            try
+            {
+                if (CurrentScanner.Current.Kind != TokenKind.LBrace)
+                    return false;
+                CurrentScanner.Scan();
 
-            if (IsIdentifier(scanner.Current, "VERT"))
-            {
-                scanner.Scan();
-                TryConsumeColon(scanner);
-                if (scanner.Current.Kind != TokenKind.LBracket)
-                    return false;
-                scanner.Scan();
-                while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RBracket)
+                if (IsIdentifier(CurrentScanner.Current, "VERT"))
                 {
-                    if (scanner.Current.Kind == TokenKind.Comma)
+                    CurrentScanner.Scan();
+                    TryConsumeColon();
+                    if (CurrentScanner.Current.Kind != TokenKind.LBracket)
+                        return false;
+                    CurrentScanner.Scan();
+                    while (!CurrentScanner.Current.IsEndOfInput && CurrentScanner.Current.Kind != TokenKind.RBracket)
                     {
-                        scanner.Scan();
-                        continue;
+                        if (CurrentScanner.Current.Kind == TokenKind.Comma)
+                        {
+                            CurrentScanner.Scan();
+                            continue;
+                        }
+                        if (CurrentScanner.Current.Kind == TokenKind.LBrace && TryParseInlineVertex(out var inlineVertex))
+                        {
+                            spec.InlineVertices.Add(inlineVertex);
+                            continue;
+                        }
+                        CurrentScanner.Scan();
                     }
-                    if (scanner.Current.Kind == TokenKind.LBrace && TryParseInlineVertex(scanner, out var inlineVertex))
-                    {
-                        spec.InlineVertices.Add(inlineVertex);
-                        continue;
-                    }
-                    scanner.Scan();
+                    if (CurrentScanner.Current.Kind != TokenKind.RBracket)
+                        return false;
+                    CurrentScanner.Scan();
                 }
-                if (scanner.Current.Kind != TokenKind.RBracket)
-                    return false;
-                scanner.Scan();
-            }
-            else if (scanner.Current.Kind == TokenKind.LBracket)
-            {
-                scanner.Scan();
-                while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RBracket)
+                else if (CurrentScanner.Current.Kind == TokenKind.LBracket)
                 {
-                    if (scanner.Current.Kind == TokenKind.Comma)
+                    CurrentScanner.Scan();
+                    while (!CurrentScanner.Current.IsEndOfInput && CurrentScanner.Current.Kind != TokenKind.RBracket)
                     {
-                        scanner.Scan();
-                        continue;
+                        if (CurrentScanner.Current.Kind == TokenKind.Comma)
+                        {
+                            CurrentScanner.Scan();
+                            continue;
+                        }
+                        if (CurrentScanner.Current.Kind == TokenKind.Identifier)
+                            spec.VertexNames.Add(CurrentScanner.Scan().Value);
+                        else
+                            CurrentScanner.Scan();
                     }
-                    if (scanner.Current.Kind == TokenKind.Identifier)
-                        spec.VertexNames.Add(scanner.Scan().Value);
-                    else
-                        scanner.Scan();
+                    if (CurrentScanner.Current.Kind != TokenKind.RBracket)
+                        return false;
+                    CurrentScanner.Scan();
                 }
-                if (scanner.Current.Kind != TokenKind.RBracket)
+                else
+                {
                     return false;
-                scanner.Scan();
-            }
-            else
-            {
-                return false;
-            }
+                }
 
-            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RBrace)
-                scanner.Scan();
-            if (scanner.Current.Kind != TokenKind.RBrace)
-                return false;
-            scanner.Scan();
-            return scanner.Current.IsEndOfInput;
+                while (!CurrentScanner.Current.IsEndOfInput && CurrentScanner.Current.Kind != TokenKind.RBrace)
+                    CurrentScanner.Scan();
+                if (CurrentScanner.Current.Kind != TokenKind.RBrace)
+                    return false;
+                CurrentScanner.Scan();
+                return CurrentScanner.Current.IsEndOfInput;
+            }
+            finally
+            {
+                _scanner = previous;
+            }
         }
 
-        private bool TryParseInlineVertex(Scanner scanner, out InlineVertexSpec spec)
+        private bool TryParseInlineVertex(out InlineVertexSpec spec)
         {
             spec = new InlineVertexSpec();
-            if (scanner.Current.Kind != TokenKind.LBrace)
+            if (CurrentScanner.Current.Kind != TokenKind.LBrace)
                 return false;
-            scanner.Scan();
+            CurrentScanner.Scan();
 
-            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RBrace)
+            while (!CurrentScanner.Current.IsEndOfInput && CurrentScanner.Current.Kind != TokenKind.RBrace)
             {
-                if (scanner.Current.Kind == TokenKind.Comma)
+                if (CurrentScanner.Current.Kind == TokenKind.Comma)
                 {
-                    scanner.Scan();
+                    CurrentScanner.Scan();
                     continue;
                 }
-                if (IsIdentifier(scanner.Current, "DIM"))
+                if (IsIdentifier(CurrentScanner.Current, "DIM"))
                 {
-                    scanner.Scan();
-                    TryConsumeColon(scanner);
-                    var dims = ParseLongArray(scanner);
+                    CurrentScanner.Scan();
+                    TryConsumeColon();
+                    var dims = ParseLongArray();
                     if (dims.Count > 0)
                     {
                         spec.Dimensions.Clear();
@@ -1333,195 +1297,195 @@ namespace Magic.Kernel.Compilation
                     }
                     continue;
                 }
-                if (IsIdentifier(scanner.Current, "W"))
+                if (IsIdentifier(CurrentScanner.Current, "W"))
                 {
-                    scanner.Scan();
-                    TryConsumeColon(scanner);
-                    if (TryParseDoubleToken(scanner, out var weight))
+                    CurrentScanner.Scan();
+                    TryConsumeColon();
+                    if (TryParseDoubleToken(out var weight))
                         spec.Weight = weight;
                     continue;
                 }
-                scanner.Scan();
+                CurrentScanner.Scan();
             }
 
-            if (scanner.Current.Kind != TokenKind.RBrace)
+            if (CurrentScanner.Current.Kind != TokenKind.RBrace)
                 return false;
-            scanner.Scan();
+            CurrentScanner.Scan();
             return true;
         }
 
-        private static List<long> ParseLongArray(Scanner scanner)
+        private List<long> ParseLongArray()
         {
             var values = new List<long>();
-            if (scanner.Current.Kind != TokenKind.LBracket)
+            if (CurrentScanner.Current.Kind != TokenKind.LBracket)
                 return values;
-            scanner.Scan();
-            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RBracket)
+            CurrentScanner.Scan();
+            while (!CurrentScanner.Current.IsEndOfInput && CurrentScanner.Current.Kind != TokenKind.RBracket)
             {
-                if (scanner.Current.Kind == TokenKind.Comma)
+                if (CurrentScanner.Current.Kind == TokenKind.Comma)
                 {
-                    scanner.Scan();
+                    CurrentScanner.Scan();
                     continue;
                 }
-                if ((scanner.Current.Kind == TokenKind.Number || scanner.Current.Kind == TokenKind.Float) &&
-                    long.TryParse(scanner.Current.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var num))
+                if ((CurrentScanner.Current.Kind == TokenKind.Number || CurrentScanner.Current.Kind == TokenKind.Float) &&
+                    long.TryParse(CurrentScanner.Current.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var num))
                 {
                     values.Add(num);
                 }
-                scanner.Scan();
+                CurrentScanner.Scan();
             }
-            if (scanner.Current.Kind == TokenKind.RBracket)
-                scanner.Scan();
+            if (CurrentScanner.Current.Kind == TokenKind.RBracket)
+                CurrentScanner.Scan();
             return values;
         }
 
-        private static bool TryParseDoubleToken(Scanner scanner, out double value)
+        private bool TryParseDoubleToken(out double value)
         {
             value = 0d;
-            if (scanner.Current.Kind != TokenKind.Number && scanner.Current.Kind != TokenKind.Float)
+            if (CurrentScanner.Current.Kind != TokenKind.Number && CurrentScanner.Current.Kind != TokenKind.Float)
                 return false;
-            var ok = double.TryParse(scanner.Current.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out value);
-            scanner.Scan();
+            var ok = double.TryParse(CurrentScanner.Current.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out value);
+            CurrentScanner.Scan();
             return ok;
         }
 
-        private static bool TryParseVaultReadExpression(Scanner scanner, out string vaultVarName, out string tokenKey)
+        private bool TryParseVaultReadExpression(out string vaultVarName, out string tokenKey)
         {
             vaultVarName = "";
             tokenKey = "";
-            var pos = scanner.Save();
-            if (scanner.Current.Kind != TokenKind.Identifier) return false;
-            vaultVarName = scanner.Scan().Value;
-            if (scanner.Current.Kind != TokenKind.Dot || !IsIdentifier(scanner.Watch(1), "read"))
+            var pos = CurrentScanner.Save();
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier) return false;
+            vaultVarName = CurrentScanner.Scan().Value;
+            if (CurrentScanner.Current.Kind != TokenKind.Dot || !IsIdentifier(CurrentScanner.Watch(1), "read"))
             {
-                scanner.Restore(pos);
+                CurrentScanner.Restore(pos);
                 return false;
             }
-            scanner.Scan();
-            scanner.Scan();
-            if (scanner.Current.Kind != TokenKind.LParen)
+            CurrentScanner.Scan();
+            CurrentScanner.Scan();
+            if (CurrentScanner.Current.Kind != TokenKind.LParen)
             {
-                scanner.Restore(pos);
+                CurrentScanner.Restore(pos);
                 return false;
             }
-            scanner.Scan();
-            if (scanner.Current.Kind != TokenKind.StringLiteral)
+            CurrentScanner.Scan();
+            if (CurrentScanner.Current.Kind != TokenKind.StringLiteral)
             {
-                scanner.Restore(pos);
+                CurrentScanner.Restore(pos);
                 return false;
             }
-            tokenKey = scanner.Scan().Value;
-            if (scanner.Current.Kind != TokenKind.RParen)
+            tokenKey = CurrentScanner.Scan().Value;
+            if (CurrentScanner.Current.Kind != TokenKind.RParen)
             {
-                scanner.Restore(pos);
+                CurrentScanner.Restore(pos);
                 return false;
             }
-            scanner.Scan();
-            SkipSemicolon(scanner);
-            var success = scanner.Current.IsEndOfInput;
-            if (!success) scanner.Restore(pos);
+            CurrentScanner.Scan();
+            SkipSemicolon();
+            var success = CurrentScanner.Current.IsEndOfInput;
+            if (!success) CurrentScanner.Restore(pos);
             return success;
         }
 
-        private static bool TryParseAwaitExpression(Scanner scanner, out string variableName)
+        private bool TryParseAwaitExpression(out string variableName)
         {
             variableName = "";
-            var pos = scanner.Save();
-            if (!IsIdentifier(scanner.Current, "await"))
+            var pos = CurrentScanner.Save();
+            if (!IsIdentifier(CurrentScanner.Current, "await"))
                 return false;
-            scanner.Scan();
-            if (scanner.Current.Kind != TokenKind.Identifier)
+            CurrentScanner.Scan();
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier)
             {
-                scanner.Restore(pos);
+                CurrentScanner.Restore(pos);
                 return false;
             }
-            variableName = scanner.Scan().Value;
-            SkipSemicolon(scanner);
-            var success = scanner.Current.IsEndOfInput;
-            if (!success) scanner.Restore(pos);
+            variableName = CurrentScanner.Scan().Value;
+            SkipSemicolon();
+            var success = CurrentScanner.Current.IsEndOfInput;
+            if (!success) CurrentScanner.Restore(pos);
             return success;
         }
 
-        private static bool TryParseCompileExpression(Scanner scanner, out string variableName)
+        private bool TryParseCompileExpression(out string variableName)
         {
             variableName = "";
-            var pos = scanner.Save();
-            if (!IsIdentifier(scanner.Current, "compile"))
+            var pos = CurrentScanner.Save();
+            if (!IsIdentifier(CurrentScanner.Current, "compile"))
                 return false;
-            scanner.Scan();
-            if (scanner.Current.Kind != TokenKind.LParen)
+            CurrentScanner.Scan();
+            if (CurrentScanner.Current.Kind != TokenKind.LParen)
             {
-                scanner.Restore(pos);
+                CurrentScanner.Restore(pos);
                 return false;
             }
-            scanner.Scan();
-            if (scanner.Current.Kind != TokenKind.Identifier)
+            CurrentScanner.Scan();
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier)
             {
-                scanner.Restore(pos);
+                CurrentScanner.Restore(pos);
                 return false;
             }
-            variableName = scanner.Scan().Value;
-            if (scanner.Current.Kind != TokenKind.RParen)
+            variableName = CurrentScanner.Scan().Value;
+            if (CurrentScanner.Current.Kind != TokenKind.RParen)
             {
-                scanner.Restore(pos);
+                CurrentScanner.Restore(pos);
                 return false;
             }
-            scanner.Scan();
-            SkipSemicolon(scanner);
-            var success = scanner.Current.IsEndOfInput;
-            if (!success) scanner.Restore(pos);
+            CurrentScanner.Scan();
+            SkipSemicolon();
+            var success = CurrentScanner.Current.IsEndOfInput;
+            if (!success) CurrentScanner.Restore(pos);
             return success;
         }
 
-        private static bool TryParseOriginExpression(Scanner scanner, out string shapeVarName)
+        private bool TryParseOriginExpression(out string shapeVarName)
         {
             shapeVarName = "";
-            var pos = scanner.Save();
-            if (!(scanner.Current.Kind == TokenKind.RBracket || scanner.Current.Value == "]"))
+            var pos = CurrentScanner.Save();
+            if (!(CurrentScanner.Current.Kind == TokenKind.RBracket || CurrentScanner.Current.Value == "]"))
                 return false;
-            scanner.Scan();
-            if (scanner.Current.Kind != TokenKind.Identifier)
+            CurrentScanner.Scan();
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier)
             {
-                scanner.Restore(pos);
+                CurrentScanner.Restore(pos);
                 return false;
             }
-            shapeVarName = scanner.Scan().Value;
-            SkipSemicolon(scanner);
-            var success = scanner.Current.IsEndOfInput;
-            if (!success) scanner.Restore(pos);
+            shapeVarName = CurrentScanner.Scan().Value;
+            SkipSemicolon();
+            var success = CurrentScanner.Current.IsEndOfInput;
+            if (!success) CurrentScanner.Restore(pos);
             return success;
         }
 
-        private static bool TryParseIntersectionExpression(Scanner scanner, string sourceLine, out string shapeAName, out string shapeBText)
+        private bool TryParseIntersectionExpression(string sourceLine, out string shapeAName, out string shapeBText)
         {
             shapeAName = "";
             shapeBText = "";
-            var pos = scanner.Save();
-            if (scanner.Current.Kind != TokenKind.Identifier)
+            var pos = CurrentScanner.Save();
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier)
                 return false;
-            shapeAName = scanner.Scan().Value;
-            if (scanner.Current.Value != "|")
+            shapeAName = CurrentScanner.Scan().Value;
+            if (CurrentScanner.Current.Value != "|")
             {
-                scanner.Restore(pos);
+                CurrentScanner.Restore(pos);
                 return false;
             }
-            scanner.Scan();
-            if (scanner.Current.IsEndOfInput)
+            CurrentScanner.Scan();
+            if (CurrentScanner.Current.IsEndOfInput)
             {
-                scanner.Restore(pos);
+                CurrentScanner.Restore(pos);
                 return false;
             }
-            var start = scanner.Current.Start;
+            var start = CurrentScanner.Current.Start;
             var end = start;
-            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.Semicolon)
+            while (!CurrentScanner.Current.IsEndOfInput && CurrentScanner.Current.Kind != TokenKind.Semicolon)
             {
-                end = scanner.Current.End;
-                scanner.Scan();
+                end = CurrentScanner.Current.End;
+                CurrentScanner.Scan();
             }
             shapeBText = start < end ? sourceLine.Substring(start, end - start).Trim() : "";
             var success = !string.IsNullOrWhiteSpace(shapeAName) && !string.IsNullOrWhiteSpace(shapeBText);
             if (!success)
-                scanner.Restore(pos);
+                CurrentScanner.Restore(pos);
             return success;
         }
 
@@ -1532,7 +1496,8 @@ namespace Magic.Kernel.Compilation
             if (scanner.Current.Kind != TokenKind.Identifier)
                 return false;
             procedureName = scanner.Scan().Value;
-            SkipSemicolon(scanner);
+            while (scanner.Current.Kind == TokenKind.Semicolon)
+                scanner.Scan();
             return scanner.Current.IsEndOfInput;
         }
 
@@ -1542,16 +1507,16 @@ namespace Magic.Kernel.Compilation
         private static bool IsIdentifier(Token? token, string value) =>
             token.HasValue && token.Value.Kind == TokenKind.Identifier && string.Equals(token.Value.Value, value, StringComparison.OrdinalIgnoreCase);
 
-        private static void SkipSemicolon(Scanner scanner)
+        private void SkipSemicolon()
         {
-            while (scanner.Current.Kind == TokenKind.Semicolon)
-                scanner.Scan();
+            while (CurrentScanner.Current.Kind == TokenKind.Semicolon)
+                CurrentScanner.Scan();
         }
 
-        private static void TryConsumeColon(Scanner scanner)
+        private void TryConsumeColon()
         {
-            if (scanner.Current.Kind == TokenKind.Colon)
-                scanner.Scan();
+            if (CurrentScanner.Current.Kind == TokenKind.Colon)
+                CurrentScanner.Scan();
         }
     }
 }

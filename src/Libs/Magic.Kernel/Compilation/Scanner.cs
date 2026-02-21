@@ -21,6 +21,7 @@ namespace Magic.Kernel.Compilation
 
         /// <summary>Текущая позиция в потоке токенов (индекс следующего к потреблению).</summary>
         public int Position => _position;
+        public int SourceLength => _source.Length;
 
         /// <summary>Получить следующий токен и сдвинуть позицию.</summary>
         public Token Scan()
@@ -47,6 +48,13 @@ namespace Magic.Kernel.Compilation
 
         /// <summary>Восстановить позицию.</summary>
         public void Restore(int position) => _position = position;
+
+        public string Slice(int start, int end)
+        {
+            if (start < 0 || end < start || end > _source.Length)
+                return string.Empty;
+            return _source.Substring(start, end - start);
+        }
 
         private void ScanAll()
         {
