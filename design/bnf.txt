@@ -1,0 +1,131 @@
+source               ::= { newline | agi | program_hdr | module_hdr | procedure_def | function_def | entrypoint_def | top_call | other_line } EOF
+
+agi                  ::= "@" "AGI" version_text newline?
+program_hdr          ::= "program" header_value ";"? newlines
+module_hdr           ::= "module"  header_value ";"? newlines
+
+procedure_def        ::= "procedure" ident newlines block
+function_def         ::= "function"  ident newlines block
+entrypoint_def       ::= "entrypoint" newlines block
+
+top_call             ::= ident ";"
+
+block                ::= "{" ( asm_block | statement_block ) "}"
+
+asm_block            ::= "asm" newlines "{" asm_instructions "}" newlines "}"
+asm_instructions     ::= { asm_instruction_sep }
+; split by ';' or newline when next token starts with opcode
+
+statement_block      ::= { statement_line }
+; split by ';' or newline at depth==1 with nested brace tracking
+
+statement_line       ::= var_block_start
+                      | inline_var_decl_start
+                      | declaration
+                      | method_call
+                      | assignment
+                      | function_call
+                      | procedure_call
+
+var_block_start      ::= "var" ";"?
+inline_var_decl_start::= "var" declaration
+
+declaration          ::= stream_decl | entity_decl
+
+stream_decl          ::= ["var"] ident ":" "=" "stream" "<" ident { "," ident } ">" ";"?
+; ':=' is represented as Colon + Assign tokens
+
+entity_decl          ::= ["var"] ident ":" ("vertex" | "relation" | "shape") "=" init_text ";"?
+
+method_call          ::= ident "." ident "(" method_arg ")" ";"?
+method_arg           ::= string | raw_until_rparen
+
+assignment           ::= ["var"] ident ( "=" | ":" "=" ) assign_expr ";"*
+assign_expr          ::= "vault"
+                      | ident "." "read" "(" string ")"
+                      | "await" ident
+                      | "compile" "(" ident ")"
+                      | "]" ident
+                      | ident "|" shape_rhs
+                      | other_expr
+
+shape_rhs            ::= ident | shape_init_obj_text
+
+function_call        ::= ident "(" ident ")" ";"?
+; currently used by print(x)
+
+procedure_call       ::= ident ";"?
+
+vertex_init_obj      ::= "{" { vertex_field | "," | unknown } "}"
+vertex_field         ::= "DIM" ":"? "[" int { "," int } "]"
+                      | "W"   ":"? number
+                      | "DATA" ":"? string
+                      | "DATA" ":"? "BIN" ":"? string
+
+relation_init_obj    ::= "{" ident "=" ">" ident { "," | weight_field | unknown } "}"
+weight_field         ::= "W" ":"? number
+
+shape_init_obj       ::= "{"
+                         ( "VERT" ":"? "[" { inline_vertex [","] } "]"
+                         | "[" { ident [","] } "]" )
+                         { unknown } "}"
+
+inline_vertex        ::= "{" { ("DIM" ":"? "[" int {"," int} "]")
+                            | ("W" ":"? number)
+                            | "," | unknown } "}"
+
+instruction          ::= opcode [instruction_params]
+opcode               ::= ident
+
+instruction_params   ::= call_params
+                      | pop_params
+                      | push_params
+                      | callobj_params
+                      | generic_params
+                      | epsilon
+
+call_params          ::= call_name { ","? call_arg }
+call_name            ::= string | ident
+call_arg             ::= "[" number "]"
+                      | ident ":" call_value
+
+call_value           ::= string
+                      | "{" complex_obj "}"
+                      | ident [":" ] "{" complex_obj "}"
+                      | ident [":" ] ["index" [":"]] number
+
+pop_params           ::= "[" number "]"
+
+push_params          ::= "[" number "]"
+                      | "string" ":" string
+                      | number
+                      | ident
+                      | float_as_int
+
+callobj_params       ::= string | ident
+
+generic_params       ::= { named_param }
+
+named_param          ::= index_param
+                      | dimensions_param
+                      | weight_param
+                      | data_param
+                      | from_to_param
+                      | vertices_param
+
+index_param          ::= "index" [":"] number
+dimensions_param     ::= "dimensions" ":" "[" number { "," number } "]"
+weight_param         ::= "weight" ":" number
+
+data_param           ::= "data" ":" data_type_chain
+data_type_chain      ::= ident { ":" ident } [ string ]
+; if no colon and next token is identifier, parser throws CompilationException
+
+from_to_param        ::= ("from" | "to") ":" entity_ref
+entity_ref           ::= ident [":"] ["index" [":"]] number
+
+vertices_param       ::= "vertices" ":" [ "indices" ":" ] "[" number { "," number } "]"
+
+complex_obj          ::= "{" { ident ":" value [","] } "}"
+value                ::= string | number | float | ident | complex_obj | array
+array                ::= "[" { value [","] } "]"

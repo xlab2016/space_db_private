@@ -52,7 +52,7 @@ namespace Magic.Kernel.Compilation
 
         public static ExecutableUnit Deserialize(string text)
         {
-            var parser = new Parser();
+            var parser = new InstructionParser();
             var semanticAnalyzer = new SemanticAnalyzer();
             var unit = new ExecutableUnit();
             var lines = text.Split(new[] { '\r', '\n' }, StringSplitOptions.None);

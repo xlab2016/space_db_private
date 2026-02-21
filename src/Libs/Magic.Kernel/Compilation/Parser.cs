@@ -8,1728 +8,7 @@ namespace Magic.Kernel.Compilation
 {
     public class Parser
     {
-        private Scanner? _scanner;
-
-        /// <summary>Текущий токен (тот, который будет потреблён следующим Scan). Watch(0).</summary>
-        public Token CurrentToken() => _scanner?.Watch(0) ?? default;
-
-        /// <summary>Посмотреть токен относительно текущей позиции. Watch(-1) — предыдущий.</summary>
-        public Token? Watch(int offset) => _scanner?.Watch(offset);
-
-        /// <summary>Ожидать токен вида <paramref name="kind"/>; иначе ошибка компиляции.</summary>
-        private Token Expect(TokenKind kind)
-        {
-            var t = _scanner!.Scan();
-            if (t.Kind != kind)
-                throw new CompilationException($"Expected {kind}, got {t.Kind} at position {t.Start}.", t.Start);
-            return t;
-        }
-
-        /// <summary>Ожидать идентификатор с одним из значений; иначе ошибка компиляции.</summary>
-        private Token ExpectOneOf(params string[] values)
-        {
-            var t = _scanner!.Scan();
-            if (t.Kind != TokenKind.Identifier)
-                throw new CompilationException($"Expected one of [{string.Join(", ", values)}], got {t.Kind} at position {t.Start}.", t.Start);
-            var lower = t.Value.ToLowerInvariant();
-            foreach (var v in values)
-                if (v.Equals(lower, StringComparison.OrdinalIgnoreCase))
-                    return t;
-            throw new CompilationException($"Expected one of [{string.Join(", ", values)}], got '{t.Value}' at position {t.Start}.", t.Start);
-        }
-
-        /// <summary>BNF: попробовать альтернативы по порядку; первая успешная возвращает true и не откатывает.</summary>
-        private bool Or(params Func<bool>[] alternatives)
-        {
-            if (_scanner == null) return false;
-            var pos = _scanner.Save();
-            foreach (var tryBranch in alternatives)
-            {
-                _scanner.Restore(pos);
-                if (tryBranch())
-                    return true;
-            }
-            _scanner.Restore(pos);
-            return false;
-        }
-
-        /// <summary>BNF: ожидать последовательность токенов (kind + опционально value для Identifier). При несовпадении — ошибка компиляции.</summary>
-        private void Sequence(params (TokenKind kind, string? value)[] pattern)
-        {
-            foreach (var (kind, value) in pattern)
-            {
-                var t = _scanner!.Scan();
-                if (t.Kind != kind)
-                    throw new CompilationException($"Expected {kind}, got {t.Kind} at position {t.Start}.", t.Start);
-                if (value != null && !t.Value.Equals(value, StringComparison.OrdinalIgnoreCase))
-                    throw new CompilationException($"Expected '{value}', got '{t.Value}' at position {t.Start}.", t.Start);
-            }
-        }
-
-        private void SkipOptionalComma()
-        {
-            while (_scanner!.Current.Kind == TokenKind.Comma)
-                _scanner.Scan();
-        }
-
-        public InstructionNode Parse(string source)
-        {
-            var trimmed = source?.Trim() ?? "";
-            var instruction = new InstructionNode();
-            if (string.IsNullOrEmpty(trimmed))
-            {
-                instruction.Opcode = "";
-                return instruction;
-            }
-
-            _scanner = new Scanner(trimmed);
-            // BNF: instruction = Identifier [parameters]
-            var opcodeTok = Expect(TokenKind.Identifier);
-            instruction.Opcode = opcodeTok.Value.ToLowerInvariant();
-
-            if (_scanner.Current.IsEndOfInput)
-                return instruction;
-
-            switch (instruction.Opcode)
-            {
-                case "call":
-                    instruction.Parameters = ParseCallParametersFromTokens();
-                    break;
-                case "pop":
-                    instruction.Parameters = ParseMemoryParametersFromTokens();
-                    break;
-                case "push":
-                    instruction.Parameters = ParsePushParametersFromTokens();
-                    break;
-                case "def":
-                case "awaitobj":
-                case "defgen":
-                    instruction.Parameters = new List<ParameterNode>();
-                    break;
-                case "callobj":
-                    instruction.Parameters = ParseCallObjParametersFromTokens();
-                    break;
-                default:
-                    instruction.Parameters = ParseParametersFromTokens();
-                    break;
-            }
-
-            return instruction;
-        }
-
-        private List<ParameterNode> ParseCallObjParametersFromTokens()
-        {
-            SkipOptionalComma();
-            if (_scanner!.Current.IsEndOfInput)
-                return new List<ParameterNode>();
-
-            Token nameToken = default;
-            var parsed = Or(
-                () =>
-                {
-                    if (_scanner.Current.Kind != TokenKind.StringLiteral) return false;
-                    nameToken = _scanner.Scan();
-                    return true;
-                },
-                () =>
-                {
-                    if (_scanner.Current.Kind != TokenKind.Identifier) return false;
-                    nameToken = _scanner.Scan();
-                    return true;
-                });
-
-            if (!parsed)
-                throw new CompilationException($"Expected string or identifier for callobj at position {_scanner.Current.Start}.", _scanner.Current.Start);
-            var name = nameToken.Value;
-            return new List<ParameterNode> { new FunctionNameParameterNode { FunctionName = name } };
-        }
-
-        private List<ParameterNode> ParseMemoryParametersFromTokens()
-        {
-            SkipOptionalComma();
-            if (_scanner!.Current.IsEndOfInput || _scanner.Current.Kind != TokenKind.LBracket)
-                return new List<ParameterNode>();
-            Expect(TokenKind.LBracket);
-            var numTok = _scanner.Scan();
-            if (numTok.Kind != TokenKind.Number && numTok.Kind != TokenKind.Float)
-                throw new CompilationException($"Expected number in memory slot at position {numTok.Start}.", numTok.Start);
-            if (!long.TryParse(numTok.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var address))
-                throw new CompilationException($"Invalid number in memory slot at position {numTok.Start}.", numTok.Start);
-            Expect(TokenKind.RBracket);
-            return new List<ParameterNode> { new MemoryParameterNode { Name = "index", Index = address } };
-        }
-
-        private List<ParameterNode> ParsePushParametersFromTokens()
-        {
-            SkipOptionalComma();
-            if (_scanner!.Current.IsEndOfInput)
-                return new List<ParameterNode>();
-            if (_scanner.Current.Kind == TokenKind.LBracket)
-                return ParseMemoryParametersFromTokens();
-            if (_scanner.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("string", StringComparison.OrdinalIgnoreCase))
-            {
-                Sequence(
-                    (TokenKind.Identifier, "string"),
-                    (TokenKind.Colon, null));
-                var strTok = Expect(TokenKind.StringLiteral);
-                return new List<ParameterNode> { new StringParameterNode { Name = "string", Value = strTok.Value } };
-            }
-            if (_scanner.Current.Kind == TokenKind.Number)
-            {
-                var t = _scanner.Scan();
-                if (long.TryParse(t.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var numVal))
-                    return new List<ParameterNode> { new IndexParameterNode { Name = "int", Value = numVal } };
-            }
-            if (_scanner.Current.Kind == TokenKind.Identifier)
-            {
-                var typeName = _scanner.Scan().Value;
-                return new List<ParameterNode> { new TypeLiteralParameterNode { TypeName = typeName } };
-            }
-            if (_scanner.Current.Kind == TokenKind.Float)
-            {
-                var t = _scanner.Scan();
-                if (long.TryParse(t.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var numVal))
-                    return new List<ParameterNode> { new IndexParameterNode { Name = "int", Value = numVal } };
-            }
-            return new List<ParameterNode>();
-        }
-
-        private List<ParameterNode> ParseCallParametersFromTokens()
-        {
-            var parameters = new List<ParameterNode>();
-            SkipOptionalComma();
-            if (_scanner!.Current.IsEndOfInput)
-                return parameters;
-
-            Token functionNameToken = default;
-            var parsedFunctionName = Or(
-                () =>
-                {
-                    if (_scanner.Current.Kind != TokenKind.StringLiteral) return false;
-                    functionNameToken = _scanner.Scan();
-                    return true;
-                },
-                () =>
-                {
-                    if (_scanner.Current.Kind != TokenKind.Identifier) return false;
-                    functionNameToken = _scanner.Scan();
-                    return true;
-                });
-
-            if (!parsedFunctionName)
-                throw new CompilationException($"Expected function name (string or identifier) at position {_scanner.Current.Start}.", _scanner.Current.Start);
-            parameters.Add(new FunctionNameParameterNode { Name = "function", FunctionName = functionNameToken.Value });
-
-            SkipOptionalComma();
-            while (!_scanner.Current.IsEndOfInput)
-            {
-                if (_scanner.Current.Kind == TokenKind.LBracket)
-                {
-                    Expect(TokenKind.LBracket);
-                    var numTok = _scanner.Scan();
-                    if (numTok.Kind != TokenKind.Number && numTok.Kind != TokenKind.Float)
-                        throw new CompilationException($"Expected number in memory slot at position {numTok.Start}.", numTok.Start);
-                    if (long.TryParse(numTok.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var addr))
-                    {
-                        Expect(TokenKind.RBracket);
-                        parameters.Add(new FunctionParameterNode { Name = "memory", ParameterName = "memory", EntityType = "memory", Index = addr });
-                    }
-                    SkipOptionalComma();
-                    continue;
-                }
-                if (_scanner.Current.Kind != TokenKind.Identifier)
-                    break;
-                var paramName = _scanner.Scan().Value;
-                Expect(TokenKind.Colon);
-                var paramNode = ParseCallParameterValueFromTokens(paramName);
-                if (paramNode != null)
-                    parameters.Add(paramNode);
-                SkipOptionalComma();
-            }
-            return parameters;
-        }
-
-        private ParameterNode? ParseCallParameterValueFromTokens(string paramName)
-        {
-            if (_scanner!.Current.Kind == TokenKind.StringLiteral)
-            {
-                var v = _scanner.Scan().Value;
-                return new StringParameterNode { Name = paramName, Value = v };
-            }
-            if (_scanner.Current.Kind == TokenKind.LBrace)
-            {
-                var complex = ParseComplexValueFromTokens();
-                return new ComplexValueParameterNode { Name = paramName, ParameterName = paramName, Value = complex };
-            }
-            if (_scanner.Current.Kind == TokenKind.Identifier)
-            {
-                // "shape: index: 1" -> paramName=shape, value=index:1 so entityType=paramName; "shape: shape: index: 1" -> entityType=shape
-                var firstIdent = _scanner.Scan().Value;
-                if (_scanner.Current.Kind == TokenKind.Colon)
-                    _scanner.Scan();
-                SkipOptionalComma();
-                if (_scanner.Current.Kind == TokenKind.LBrace)
-                {
-                    var complex = ParseComplexValueFromTokens();
-                    var dict = new Dictionary<string, object> { { firstIdent, complex } };
-                    return new ComplexValueParameterNode { Name = paramName, ParameterName = paramName, Value = dict };
-                }
-                string entityType;
-                if (firstIdent.Equals("index", StringComparison.OrdinalIgnoreCase))
-                {
-                    entityType = paramName;
-                }
-                else
-                {
-                    entityType = firstIdent;
-                }
-                if (_scanner.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("index", StringComparison.OrdinalIgnoreCase))
-                {
-                    _scanner.Scan();
-                    if (_scanner.Current.Kind == TokenKind.Colon)
-                        _scanner.Scan();
-                }
-                if (_scanner.Current.Kind == TokenKind.Number || _scanner.Current.Kind == TokenKind.Float)
-                {
-                    var numTok = _scanner.Scan();
-                    if (long.TryParse(numTok.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var idx))
-                        return new FunctionParameterNode { Name = paramName, ParameterName = paramName, EntityType = entityType, Index = idx };
-                }
-                throw new CompilationException($"Expected index or {{ after entity type at position {_scanner.Current.Start}.", _scanner.Current.Start);
-            }
-            return null;
-        }
-
-        private Dictionary<string, object> ParseComplexValueFromTokens()
-        {
-            Expect(TokenKind.LBrace);
-            var result = new Dictionary<string, object>();
-            SkipOptionalComma();
-            while (!_scanner!.Current.IsEndOfInput && _scanner.Current.Kind != TokenKind.RBrace)
-            {
-                var keyTok = Expect(TokenKind.Identifier);
-                var key = keyTok.Value;
-                Expect(TokenKind.Colon);
-                object? value = ParseValueFromTokens();
-                if (value != null)
-                    result[key] = value;
-                SkipOptionalComma();
-            }
-            Expect(TokenKind.RBrace);
-            return result;
-        }
-
-        private object? ParseValueFromTokens()
-        {
-            if (_scanner!.Current.IsEndOfInput) return null;
-            if (_scanner.Current.Kind == TokenKind.LBracket)
-            {
-                _scanner.Scan();
-                var list = ParseArrayItemsFromTokens();
-                Expect(TokenKind.RBracket);
-                return list;
-            }
-            if (_scanner.Current.Kind == TokenKind.LBrace)
-                return ParseComplexValueFromTokens();
-            if (_scanner.Current.Kind == TokenKind.StringLiteral)
-                return _scanner.Scan().Value;
-            if (_scanner.Current.Kind == TokenKind.Number)
-            {
-                var t = _scanner.Scan();
-                if (long.TryParse(t.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var l))
-                    return l;
-                return t.Value;
-            }
-            if (_scanner.Current.Kind == TokenKind.Float)
-            {
-                var t = _scanner.Scan();
-                if (double.TryParse(t.Value, System.Globalization.NumberStyles.Float, CultureInfo.InvariantCulture, out var d))
-                    return d;
-                return t.Value;
-            }
-            if (_scanner.Current.Kind == TokenKind.Identifier)
-                return _scanner.Scan().Value;
-            return null;
-        }
-
-        private List<object> ParseArrayItemsFromTokens()
-        {
-            var items = new List<object>();
-            SkipOptionalComma();
-            while (!_scanner!.Current.IsEndOfInput && _scanner.Current.Kind != TokenKind.RBracket)
-            {
-                var item = ParseValueFromTokens();
-                if (item != null)
-                    items.Add(item);
-                SkipOptionalComma();
-            }
-            return items;
-        }
-
-        private List<ParameterNode> ParseParametersFromTokens()
-        {
-            var parameters = new List<ParameterNode>();
-            SkipOptionalComma();
-            while (!_scanner!.Current.IsEndOfInput && _scanner.Current.Kind == TokenKind.Identifier)
-            {
-                var nameTok = _scanner.Scan();
-                var name = nameTok.Value.ToLowerInvariant();
-                if (_scanner.Current.Kind == TokenKind.Semicolon || _scanner.Current.IsEndOfInput)
-                    break;
-                if (_scanner.Current.Kind == TokenKind.Colon)
-                    _scanner.Scan();
-                else if (_scanner.Current.Kind != TokenKind.Number && _scanner.Current.Kind != TokenKind.Float)
-                    Expect(TokenKind.Colon);
-                var param = ParseParameterValueByNameFromTokens(name);
-                if (param != null)
-                    parameters.Add(param);
-                SkipOptionalComma();
-            }
-            return parameters;
-        }
-
-        private ParameterNode? ParseParameterValueByNameFromTokens(string name)
-        {
-            if (name == "index")
-            {
-                var t = _scanner!.Scan();
-                if (t.Kind != TokenKind.Number && t.Kind != TokenKind.Float)
-                    throw new CompilationException($"Expected number for index at position {t.Start}.", t.Start);
-                if (long.TryParse(t.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var v))
-                    return new IndexParameterNode { Name = name, Value = v };
-            }
-            if (name == "dimensions")
-            {
-                Expect(TokenKind.LBracket);
-                var values = new List<float>();
-                SkipOptionalComma();
-                while (!_scanner!.Current.IsEndOfInput && _scanner.Current.Kind != TokenKind.RBracket)
-                {
-                    var t = _scanner.Scan();
-                    if (t.Kind == TokenKind.Number || t.Kind == TokenKind.Float)
-                    {
-                        if (float.TryParse(t.Value, System.Globalization.NumberStyles.Float, CultureInfo.InvariantCulture, out var f))
-                            values.Add(f);
-                    }
-                    SkipOptionalComma();
-                }
-                Expect(TokenKind.RBracket);
-                return new DimensionsParameterNode { Name = name, Values = values };
-            }
-            if (name == "weight")
-            {
-                var t = _scanner!.Scan();
-                if (t.Kind != TokenKind.Number && t.Kind != TokenKind.Float)
-                    throw new CompilationException($"Expected number for weight at position {t.Start}.", t.Start);
-                if (float.TryParse(t.Value, System.Globalization.NumberStyles.Float, CultureInfo.InvariantCulture, out var f))
-                    return new WeightParameterNode { Name = name, Value = f };
-            }
-            if (name == "data")
-            {
-                var (typeStr, valueStr, hasColon) = ParseDataFromTokens();
-                var dataParam = new DataParameterNode { Name = name, Type = typeStr, Value = valueStr, HasColon = hasColon };
-                if (!string.IsNullOrEmpty(typeStr))
-                {
-                    foreach (var part in typeStr.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                        if (!string.IsNullOrEmpty(part))
-                            dataParam.Types.Add(part.ToLowerInvariant());
-                }
-                dataParam.OriginalString = !string.IsNullOrEmpty(typeStr) && !string.IsNullOrEmpty(valueStr) ? (hasColon ? $"{typeStr} \"{valueStr}\"" : $"{typeStr} {valueStr}") : typeStr ?? "";
-                return dataParam;
-            }
-            if (name == "from" || name == "to")
-            {
-                var (entityType, index) = ParseEntityReferenceFromTokens();
-                return name == "from"
-                    ? (ParameterNode)new FromParameterNode { Name = name, EntityType = entityType, Index = index }
-                    : new ToParameterNode { Name = name, EntityType = entityType, Index = index };
-            }
-            if (name == "vertices")
-            {
-                var indices = ParseVerticesFromTokens();
-                return new VerticesParameterNode { Name = name, Indices = indices };
-            }
-            return null;
-        }
-
-        private (string type, string value, bool hasColon) ParseDataFromTokens()
-        {
-            var types = new List<string>();
-            var sawColon = false;
-            while (_scanner!.Current.Kind == TokenKind.Identifier)
-            {
-                types.Add(_scanner.Scan().Value.ToLowerInvariant());
-                if (_scanner.Current.Kind != TokenKind.Colon)
-                    break;
-                sawColon = true;
-                _scanner.Scan();
-            }
-            if (types.Count == 0)
-                return ("", "", false);
-            var mainType = types[types.Count - 1];
-            types.RemoveAt(types.Count - 1);
-            var typeString = types.Count > 0 ? string.Join(":", types) + ":" + mainType : mainType;
-            // После типа без двоеточия допускается только строковый литерал; иначе — ошибка (например "data: text V2")
-            if (!sawColon && _scanner.Current.Kind == TokenKind.Identifier)
-                throw new CompilationException($"Expected Colon or string literal after type '{typeString}', got Identifier at position {_scanner.Current.Start}.", _scanner.Current.Start);
-            var valueStr = _scanner.Current.Kind == TokenKind.StringLiteral ? _scanner.Scan().Value : "";
-            return (typeString, valueStr, sawColon);
-        }
-
-        private (string entityType, long index) ParseEntityReferenceFromTokens()
-        {
-            if (_scanner!.Current.Kind != TokenKind.Identifier)
-                return ("", 0);
-            var entityType = _scanner.Scan().Value.ToLowerInvariant();
-            if (_scanner.Current.Kind == TokenKind.Colon)
-                _scanner.Scan();
-            if (_scanner.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("index", StringComparison.OrdinalIgnoreCase))
-            {
-                _scanner.Scan();
-                if (_scanner.Current.Kind == TokenKind.Colon)
-                    _scanner.Scan();
-            }
-            if (_scanner.Current.Kind != TokenKind.Number && _scanner.Current.Kind != TokenKind.Float)
-                return ("", 0);
-            var numTok = _scanner.Scan();
-            if (numTok.Kind != TokenKind.Number && numTok.Kind != TokenKind.Float)
-                return ("", 0);
-            long.TryParse(numTok.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var idx);
-            return (entityType, idx);
-        }
-
-        private List<long> ParseVerticesFromTokens()
-        {
-            if (_scanner!.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("indices", StringComparison.OrdinalIgnoreCase))
-            {
-                ExpectOneOf("indices");
-                Expect(TokenKind.Colon);
-            }
-            Expect(TokenKind.LBracket);
-            var indices = new List<long>();
-            SkipOptionalComma();
-            while (!_scanner.Current.IsEndOfInput && _scanner.Current.Kind != TokenKind.RBracket)
-            {
-                var t = _scanner.Scan();
-                if (t.Kind == TokenKind.Number || t.Kind == TokenKind.Float)
-                {
-                    if (long.TryParse(t.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var l))
-                        indices.Add(l);
-                }
-                SkipOptionalComma();
-            }
-            Expect(TokenKind.RBracket);
-            return indices;
-        }
-
-        private List<ParameterNode> ParseParameters(string parametersPart)
-        {
-            var parameters = new List<ParameterNode>();
-            var i = 0;
-
-            while (i < parametersPart.Length)
-            {
-                // Пропускаем пробелы и запятые
-                while (i < parametersPart.Length && (char.IsWhiteSpace(parametersPart[i]) || parametersPart[i] == ','))
-                {
-                    i++;
-                }
-
-                if (i >= parametersPart.Length) break;
-
-                // Находим имя параметра (до :)
-                var colonIndex = parametersPart.IndexOf(':', i);
-                if (colonIndex == -1) break;
-
-                var name = parametersPart.Substring(i, colonIndex - i).Trim().ToLower();
-                i = colonIndex + 1;
-
-                // Пропускаем пробелы после :
-                while (i < parametersPart.Length && char.IsWhiteSpace(parametersPart[i]))
-                {
-                    i++;
-                }
-
-                if (i >= parametersPart.Length) break;
-
-                ParameterNode? parameter = null;
-
-                // Парсим значение в зависимости от типа
-                if (name == "index")
-                {
-                    var value = ParseNumber(parametersPart, ref i);
-                    parameter = new IndexParameterNode { Name = name, Value = (long)value };
-                }
-                else if (name == "dimensions")
-                {
-                    var values = ParseArray(parametersPart, ref i);
-                    parameter = new DimensionsParameterNode { Name = name, Values = values };
-                }
-                else if (name == "weight")
-                {
-                    var value = ParseFloat(parametersPart, ref i);
-                    parameter = new WeightParameterNode { Name = name, Value = value };
-                }
-                else if (name == "data")
-                {
-                    var (type, value, hasColon) = ParseData(parametersPart, ref i);
-                    var dataParam = new DataParameterNode { Name = name, Type = type, Value = value };
-                    
-                    // Сохраняем информацию о наличии двоеточия
-                    dataParam.HasColon = hasColon;
-                    
-                    // Парсим вложенные типы из строки типа (например "binary:base64" -> ["binary", "base64"])
-                    if (!string.IsNullOrEmpty(type))
-                    {
-                        var typeParts = type.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-                        foreach (var typePart in typeParts)
-                        {
-                            if (!string.IsNullOrEmpty(typePart))
-                            {
-                                dataParam.Types.Add(typePart.ToLower());
-                            }
-                        }
-                    }
-                    
-                    // Сохраняем исходную строку для ошибок (тип + значение)
-                    if (!string.IsNullOrEmpty(type) && !string.IsNullOrEmpty(value))
-                    {
-                        dataParam.OriginalString = hasColon ? $"{type} \"{value}\"" : $"{type} {value}";
-                    }
-                    else
-                    {
-                        dataParam.OriginalString = !string.IsNullOrEmpty(type) ? type : "";
-                    }
-                    
-                    parameter = dataParam;
-                }
-                else if (name == "from")
-                {
-                    var (entityType, index) = ParseEntityReference(parametersPart, ref i);
-                    parameter = new FromParameterNode { Name = name, EntityType = entityType, Index = index };
-                }
-                else if (name == "to")
-                {
-                    var (entityType, index) = ParseEntityReference(parametersPart, ref i);
-                    parameter = new ToParameterNode { Name = name, EntityType = entityType, Index = index };
-                }
-                else if (name == "vertices")
-                {
-                    var indices = ParseVertices(parametersPart, ref i);
-                    parameter = new VerticesParameterNode { Name = name, Indices = indices };
-                }
-
-                if (parameter != null)
-                {
-                    parameters.Add(parameter);
-                }
-
-                // Ищем следующую запятую
-                while (i < parametersPart.Length && parametersPart[i] != ',')
-                {
-                    i++;
-                }
-            }
-
-            return parameters;
-        }
-
-        private long ParseNumber(string source, ref int index)
-        {
-            var start = index;
-            while (index < source.Length && (char.IsDigit(source[index]) || source[index] == '-'))
-            {
-                index++;
-            }
-            var numberStr = source.Substring(start, index - start);
-            return long.Parse(numberStr);
-        }
-
-        private float ParseFloat(string source, ref int index)
-        {
-            var start = index;
-            while (index < source.Length && (char.IsDigit(source[index]) || source[index] == '.' || source[index] == '-' || source[index] == 'e' || source[index] == 'E' || source[index] == '+' || source[index] == '-'))
-            {
-                index++;
-            }
-            var numberStr = source.Substring(start, index - start);
-            return float.Parse(numberStr, CultureInfo.InvariantCulture);
-        }
-
-        private List<float> ParseArray(string source, ref int index)
-        {
-            var values = new List<float>();
-
-            // Пропускаем [
-            while (index < source.Length && source[index] != '[')
-            {
-                index++;
-            }
-            if (index >= source.Length) return values;
-            index++; // пропускаем [
-
-            while (index < source.Length && source[index] != ']')
-            {
-                // Пропускаем пробелы и запятые
-                while (index < source.Length && (char.IsWhiteSpace(source[index]) || source[index] == ','))
-                {
-                    index++;
-                }
-
-                if (index >= source.Length || source[index] == ']') break;
-
-                var value = ParseFloat(source, ref index);
-                values.Add(value);
-
-                // Пропускаем пробелы и запятые
-                while (index < source.Length && (char.IsWhiteSpace(source[index]) || source[index] == ','))
-                {
-                    index++;
-                }
-            }
-
-            if (index < source.Length && source[index] == ']')
-            {
-                index++; // пропускаем ]
-            }
-
-            return values;
-        }
-
-        private (string type, string value, bool hasColon) ParseData(string source, ref int index)
-        {
-            // Формат: text: "V1" или binary: base64: "sdsfdsgfg==" или text "V1" (без двоеточия - недопустимо)
-            var types = new List<string>();
-            var sawColon = false;
-
-            // Парсим цепочку типов: type1: type2: ... : "value"
-            while (index < source.Length)
-            {
-                // Ищем следующий : или "
-            var colonIndex = source.IndexOf(':', index);
-                var quoteIndex = source.IndexOf('"', index);
-
-                // Если нашли кавычку раньше двоеточия, значит это начало значения (формат без двоеточия)
-                if (quoteIndex != -1 && (colonIndex == -1 || quoteIndex < colonIndex))
-                {
-                    // Если мы еще не видели двоеточие, то это формат `text "V1"` (недопустимо по требованиям)
-                    if (!sawColon)
-                    {
-                        var typeBeforeQuote = source.Substring(index, quoteIndex - index).Trim();
-                        if (!string.IsNullOrEmpty(typeBeforeQuote))
-                        {
-                            types.Add(typeBeforeQuote.ToLower());
-                        }
-                        // Сдвигаем индекс на кавычку, чтобы корректно распарсить значение и сохранить его для ошибки
-                        index = quoteIndex;
-                    }
-                    break;
-                }
-
-                // Спец-кейс: `text V2` (без двоеточия и без кавычек) — тоже недопустимо, но значение не должно теряться
-                if (quoteIndex == -1 && colonIndex == -1)
-                {
-                    // type = до пробела/запятой/;
-                    var startType = index;
-                    while (index < source.Length && !char.IsWhiteSpace(source[index]) && source[index] != ',' && source[index] != ';')
-                    {
-                        index++;
-                    }
-                    var typeToken = source.Substring(startType, index - startType).Trim();
-                    if (!string.IsNullOrEmpty(typeToken))
-                    {
-                        types.Add(typeToken.ToLower());
-                    }
-
-                    // пропускаем пробелы
-                    while (index < source.Length && char.IsWhiteSpace(source[index]))
-                    {
-                        index++;
-                    }
-
-                    // value = до , или ;
-                    var startVal = index;
-                    while (index < source.Length && source[index] != ',' && source[index] != ';')
-                    {
-                        index++;
-                    }
-                    var valueToken = source.Substring(startVal, index - startVal).Trim();
-
-                    var mainTypeToken = types.Count > 0 ? types[types.Count - 1] : "";
-                    if (types.Count > 0) types.RemoveAt(types.Count - 1);
-                    var typeStringToken = types.Count > 0 ? string.Join(":", types) + ":" + mainTypeToken : mainTypeToken;
-
-                    return (typeStringToken, valueToken, false);
-                }
-
-                // Если не нашли двоеточие, выходим
-            if (colonIndex == -1)
-                {
-                    break;
-                }
-
-                sawColon = true; // Отмечаем, что двоеточие было
-
-                // Извлекаем тип
-                var type = source.Substring(index, colonIndex - index).Trim().ToLower();
-                if (!string.IsNullOrEmpty(type))
-                {
-                    types.Add(type);
-                }
-
-                index = colonIndex + 1;
-
-                // Пропускаем пробелы после :
-                while (index < source.Length && char.IsWhiteSpace(source[index]))
-                {
-                    index++;
-                }
-            }
-
-            // Если типов нет, возвращаем пустую строку
-            if (types.Count == 0)
-            {
-                return ("", "", false);
-            }
-
-            // Последний тип - основной
-            var mainType = types[types.Count - 1];
-            types.RemoveAt(types.Count - 1);
-
-            // Пропускаем пробелы перед значением
-            while (index < source.Length && char.IsWhiteSpace(source[index]))
-            {
-                index++;
-            }
-
-            // Парсим строку в кавычках
-            string value = "";
-            if (index < source.Length && source[index] == '"')
-            {
-                index++; // пропускаем открывающую кавычку
-                var start = index;
-                while (index < source.Length && source[index] != '"')
-                {
-                    if (source[index] == '\\' && index + 1 < source.Length)
-                    {
-                        index += 2; // пропускаем экранированный символ
-                    }
-                    else
-                    {
-                        index++;
-                    }
-                }
-                value = source.Substring(start, index - start);
-                if (index < source.Length && source[index] == '"')
-                {
-                    index++; // пропускаем закрывающую кавычку
-                }
-            }
-
-            // Формируем строку типов для обратной совместимости
-            // Если есть вложенные типы, объединяем их через :
-            var typeString = types.Count > 0 
-                ? string.Join(":", types) + ":" + mainType 
-                : mainType;
-
-            // sawColon=false означает формат `text "V1"` (без двоеточия после типа)
-            return (typeString, value, sawColon);
-        }
-
-        private (string entityType, long index) ParseEntityReference(string source, ref int index)
-        {
-            // Формат: vertex: index: 1 или relation: index: 1
-            // Пропускаем пробелы
-            while (index < source.Length && char.IsWhiteSpace(source[index]))
-            {
-                index++;
-            }
-
-            if (index >= source.Length)
-            {
-                return ("", 0);
-            }
-
-            // Ищем первый тип сущности (до :)
-            var colonIndex = source.IndexOf(':', index);
-            if (colonIndex == -1)
-            {
-                return ("", 0);
-            }
-
-            var entityType = source.Substring(index, colonIndex - index).Trim().ToLower();
-            index = colonIndex + 1;
-
-            // Пропускаем пробелы
-            while (index < source.Length && char.IsWhiteSpace(source[index]))
-            {
-                index++;
-            }
-
-            // Ищем "index:"
-            var indexKeyword = "index:";
-            if (index + indexKeyword.Length <= source.Length && 
-                source.Substring(index, indexKeyword.Length).Equals(indexKeyword, StringComparison.OrdinalIgnoreCase))
-            {
-                index += indexKeyword.Length;
-                
-                // Пропускаем пробелы после "index:"
-                while (index < source.Length && char.IsWhiteSpace(source[index]))
-                {
-                    index++;
-                }
-            }
-
-            // Проверяем, что есть что парсить
-            if (index >= source.Length || (!char.IsDigit(source[index]) && source[index] != '-'))
-            {
-                return ("", 0);
-            }
-
-            // Парсим число
-            var numberValue = ParseNumber(source, ref index);
-
-            return (entityType, numberValue);
-        }
-
-        private List<long> ParseVertices(string source, ref int index)
-        {
-            // Формат: vertices: indices: [1, 2, 3]
-            var indices = new List<long>();
-
-            // Пропускаем пробелы
-            while (index < source.Length && char.IsWhiteSpace(source[index]))
-            {
-                index++;
-            }
-
-            // Ищем "indices:"
-            var indicesKeyword = "indices:";
-            if (index + indicesKeyword.Length <= source.Length && 
-                source.Substring(index, indicesKeyword.Length).Equals(indicesKeyword, StringComparison.OrdinalIgnoreCase))
-            {
-                index += indicesKeyword.Length;
-                
-                // Пропускаем пробелы после "indices:"
-                while (index < source.Length && char.IsWhiteSpace(source[index]))
-                {
-                    index++;
-                }
-            }
-
-            // Пропускаем до [
-            while (index < source.Length && source[index] != '[')
-            {
-                index++;
-            }
-            if (index >= source.Length) return indices;
-            index++; // пропускаем [
-
-            while (index < source.Length && source[index] != ']')
-            {
-                // Пропускаем пробелы и запятые
-                while (index < source.Length && (char.IsWhiteSpace(source[index]) || source[index] == ','))
-                {
-                    index++;
-                }
-
-                if (index >= source.Length || source[index] == ']') break;
-
-                var value = ParseNumber(source, ref index);
-                indices.Add(value);
-
-                // Пропускаем пробелы и запятые
-                while (index < source.Length && (char.IsWhiteSpace(source[index]) || source[index] == ','))
-                {
-                    index++;
-                }
-            }
-
-            if (index < source.Length && source[index] == ']')
-            {
-                index++; // пропускаем ]
-            }
-
-            return indices;
-        }
-
-        private List<ParameterNode> ParseCallParameters(string parametersPart)
-        {
-            // Формат: "origin", shape: index: 1
-            var parameters = new List<ParameterNode>();
-            var i = 0;
-
-            // Пропускаем пробелы
-            while (i < parametersPart.Length && char.IsWhiteSpace(parametersPart[i]))
-            {
-                i++;
-            }
-
-            // Парсим имя функции:
-            // 1) "origin" — строка в кавычках
-            // 2) Main — идентификатор без кавычек (для вызова процедур/функций пользователя)
-            if (i < parametersPart.Length)
-            {
-                string? functionName = null;
-
-                if (parametersPart[i] == '"')
-                {
-                    i++; // пропускаем открывающую кавычку
-                    var start = i;
-                    while (i < parametersPart.Length && parametersPart[i] != '"')
-                    {
-                        if (parametersPart[i] == '\\' && i + 1 < parametersPart.Length)
-                        {
-                            i += 2; // пропускаем экранированный символ
-                        }
-                        else
-                        {
-                            i++;
-                        }
-                    }
-                    functionName = parametersPart.Substring(start, i - start);
-                    if (i < parametersPart.Length && parametersPart[i] == '"')
-                    {
-                        i++; // пропускаем закрывающую кавычку
-                    }
-                }
-                else
-                {
-                    // Идентификатор: до пробела/запятой
-                    var start = i;
-                    while (i < parametersPart.Length && !char.IsWhiteSpace(parametersPart[i]) && parametersPart[i] != ',')
-                    {
-                        i++;
-                    }
-                    functionName = parametersPart.Substring(start, i - start).Trim();
-                }
-
-                if (!string.IsNullOrWhiteSpace(functionName))
-                {
-                    parameters.Add(new FunctionNameParameterNode { Name = "function", FunctionName = functionName });
-                }
-
-                // Пропускаем пробелы и запятую после имени функции
-                while (i < parametersPart.Length && (char.IsWhiteSpace(parametersPart[i]) || parametersPart[i] == ','))
-                {
-                    i++;
-                }
-            }
-
-            // Парсим остальные параметры (entity references или memory addresses)
-            // Формат: shape: index: 1 или [0]
-            // Используем стандартный парсинг параметров, но с обработкой entity references и memory addresses
-            var remainingPart = parametersPart.Substring(i).Trim();
-            if (!string.IsNullOrEmpty(remainingPart))
-            {
-                // Парсим как обычные параметры, но с особым форматом
-                var paramStart = 0;
-                while (paramStart < remainingPart.Length)
-                {
-                    // Пропускаем пробелы и запятые
-                    while (paramStart < remainingPart.Length && (char.IsWhiteSpace(remainingPart[paramStart]) || remainingPart[paramStart] == ','))
-                    {
-                        paramStart++;
-                    }
-
-                    if (paramStart >= remainingPart.Length) break;
-
-                    // Проверяем, является ли параметр memory address [0]
-                    if (paramStart < remainingPart.Length && remainingPart[paramStart] == '[')
-                    {
-                        // Парсим memory address
-                        var memoryStart = paramStart;
-                        paramStart++; // пропускаем [
-                        
-                        // Пропускаем пробелы
-                        while (paramStart < remainingPart.Length && char.IsWhiteSpace(remainingPart[paramStart]))
-                        {
-                            paramStart++;
-                        }
-
-                        if (paramStart >= remainingPart.Length) break;
-
-                        // Парсим число
-                        var numberStart = paramStart;
-                        while (paramStart < remainingPart.Length && char.IsDigit(remainingPart[paramStart]))
-                        {
-                            paramStart++;
-                        }
-
-                        if (paramStart > numberStart)
-                        {
-                            var addressStr = remainingPart.Substring(numberStart, paramStart - numberStart);
-                            if (long.TryParse(addressStr, out var address))
-                            {
-                                // Пропускаем пробелы
-                                while (paramStart < remainingPart.Length && char.IsWhiteSpace(remainingPart[paramStart]))
-                                {
-                                    paramStart++;
-                                }
-
-                                // Ищем закрывающую скобку ]
-                                if (paramStart < remainingPart.Length && remainingPart[paramStart] == ']')
-                                {
-                                    paramStart++; // пропускаем ]
-                                    
-                                    // Добавляем memory address как параметр функции
-                                    parameters.Add(new FunctionParameterNode 
-                                    { 
-                                        Name = "memory",
-                                        ParameterName = "memory",
-                                        EntityType = "memory", 
-                                        Index = address 
-                                    });
-                                    
-                                    // Продолжаем с следующего параметра
-                                    continue;
-                                }
-                            }
-                        }
-                        // Если не удалось распарсить, возвращаемся к обычному парсингу
-                        paramStart = memoryStart;
-                    }
-
-                    // Парсим имя параметра (может быть именованным или обычным)
-                    // Формат: name: entityType: index: value или name: entityType: { ... }
-                    var colonIndex = remainingPart.IndexOf(':', paramStart);
-                    if (colonIndex == -1 || colonIndex == paramStart) break;
-
-                    var paramName = remainingPart.Substring(paramStart, colonIndex - paramStart).Trim();
-                    if (string.IsNullOrEmpty(paramName)) break;
-
-                    var paramValueStart = colonIndex + 1;
-                    
-                    // Пропускаем пробелы после :
-                    while (paramValueStart < remainingPart.Length && char.IsWhiteSpace(remainingPart[paramValueStart]))
-                    {
-                        paramValueStart++;
-                    }
-
-                    if (paramValueStart >= remainingPart.Length) break;
-
-                    // Проверяем, является ли значение строковым литералом " ... "
-                    if (paramValueStart < remainingPart.Length && remainingPart[paramValueStart] == '"')
-                    {
-                        var strStart = paramValueStart + 1;
-                        var strEnd = strStart;
-                        while (strEnd < remainingPart.Length && remainingPart[strEnd] != '"')
-                        {
-                            if (remainingPart[strEnd] == '\\' && strEnd + 1 < remainingPart.Length)
-                                strEnd += 2;
-                            else
-                                strEnd++;
-                        }
-                        var strValue = strEnd > strStart ? remainingPart.Substring(strStart, strEnd - strStart) : "";
-                        if (strEnd < remainingPart.Length) strEnd++;
-                        parameters.Add(new StringParameterNode { Name = paramName, Value = strValue });
-                        paramStart = strEnd;
-                        continue;
-                    }
-
-                    // Проверяем, является ли значение вложенной структурой { ... }
-                    if (paramValueStart < remainingPart.Length && remainingPart[paramValueStart] == '{')
-                    {
-                        // Парсим вложенную структуру
-                        var (complexValue, consumed) = ParseComplexValue(remainingPart, paramValueStart);
-                        if (complexValue != null)
-                        {
-                            parameters.Add(new ComplexValueParameterNode 
-                            { 
-                                Name = paramName,
-                                ParameterName = paramName,
-                                Value = complexValue 
-                            });
-                            
-                            // Переходим к следующему параметру
-                            paramStart = paramValueStart + consumed;
-                            
-                            // Ищем следующую запятую или конец
-                            while (paramStart < remainingPart.Length && remainingPart[paramStart] != ',')
-                            {
-                                paramStart++;
-                            }
-                            continue;
-                        }
-                    }
-
-                    // Парсим entity reference
-                    // Формат может быть:
-                    // 1. entityType: index: value (например, shape: index: 1)
-                    // 2. entityType: { ... } (например, shape: { vertices: [...] })
-                    // 3. index: value (старый формат для обратной совместимости)
-                    var paramValuePart = remainingPart.Substring(paramValueStart);
-                    var paramValueIndex = 0;
-                    var entityType = string.Empty;
-                    
-                    // Пропускаем пробелы
-                    while (paramValueIndex < paramValuePart.Length && char.IsWhiteSpace(paramValuePart[paramValueIndex]))
-                    {
-                        paramValueIndex++;
-                    }
-                    
-                    // Пытаемся найти entityType в значении (например, "shape: index: 1" или "shape: { ... }")
-                    var firstColonIndex = paramValuePart.IndexOf(':', paramValueIndex);
-                    if (firstColonIndex > 0 && firstColonIndex < paramValuePart.Length - 1)
-                    {
-                        var potentialEntityType = paramValuePart.Substring(paramValueIndex, firstColonIndex - paramValueIndex).Trim();
-                        var afterFirstColon = firstColonIndex + 1;
-                        
-                        // Пропускаем пробелы после первого :
-                        while (afterFirstColon < paramValuePart.Length && char.IsWhiteSpace(paramValuePart[afterFirstColon]))
-                        {
-                            afterFirstColon++;
-                        }
-                        
-                        if (afterFirstColon < paramValuePart.Length)
-                        {
-                            // Проверяем, является ли следующее слово "index"
-                            if (afterFirstColon + 5 <= paramValuePart.Length &&
-                                paramValuePart.Substring(afterFirstColon, 5).Equals("index", StringComparison.OrdinalIgnoreCase))
-                            {
-                                // Это формат entityType: index: value
-                                entityType = potentialEntityType;
-                                paramValueIndex = afterFirstColon + 5; // пропускаем "index"
-                                
-                                // Пропускаем пробелы после "index"
-                                while (paramValueIndex < paramValuePart.Length && char.IsWhiteSpace(paramValuePart[paramValueIndex]))
-                                {
-                                    paramValueIndex++;
-                                }
-                                
-                                // Пропускаем :
-                                if (paramValueIndex < paramValuePart.Length && paramValuePart[paramValueIndex] == ':')
-                                {
-                                    paramValueIndex++;
-                                }
-                                
-                                // Пропускаем пробелы после :
-                                while (paramValueIndex < paramValuePart.Length && char.IsWhiteSpace(paramValuePart[paramValueIndex]))
-                                {
-                                    paramValueIndex++;
-                                }
-                            }
-                            else if (paramValuePart[afterFirstColon] == '{')
-                            {
-                                // Это формат entityType: { ... }
-                                entityType = potentialEntityType;
-                                paramValueIndex = afterFirstColon;
-                                
-                                // Парсим вложенную структуру
-                                var (complexValue, consumed) = ParseComplexValue(paramValuePart, paramValueIndex);
-                                if (complexValue != null)
-                                {
-                                    // Создаем словарь с entityType как ключом
-                                    var complexDict = new Dictionary<string, object> { { entityType, complexValue } };
-                                    
-                                    parameters.Add(new ComplexValueParameterNode 
-                                    { 
-                                        Name = paramName,
-                                        ParameterName = paramName,
-                                        Value = complexDict 
-                                    });
-                                    
-                                    // Переходим к следующему параметру
-                                    paramStart = paramValueStart + paramValueIndex + consumed;
-                                    
-                                    // Ищем следующую запятую или конец
-                                    while (paramStart < remainingPart.Length && remainingPart[paramStart] != ',')
-                                    {
-                                        paramStart++;
-                                    }
-                                    continue;
-                                }
-                                else
-                                {
-                                    // Не удалось распарсить, используем paramName как entityType
-                                    entityType = paramName;
-                                    paramValueIndex = 0;
-                                }
-                            }
-                            else
-                            {
-                                // Это не формат entityType: index: или entityType: {, возможно просто значение
-                                // Используем paramName как entityType для обратной совместимости
-                                entityType = paramName;
-                                paramValueIndex = 0;
-                            }
-                        }
-                        else
-                        {
-                            // Нет значения после :
-                            entityType = paramName;
-                            paramValueIndex = 0;
-                        }
-                    }
-                    else
-                    {
-                        // Нет entityType в значении, проверяем, может быть сразу { ... }
-                        if (paramValueIndex < paramValuePart.Length && paramValuePart[paramValueIndex] == '{')
-                        {
-                            // Парсим вложенную структуру
-                            var (complexValue, consumed) = ParseComplexValue(paramValuePart, paramValueIndex);
-                            if (complexValue != null)
-                            {
-                                parameters.Add(new ComplexValueParameterNode 
-                                { 
-                                    Name = paramName,
-                                    ParameterName = paramName,
-                                    Value = complexValue 
-                                });
-                                
-                                // Переходим к следующему параметру
-                                paramStart = paramValueStart + paramValueIndex + consumed;
-                                
-                                // Ищем следующую запятую или конец
-                                while (paramStart < remainingPart.Length && remainingPart[paramStart] != ',')
-                                {
-                                    paramStart++;
-                                }
-                                continue;
-                            }
-                        }
-                        
-                        // Нет entityType в значении, используем paramName
-                        entityType = paramName;
-                    }
-
-                    // Пропускаем пробелы
-                    while (paramValueIndex < paramValuePart.Length && char.IsWhiteSpace(paramValuePart[paramValueIndex]))
-                    {
-                        paramValueIndex++;
-                    }
-
-                    // Опционально "index:"
-                    var indexKeyword = "index:";
-                    if (paramValueIndex + indexKeyword.Length <= paramValuePart.Length &&
-                        paramValuePart.Substring(paramValueIndex, indexKeyword.Length)
-                            .Equals(indexKeyword, StringComparison.OrdinalIgnoreCase))
-                    {
-                        paramValueIndex += indexKeyword.Length;
-
-                        while (paramValueIndex < paramValuePart.Length && char.IsWhiteSpace(paramValuePart[paramValueIndex]))
-                        {
-                            paramValueIndex++;
-                        }
-                    }
-
-                    if (paramValueIndex >= paramValuePart.Length ||
-                        (!char.IsDigit(paramValuePart[paramValueIndex]) && paramValuePart[paramValueIndex] != '-'))
-                    {
-                        break;
-                    }
-
-                    var index = ParseNumber(paramValuePart, ref paramValueIndex);
-                    
-                    if (!string.IsNullOrEmpty(entityType))
-                    {
-                        parameters.Add(new FunctionParameterNode 
-                        { 
-                            Name = paramName, 
-                            ParameterName = paramName,
-                            EntityType = entityType, 
-                            Index = index 
-                        });
-                    }
-
-                    // Переходим к следующему параметру
-                    paramStart = paramValueStart + paramValueIndex;
-                    
-                    // Ищем следующую запятую или конец
-                    while (paramStart < remainingPart.Length && remainingPart[paramStart] != ',')
-                    {
-                        paramStart++;
-                    }
-                }
-            }
-
-            return parameters;
-        }
-
-        private List<ParameterNode> ParsePushParameters(string parametersPart)
-        {
-            var part = parametersPart.Trim();
-            if (string.IsNullOrEmpty(part))
-                return new List<ParameterNode>();
-
-            // [0] — слот
-            if (part.StartsWith("["))
-                return ParseMemoryParameters(parametersPart);
-
-            // string: "..."
-            if (part.StartsWith("string:", StringComparison.OrdinalIgnoreCase))
-            {
-                var after = part.Substring(7).Trim();
-                if (after.Length >= 2 && after.StartsWith("\"") && after.EndsWith("\""))
-                {
-                    var value = after.Substring(1, after.Length - 2).Replace("\\\"", "\"");
-                    return new List<ParameterNode> { new StringParameterNode { Name = "string", Value = value } };
-                }
-            }
-
-            // целое число (в т.ч. для arity)
-            var numStart = 0;
-            if (part.Length > 0 && part[0] == '-') numStart = 1;
-            var allDigits = numStart < part.Length;
-            for (var j = numStart; j < part.Length && allDigits; j++)
-                allDigits = char.IsDigit(part[j]);
-            if (allDigits && part.Length > 0 && long.TryParse(part, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var numVal))
-                return new List<ParameterNode> { new IndexParameterNode { Name = "int", Value = numVal } };
-
-            // тип: stream, file, ...
-            return new List<ParameterNode> { new TypeLiteralParameterNode { TypeName = part } };
-        }
-
-        private List<ParameterNode> ParseMemoryParameters(string parametersPart)
-        {
-            // Формат: [0]
-            var parameters = new List<ParameterNode>();
-            var i = 0;
-
-            // Пропускаем пробелы
-            while (i < parametersPart.Length && char.IsWhiteSpace(parametersPart[i]))
-            {
-                i++;
-            }
-
-            if (i >= parametersPart.Length) return parameters;
-
-            // Ищем открывающую скобку [
-            if (parametersPart[i] == '[')
-            {
-                i++; // пропускаем [
-                
-                // Пропускаем пробелы
-                while (i < parametersPart.Length && char.IsWhiteSpace(parametersPart[i]))
-                {
-                    i++;
-                }
-
-                if (i >= parametersPart.Length) return parameters;
-
-                // Парсим число
-                var start = i;
-                while (i < parametersPart.Length && char.IsDigit(parametersPart[i]))
-                {
-                    i++;
-                }
-
-                if (i > start)
-                {
-                    var addressStr = parametersPart.Substring(start, i - start);
-                    if (long.TryParse(addressStr, out var address))
-                    {
-                        // Пропускаем пробелы
-                        while (i < parametersPart.Length && char.IsWhiteSpace(parametersPart[i]))
-                        {
-                            i++;
-                        }
-
-                        // Ищем закрывающую скобку ]
-                        if (i < parametersPart.Length && parametersPart[i] == ']')
-                        {
-                            parameters.Add(new MemoryParameterNode { Name = "index", Index = address });
-                        }
-                    }
-                }
-            }
-
-            return parameters;
-        }
-
-        private (Dictionary<string, object>?, int) ParseComplexValue(string source, int startIndex)
-        {
-            // Парсит вложенную структуру вида: { key: value, key2: value2 }
-            var result = new Dictionary<string, object>();
-            var i = startIndex;
-            
-            if (i >= source.Length || source[i] != '{')
-            {
-                return (null, 0);
-            }
-            
-            i++; // пропускаем {
-            var braceDepth = 1;
-            var bracketDepth = 0;
-            
-            while (i < source.Length && braceDepth > 0)
-            {
-                if (source[i] == '{')
-                {
-                    braceDepth++;
-                }
-                else if (source[i] == '}')
-                {
-                    braceDepth--;
-                    if (braceDepth == 0)
-                    {
-                        i++; // пропускаем закрывающую }
-                        break;
-                    }
-                }
-                else if (source[i] == '[')
-                {
-                    bracketDepth++;
-                }
-                else if (source[i] == ']')
-                {
-                    bracketDepth--;
-                }
-                else if (source[i] == '"')
-                {
-                    // Пропускаем строку в кавычках
-                    i++;
-                    while (i < source.Length && source[i] != '"')
-                    {
-                        if (source[i] == '\\' && i + 1 < source.Length)
-                        {
-                            i += 2;
-                        }
-                        else
-                        {
-                            i++;
-                        }
-                    }
-                    if (i < source.Length) i++;
-                    continue;
-                }
-                
-                i++;
-            }
-            
-            if (braceDepth != 0)
-            {
-                return (null, 0);
-            }
-            
-            // Извлекаем содержимое между фигурными скобками
-            var content = source.Substring(startIndex + 1, i - startIndex - 2).Trim();
-            
-            // Парсим содержимое
-            var contentIndex = 0;
-            while (contentIndex < content.Length)
-            {
-                // Пропускаем пробелы и запятые
-                while (contentIndex < content.Length && (char.IsWhiteSpace(content[contentIndex]) || content[contentIndex] == ','))
-                {
-                    contentIndex++;
-                }
-                
-                if (contentIndex >= content.Length) break;
-                
-                // Находим ключ (до :)
-                var colonPos = content.IndexOf(':', contentIndex);
-                if (colonPos == -1) break;
-                
-                var key = content.Substring(contentIndex, colonPos - contentIndex).Trim();
-                contentIndex = colonPos + 1;
-                
-                // Пропускаем пробелы после :
-                while (contentIndex < content.Length && char.IsWhiteSpace(content[contentIndex]))
-                {
-                    contentIndex++;
-                }
-                
-                if (contentIndex >= content.Length) break;
-                
-                // Парсим значение
-                object? value = null;
-                
-                if (content[contentIndex] == '[')
-                {
-                    // Массив
-                    var arrayStart = contentIndex;
-                    var arrayDepth = 0;
-                    while (contentIndex < content.Length)
-                    {
-                        if (content[contentIndex] == '[')
-                        {
-                            arrayDepth++;
-                        }
-                        else if (content[contentIndex] == ']')
-                        {
-                            arrayDepth--;
-                            if (arrayDepth == 0)
-                            {
-                                contentIndex++;
-                                break;
-                            }
-                        }
-                        else if (content[contentIndex] == '"')
-                        {
-                            contentIndex++;
-                            while (contentIndex < content.Length && content[contentIndex] != '"')
-                            {
-                                if (content[contentIndex] == '\\' && contentIndex + 1 < content.Length)
-                                {
-                                    contentIndex += 2;
-                                }
-                                else
-                                {
-                                    contentIndex++;
-                                }
-                            }
-                            if (contentIndex < content.Length) contentIndex++;
-                            continue;
-                        }
-                        contentIndex++;
-                    }
-                    
-                    var arrayContent = content.Substring(arrayStart + 1, contentIndex - arrayStart - 2).Trim();
-                    var arrayItems = ParseArrayItems(arrayContent);
-                    value = arrayItems;
-                }
-                else if (content[contentIndex] == '{')
-                {
-                    // Вложенный объект
-                    var (nestedObj, consumed) = ParseComplexValue(content, contentIndex);
-                    if (nestedObj != null)
-                    {
-                        value = nestedObj;
-                        contentIndex += consumed;
-                    }
-                    else
-                    {
-                        break;
-                    }
-                }
-                else
-                {
-                    // Простое значение (число, строка, и т.д.)
-                    var valueStart = contentIndex;
-                    while (contentIndex < content.Length && 
-                           content[contentIndex] != ',' && 
-                           content[contentIndex] != '}' &&
-                           content[contentIndex] != ']')
-                    {
-                        contentIndex++;
-                    }
-                    
-                    var valueStr = content.Substring(valueStart, contentIndex - valueStart).Trim();
-                    
-                    // Пытаемся распарсить как число
-                    if (long.TryParse(valueStr, out var longValue))
-                    {
-                        value = longValue;
-                    }
-                    else if (double.TryParse(valueStr, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var doubleValue))
-                    {
-                        value = doubleValue;
-                    }
-                    else
-                    {
-                        value = valueStr;
-                    }
-                }
-                
-                if (value != null)
-                {
-                    result[key] = value;
-                }
-                
-                // Пропускаем до следующего ключа или конца
-                while (contentIndex < content.Length && content[contentIndex] != ',' && content[contentIndex] != '}')
-                {
-                    contentIndex++;
-                }
-            }
-            
-            return (result, i - startIndex);
-        }
-
-        private List<object> ParseArrayItems(string arrayContent)
-        {
-            var items = new List<object>();
-            var i = 0;
-            
-            while (i < arrayContent.Length)
-            {
-                // Пропускаем пробелы и запятые
-                while (i < arrayContent.Length && (char.IsWhiteSpace(arrayContent[i]) || arrayContent[i] == ','))
-                {
-                    i++;
-                }
-                
-                if (i >= arrayContent.Length) break;
-                
-                object? item = null;
-                
-                if (arrayContent[i] == '{')
-                {
-                    // Объект в массиве
-                    var (obj, consumed) = ParseComplexValue(arrayContent, i);
-                    if (obj != null)
-                    {
-                        item = obj;
-                        i += consumed;
-                    }
-                    else
-                    {
-                        break;
-                    }
-                }
-                else if (arrayContent[i] == '[')
-                {
-                    // Вложенный массив
-                    var arrayStart = i;
-                    var depth = 0;
-                    while (i < arrayContent.Length)
-                    {
-                        if (arrayContent[i] == '[')
-                        {
-                            depth++;
-                        }
-                        else if (arrayContent[i] == ']')
-                        {
-                            depth--;
-                            if (depth == 0)
-                            {
-                                i++;
-                                break;
-                            }
-                        }
-                        i++;
-                    }
-                    
-                    var nestedArrayContent = arrayContent.Substring(arrayStart + 1, i - arrayStart - 2).Trim();
-                    item = ParseArrayItems(nestedArrayContent);
-                }
-                else
-                {
-                    // Простое значение
-                    var valueStart = i;
-                    while (i < arrayContent.Length && 
-                           arrayContent[i] != ',' && 
-                           arrayContent[i] != ']' &&
-                           arrayContent[i] != '}')
-                    {
-                        i++;
-                    }
-                    
-                    var valueStr = arrayContent.Substring(valueStart, i - valueStart).Trim();
-                    
-                    if (long.TryParse(valueStr, out var longValue))
-                    {
-                        item = longValue;
-                    }
-                    else if (double.TryParse(valueStr, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var doubleValue))
-                    {
-                        item = doubleValue;
-                    }
-                    else
-                    {
-                        item = valueStr;
-                    }
-                }
-                
-                if (item != null)
-                {
-                    items.Add(item);
-                }
-            }
-            
-            return items;
-        }
+        private readonly InstructionParser _instructionParser = new InstructionParser();
 
         private static void SkipNewlines(Scanner s)
         {
@@ -1737,24 +16,231 @@ namespace Magic.Kernel.Compilation
                 s.Scan();
         }
 
-        /// <summary>Вызывать после потребления "{". contentStart — позиция в source сразу после "{". Возвращает подстроку до парной "}", потребляет эту "}".</summary>
-        private static string GetBlockContent(Scanner s, string source, int contentStart)
+        private static void AddRangeAsStatement(string source, int start, int end, List<string> output)
         {
-            if (s.Current.IsEndOfInput) return "";
+            if (start < 0 || end <= start) return;
+            var text = source.Substring(start, end - start).Trim();
+            if (!string.IsNullOrWhiteSpace(text))
+                output.Add(text);
+        }
+
+        private static string NormalizeInstructionText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return "";
+            var sb = new System.Text.StringBuilder(text.Length);
+            var inString = false;
+            var escaped = false;
+            var pendingSpace = false;
+
+            foreach (var ch in text)
+            {
+                if (inString)
+                {
+                    sb.Append(ch);
+                    if (escaped)
+                    {
+                        escaped = false;
+                        continue;
+                    }
+                    if (ch == '\\')
+                    {
+                        escaped = true;
+                        continue;
+                    }
+                    if (ch == '"')
+                        inString = false;
+                    continue;
+                }
+
+                if (ch == '"')
+                {
+                    if (pendingSpace && sb.Length > 0 && sb[sb.Length - 1] != ' ')
+                        sb.Append(' ');
+                    pendingSpace = false;
+                    inString = true;
+                    sb.Append(ch);
+                    continue;
+                }
+
+                if (char.IsWhiteSpace(ch))
+                {
+                    pendingSpace = true;
+                    continue;
+                }
+
+                if (pendingSpace && sb.Length > 0 && sb[sb.Length - 1] != ' ')
+                    sb.Append(' ');
+                pendingSpace = false;
+                sb.Append(ch);
+            }
+
+            return sb.ToString().Trim();
+        }
+
+        /// <summary>Потребляет обычный блок (после "{") и возвращает список statement-строк до парной "}".</summary>
+        private static List<string> ConsumeStatementBlockLines(Scanner s, string source)
+        {
+            var result = new List<string>();
             var depth = 1;
+            var currentStart = -1;
+            var currentEnd = -1;
+
             while (true)
             {
                 var tok = s.Scan();
-                if (tok.Kind == TokenKind.LBrace) depth++;
-                else if (tok.Kind == TokenKind.RBrace)
+                if (tok.Kind == TokenKind.EndOfInput)
+                {
+                    AddRangeAsStatement(source, currentStart, currentEnd, result);
+                    break;
+                }
+
+                if (tok.Kind == TokenKind.LBrace)
+                {
+                    depth++;
+                    if (currentStart < 0) currentStart = tok.Start;
+                    currentEnd = tok.End;
+                    continue;
+                }
+
+                if (tok.Kind == TokenKind.RBrace)
                 {
                     depth--;
                     if (depth == 0)
-                        return source.Substring(contentStart, tok.Start - contentStart);
+                    {
+                        AddRangeAsStatement(source, currentStart, currentEnd, result);
+                        break;
+                    }
+                    if (currentStart < 0) currentStart = tok.Start;
+                    currentEnd = tok.End;
+                    continue;
                 }
-                else if (tok.Kind == TokenKind.EndOfInput)
-                    return source.Substring(contentStart, Math.Min(tok.Start, source.Length) - contentStart);
+
+                if (depth == 1 && (tok.Kind == TokenKind.Semicolon || tok.Kind == TokenKind.Newline))
+                {
+                    AddRangeAsStatement(source, currentStart, currentEnd, result);
+                    currentStart = -1;
+                    currentEnd = -1;
+                    continue;
+                }
+
+                if (currentStart < 0) currentStart = tok.Start;
+                currentEnd = tok.End;
             }
+
+            return result;
+        }
+
+        /// <summary>Потребляет asm-блок (после "asm {") и возвращает инструкции до парной "}".</summary>
+        private static List<string> ConsumeAsmBlockInstructions(Scanner s, string source)
+        {
+            var result = new List<string>();
+            var braceDepth = 1;
+            var bracketDepth = 0;
+            var parenDepth = 0;
+            var currentStart = -1;
+            var currentEnd = -1;
+
+            while (true)
+            {
+                var tok = s.Scan();
+                switch (tok.Kind)
+                {
+                    case TokenKind.EndOfInput:
+                        AddRangeAsStatement(source, currentStart, currentEnd, result);
+                        return result;
+                    case TokenKind.LBrace:
+                        braceDepth++;
+                        if (currentStart < 0) currentStart = tok.Start;
+                        currentEnd = tok.End;
+                        break;
+                    case TokenKind.RBrace:
+                        braceDepth--;
+                        if (braceDepth == 0)
+                        {
+                            AddRangeAsStatement(source, currentStart, currentEnd, result);
+                            return result;
+                        }
+                        if (currentStart < 0) currentStart = tok.Start;
+                        currentEnd = tok.End;
+                        break;
+                    case TokenKind.LBracket:
+                        bracketDepth++;
+                        if (currentStart < 0) currentStart = tok.Start;
+                        currentEnd = tok.End;
+                        break;
+                    case TokenKind.RBracket:
+                        if (bracketDepth > 0) bracketDepth--;
+                        if (currentStart < 0) currentStart = tok.Start;
+                        currentEnd = tok.End;
+                        break;
+                    case TokenKind.LParen:
+                        parenDepth++;
+                        if (currentStart < 0) currentStart = tok.Start;
+                        currentEnd = tok.End;
+                        break;
+                    case TokenKind.RParen:
+                        if (parenDepth > 0) parenDepth--;
+                        if (currentStart < 0) currentStart = tok.Start;
+                        currentEnd = tok.End;
+                        break;
+                    case TokenKind.Semicolon:
+                        if (braceDepth == 1 && bracketDepth == 0 && parenDepth == 0)
+                        {
+                            AddRangeAsStatement(source, currentStart, currentEnd, result);
+                            currentStart = -1;
+                            currentEnd = -1;
+                        }
+                        else
+                        {
+                            if (currentStart < 0) currentStart = tok.Start;
+                            currentEnd = tok.End;
+                        }
+                        break;
+                    case TokenKind.Newline:
+                        if (braceDepth == 1 && bracketDepth == 0 && parenDepth == 0 && NextAsmTokenStartsOpcode(s))
+                        {
+                            AddRangeAsStatement(source, currentStart, currentEnd, result);
+                            currentStart = -1;
+                            currentEnd = -1;
+                        }
+                        break;
+                    default:
+                        if (currentStart < 0) currentStart = tok.Start;
+                        currentEnd = tok.End;
+                        break;
+                }
+            }
+        }
+
+        /// <summary>BNF: block = "{" (asm-block | statement-block) "}"</summary>
+        private bool TryParseBodyBlock(Scanner s, string source, out List<InstructionNode> instructions)
+        {
+            instructions = new List<InstructionNode>();
+            if (s.Current.Kind != TokenKind.LBrace) return false;
+            s.Scan(); // consume outer "{"
+            SkipNewlines(s);
+
+            // asm-block = "asm" "{" asm-instructions "}"
+            if (s.Current.Kind == TokenKind.Identifier && string.Equals(s.Current.Value, "asm", StringComparison.OrdinalIgnoreCase))
+            {
+                s.Scan();
+                SkipNewlines(s);
+                if (s.Current.Kind != TokenKind.LBrace)
+                    throw new CompilationException($"Expected '{{' after asm at position {s.Current.Start}.", s.Current.Start);
+                s.Scan(); // consume asm "{"
+                var asmList = ConsumeAsmBlockInstructions(s, source); // consumes asm "}"
+                instructions = asmList.Select(NormalizeInstructionText).Select(ParseWithContext).ToList();
+                SkipNewlines(s);
+                if (s.Current.Kind != TokenKind.RBrace)
+                    throw new CompilationException($"Expected '}}' to close block at position {s.Current.Start}.", s.Current.Start);
+                s.Scan(); // consume outer "}"
+                return true;
+            }
+
+            // statement-block = { statements }
+            var statementLines = ConsumeStatementBlockLines(s, source); // consumes outer "}"
+            instructions = CompileStatementLines(statementLines).Select(NormalizeInstructionText).Select(ParseWithContext).ToList();
+            return true;
         }
 
         private static bool IsProgramKeyword(string id) =>
@@ -1766,12 +252,43 @@ namespace Magic.Kernel.Compilation
             string.Equals(id, "entrypoint", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(id, "asm", StringComparison.OrdinalIgnoreCase);
 
+        private static Token ExpectToken(Scanner s, TokenKind kind, string? value = null)
+        {
+            var tok = s.Scan();
+            if (tok.Kind != kind)
+                throw new CompilationException($"Expected {kind}, got {tok.Kind} at position {tok.Start}.", tok.Start);
+            if (value != null && !string.Equals(tok.Value, value, StringComparison.OrdinalIgnoreCase))
+                throw new CompilationException($"Expected '{value}', got '{tok.Value}' at position {tok.Start}.", tok.Start);
+            return tok;
+        }
+
+        private static string ExpectNonEmptyHeaderValue(Scanner s, string source, string headerName)
+        {
+            var start = s.Current.Start;
+            var end = start;
+            var hasTokens = false;
+            while (!s.Current.IsEndOfInput && s.Current.Kind != TokenKind.Semicolon && s.Current.Kind != TokenKind.Newline)
+            {
+                hasTokens = true;
+                end = s.Current.End;
+                s.Scan();
+            }
+
+            if (!hasTokens)
+                throw new CompilationException($"Expected {headerName} at position {s.Current.Start}.", s.Current.Start);
+
+            var value = source.Substring(start, end - start).Trim();
+            if (string.IsNullOrWhiteSpace(value))
+                throw new CompilationException($"Expected {headerName} at position {start}.", start);
+
+            return value;
+        }
+
         private bool TryParseAgi(Scanner s, string source, ProgramStructure structure)
         {
             if (s.Current.Kind != TokenKind.Identifier || s.Current.Value != "@") return false;
-            s.Scan();
-            if (s.Current.Kind != TokenKind.Identifier || !string.Equals(s.Current.Value, "AGI", StringComparison.OrdinalIgnoreCase)) return false;
-            s.Scan();
+            ExpectToken(s, TokenKind.Identifier, "@");
+            ExpectToken(s, TokenKind.Identifier, "AGI");
             var versionStart = s.Current.Start;
             var versionEnd = versionStart;
             while (!s.Current.IsEndOfInput && s.Current.Kind != TokenKind.Newline)
@@ -1790,15 +307,8 @@ namespace Magic.Kernel.Compilation
         private bool TryParseProgram(Scanner s, string source, ProgramStructure structure)
         {
             if (s.Current.Kind != TokenKind.Identifier || !string.Equals(s.Current.Value, "program", StringComparison.OrdinalIgnoreCase)) return false;
-            s.Scan();
-            var nameStart = s.Current.Start;
-            var nameEnd = nameStart;
-            while (!s.Current.IsEndOfInput && s.Current.Kind != TokenKind.Semicolon && s.Current.Kind != TokenKind.Newline)
-            {
-                nameEnd = s.Current.End;
-                s.Scan();
-            }
-            var name = source.Substring(nameStart, nameEnd - nameStart).Trim();
+            ExpectToken(s, TokenKind.Identifier, "program");
+            var name = ExpectNonEmptyHeaderValue(s, source, "program name");
             if (s.Current.Kind == TokenKind.Semicolon) s.Scan();
             SkipNewlines(s);
             structure.ProgramName = name;
@@ -1809,15 +319,8 @@ namespace Magic.Kernel.Compilation
         private bool TryParseModule(Scanner s, string source, ProgramStructure structure)
         {
             if (s.Current.Kind != TokenKind.Identifier || !string.Equals(s.Current.Value, "module", StringComparison.OrdinalIgnoreCase)) return false;
-            s.Scan();
-            var nameStart = s.Current.Start;
-            var nameEnd = nameStart;
-            while (!s.Current.IsEndOfInput && s.Current.Kind != TokenKind.Semicolon && s.Current.Kind != TokenKind.Newline)
-            {
-                nameEnd = s.Current.End;
-                s.Scan();
-            }
-            var name = source.Substring(nameStart, nameEnd - nameStart).Trim();
+            ExpectToken(s, TokenKind.Identifier, "module");
+            var name = ExpectNonEmptyHeaderValue(s, source, "module name");
             if (s.Current.Kind == TokenKind.Semicolon) s.Scan();
             SkipNewlines(s);
             structure.Module = name;
@@ -1828,32 +331,12 @@ namespace Magic.Kernel.Compilation
         private bool TryParseProcedure(Scanner s, string source, ProgramStructure structure)
         {
             if (s.Current.Kind != TokenKind.Identifier || !string.Equals(s.Current.Value, "procedure", StringComparison.OrdinalIgnoreCase)) return false;
-            s.Scan();
-            if (s.Current.Kind != TokenKind.Identifier) return false;
-            var name = s.Current.Value ?? "";
-            s.Scan();
+            ExpectToken(s, TokenKind.Identifier, "procedure");
+            var name = ExpectToken(s, TokenKind.Identifier).Value ?? "";
             SkipNewlines(s);
-            if (s.Current.Kind != TokenKind.LBrace) return false;
-            var openBrace = s.Current;
-            s.Scan(); // consume "{"
-            SkipNewlines(s);
-            if (s.Current.Kind == TokenKind.Identifier && string.Equals(s.Current.Value, "asm", StringComparison.OrdinalIgnoreCase))
-            {
-                s.Scan();
-                if (s.Current.Kind != TokenKind.LBrace) return false;
-                var asmOpen = s.Current;
-                s.Scan();
-                var content = GetBlockContent(s, source, asmOpen.End);
-                var list = SplitAsmInstructions(content);
-                structure.Procedures[name] = list.Select(ParseWithContext).ToList();
-                if (s.Current.Kind == TokenKind.RBrace) s.Scan(); // outer "}" after asm { ... }
-            }
-            else
-            {
-                var content = GetBlockContent(s, source, openBrace.End);
-                var compiled = CompileStatementCode(content);
-                structure.Procedures[name] = compiled.Select(ParseWithContext).ToList();
-            }
+            if (!TryParseBodyBlock(s, source, out var body))
+                throw new CompilationException($"Expected body block for procedure '{name}' at position {s.Current.Start}.", s.Current.Start);
+            structure.Procedures[name] = body;
             structure.IsProgramStructure = true;
             return true;
         }
@@ -1861,32 +344,12 @@ namespace Magic.Kernel.Compilation
         private bool TryParseFunction(Scanner s, string source, ProgramStructure structure)
         {
             if (s.Current.Kind != TokenKind.Identifier || !string.Equals(s.Current.Value, "function", StringComparison.OrdinalIgnoreCase)) return false;
-            s.Scan();
-            if (s.Current.Kind != TokenKind.Identifier) return false;
-            var name = s.Current.Value ?? "";
-            s.Scan();
+            ExpectToken(s, TokenKind.Identifier, "function");
+            var name = ExpectToken(s, TokenKind.Identifier).Value ?? "";
             SkipNewlines(s);
-            if (s.Current.Kind != TokenKind.LBrace) return false;
-            var openBrace = s.Current;
-            s.Scan();
-            SkipNewlines(s);
-            if (s.Current.Kind == TokenKind.Identifier && string.Equals(s.Current.Value, "asm", StringComparison.OrdinalIgnoreCase))
-            {
-                s.Scan();
-                if (s.Current.Kind != TokenKind.LBrace) return false;
-                var asmOpen = s.Current;
-                s.Scan();
-                var content = GetBlockContent(s, source, asmOpen.End);
-                var list = SplitAsmInstructions(content);
-                structure.Functions[name] = list.Select(ParseWithContext).ToList();
-                if (s.Current.Kind == TokenKind.RBrace) s.Scan(); // outer "}" after asm { ... }
-            }
-            else
-            {
-                var content = GetBlockContent(s, source, openBrace.End);
-                var compiled = CompileStatementCode(content);
-                structure.Functions[name] = compiled.Select(ParseWithContext).ToList();
-            }
+            if (!TryParseBodyBlock(s, source, out var body))
+                throw new CompilationException($"Expected body block for function '{name}' at position {s.Current.Start}.", s.Current.Start);
+            structure.Functions[name] = body;
             structure.IsProgramStructure = true;
             return true;
         }
@@ -1894,30 +357,11 @@ namespace Magic.Kernel.Compilation
         private bool TryParseEntrypoint(Scanner s, string source, ProgramStructure structure)
         {
             if (s.Current.Kind != TokenKind.Identifier || !string.Equals(s.Current.Value, "entrypoint", StringComparison.OrdinalIgnoreCase)) return false;
-            s.Scan();
+            ExpectToken(s, TokenKind.Identifier, "entrypoint");
             SkipNewlines(s);
-            if (s.Current.Kind != TokenKind.LBrace) return false;
-            var openBrace = s.Current;
-            s.Scan();
-            SkipNewlines(s);
-            structure.EntryPoint = new List<InstructionNode>();
-            if (s.Current.Kind == TokenKind.Identifier && string.Equals(s.Current.Value, "asm", StringComparison.OrdinalIgnoreCase))
-            {
-                s.Scan();
-                if (s.Current.Kind != TokenKind.LBrace) return false;
-                var asmOpen = s.Current;
-                s.Scan();
-                var content = GetBlockContent(s, source, asmOpen.End);
-                foreach (var inst in SplitAsmInstructions(content))
-                    structure.EntryPoint.Add(ParseWithContext(inst));
-                if (s.Current.Kind == TokenKind.RBrace) s.Scan(); // outer "}" after asm { ... }
-            }
-            else
-            {
-                var content = GetBlockContent(s, source, openBrace.End);
-                foreach (var inst in CompileStatementCode(content))
-                    structure.EntryPoint.Add(ParseWithContext(inst));
-            }
+            if (!TryParseBodyBlock(s, source, out var body))
+                throw new CompilationException($"Expected body block for entrypoint at position {s.Current.Start}.", s.Current.Start);
+            structure.EntryPoint = body;
             structure.IsProgramStructure = true;
             return true;
         }
@@ -1930,7 +374,18 @@ namespace Magic.Kernel.Compilation
             s.Scan();
             s.Scan();
             structure.EntryPoint ??= new List<InstructionNode>();
-            structure.EntryPoint.Add(Parse("call " + name));
+            structure.EntryPoint.Add(new InstructionNode
+            {
+                Opcode = "call",
+                Parameters = new List<ParameterNode>
+                {
+                    new FunctionNameParameterNode
+                    {
+                        Name = "function",
+                        FunctionName = name
+                    }
+                }
+            });
             structure.IsProgramStructure = true;
             SkipNewlines(s);
             return true;
@@ -1951,7 +406,7 @@ namespace Magic.Kernel.Compilation
         {
             try
             {
-                return Parse(instructionText);
+                return _instructionParser.Parse(instructionText);
             }
             catch (CompilationException ex)
             {
@@ -1993,7 +448,7 @@ namespace Magic.Kernel.Compilation
                 if (unprocessedLines.Count == 0)
                     structure.EntryPoint = ParseAsInstructionSet(source);
                 else
-                    structure.EntryPoint = unprocessedLines.Select(l => Parse(l)).ToList();
+                    structure.EntryPoint = unprocessedLines.Select(ParseWithContext).ToList();
             }
 
             return structure;
@@ -2009,7 +464,7 @@ namespace Magic.Kernel.Compilation
                 var (_, trimmedLine) = reader.GetLine(i);
                 if (string.IsNullOrWhiteSpace(trimmedLine))
                     continue;
-                nodes.Add(Parse(trimmedLine));
+                nodes.Add(_instructionParser.Parse(trimmedLine));
             }
             return nodes;
         }
@@ -2139,63 +594,9 @@ namespace Magic.Kernel.Compilation
             return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
         }
 
-        private string CollectStatementCode(string[] lines, ref int startIndex, bool inProcedure, bool inFunction, bool inEntryPoint)
-        {
-            var code = new System.Text.StringBuilder();
-            var braceDepth = 0;
-            var inString = false;
-            var i = startIndex;
-
-            while (i < lines.Length)
-            {
-                var line = lines[i];
-                var trimmed = line.Trim();
-
-                if (string.IsNullOrWhiteSpace(trimmed) || trimmed.StartsWith("//"))
-                {
-                    i++;
-                    continue;
-                }
-
-                // Подсчитываем фигурные скобки
-                foreach (var ch in line)
-                {
-                    if (inString)
-                    {
-                        if (ch == '"') inString = false;
-                        continue;
-                    }
-                    if (ch == '"')
-                    {
-                        inString = true;
-                        continue;
-                    }
-                    if (ch == '{') braceDepth++;
-                    if (ch == '}')
-                    {
-                        braceDepth--;
-                        if (braceDepth < 0)
-                        {
-                            // Закрывающая скобка блока - возвращаем собранный код
-                            startIndex = i;
-                            return code.ToString();
-                        }
-                    }
-                }
-
-                code.AppendLine(line);
-                i++;
-            }
-
-            startIndex = i;
-            return code.ToString();
-        }
-
-        private List<string> CompileStatementCode(string statementCode)
+        private List<string> CompileStatementLines(IEnumerable<string> sourceLines)
         {
             var asmInstructions = new List<string>();
-            var lines = statementCode.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            // varName -> (kind,index) where kind in: vertex|relation|shape|memory|stream
             var vars = new Dictionary<string, (string Kind, int Index)>(StringComparer.Ordinal);
             var vertexCounter = 1;
             var relationCounter = 1;
@@ -2204,144 +605,90 @@ namespace Magic.Kernel.Compilation
             var inVarBlock = false;
             var varBlockLines = new List<string>();
 
-            foreach (var rawLine in lines)
+            foreach (var rawLine in sourceLines)
             {
                 var line = rawLine.Trim();
-                if (string.IsNullOrWhiteSpace(line) || line.StartsWith("//") || line == "{" || line == "}")
+                if (string.IsNullOrWhiteSpace(line) || line == "{" || line == "}")
                     continue;
 
-                // Парсим var блок (var на отдельной строке или "var stream1 := stream<file>;" на одной строке)
-                if (line == "var")
+                if (TryParseVarKeywordOnly(line))
                 {
                     inVarBlock = true;
                     varBlockLines.Clear();
                     continue;
                 }
-                if (line.StartsWith("var "))
+
+                if (TryStripInlineVarPrefix(line, out var inlineDecl) && IsDeclarationStatement(inlineDecl))
                 {
-                    var rest = line.Substring(4).Trim().TrimEnd(';');
-                    var singleStreamDecl = System.Text.RegularExpressions.Regex.IsMatch(
-                        rest,
-                        @"^(\w+)\s*:=\s*stream\s*<\s*\w+(?:\s*,\s*\w+)*\s*>\s*$",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    if (singleStreamDecl)
-                    {
-                        inVarBlock = true;
-                        varBlockLines.Clear();
-                        varBlockLines.Add(rest);
-                        continue;
-                    }
+                    inVarBlock = true;
+                    varBlockLines.Clear();
+                    varBlockLines.Add(inlineDecl);
+                    continue;
                 }
 
                 if (inVarBlock)
                 {
-                    var declLine = line.TrimEnd(';');
-                    var isEntityDecl = System.Text.RegularExpressions.Regex.IsMatch(
-                        declLine,
-                        @"^(\w+)\s*:\s*(vertex|relation|shape)\s*=\s*(.+)$",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                    var isStreamDecl = System.Text.RegularExpressions.Regex.IsMatch(
-                        declLine.Trim(),
-                        @"^(\w+)\s*:=\s*stream\s*<\s*\w+(?:\s*,\s*\w+)*\s*>\s*$",
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-                    if (isEntityDecl || isStreamDecl)
+                    if (IsDeclarationStatement(line))
                     {
                         varBlockLines.Add(line);
                         continue;
                     }
 
                     inVarBlock = false;
-                    var varAsm = CompileVarBlock(varBlockLines, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter);
-                    asmInstructions.AddRange(varAsm);
+                    asmInstructions.AddRange(CompileVarBlock(varBlockLines, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter));
                 }
 
-                // Декларация stream вне var-блока: stream1 := stream<file>;
-                var streamDeclMatch = System.Text.RegularExpressions.Regex.Match(line.Trim().TrimEnd(';'), @"^(\w+)\s*:=\s*stream\s*<\s*(\w+)\s*>\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                if (streamDeclMatch.Success)
+                if (IsDeclarationStatement(line))
                 {
-                    var streamName = streamDeclMatch.Groups[1].Value;
-                    var elementType = streamDeclMatch.Groups[2].Value.ToLowerInvariant();
-                    var baseSlot = memorySlotCounter++;
-                    var streamSlot = memorySlotCounter++;
-                    vars[streamName] = ("stream", streamSlot);
-                    asmInstructions.Add("push stream");
-                    asmInstructions.Add("def");
-                    asmInstructions.Add($"pop [{baseSlot}]");
-                    asmInstructions.Add($"push [{baseSlot}]");
-                    asmInstructions.Add($"push {elementType}");
-                    asmInstructions.Add("push 1");
-                    asmInstructions.Add("defgen");
-                    asmInstructions.Add($"pop [{streamSlot}]");
+                    asmInstructions.AddRange(CompileVarBlock(new List<string> { line }, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter));
                     continue;
                 }
 
-                // Декларации vertex/relation/shape вне var-блока
-                var declLine2 = line.TrimEnd(';');
-                var isDecl2 = System.Text.RegularExpressions.Regex.IsMatch(
-                    declLine2,
-                    @"^(\w+)\s*:\s*(vertex|relation|shape)\s*=\s*(.+)$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                if (isDecl2)
-                {
-                    var declAsm = CompileVarBlock(new List<string> { line }, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter);
-                    asmInstructions.AddRange(declAsm);
+                if (TryCompileMethodCall(line, vars, asmInstructions))
                     continue;
-                }
 
-                // Вызов метода: stream1.open("stream1"); → push [obj], push path, push 1, callobj "open"
-                var methodMatch = System.Text.RegularExpressions.Regex.Match(line.Trim(), @"^(\w+)\.(\w+)\(([^)]*)\)\s*;?$");
-                if (methodMatch.Success && vars.TryGetValue(methodMatch.Groups[1].Value, out var objVar))
-                {
-                    var method = methodMatch.Groups[2].Value;
-                    var arg = methodMatch.Groups[3].Value.Trim();
-                    asmInstructions.Add($"push [{objVar.Index}]");
-                    if (arg.Length >= 2 && arg.StartsWith("\"") && arg.EndsWith("\""))
-                        asmInstructions.Add($"push string: {arg}");
-                    else
-                        asmInstructions.Add($"push string: \"{arg.Replace("\"", "\\\"")}\"");
-                    asmInstructions.Add("push 1");
-                    asmInstructions.Add($"callobj \"{method}\"");
+                if (TryCompileAssignment(line, vars, ref shapeCounter, ref vertexCounter, ref memorySlotCounter, asmInstructions))
                     continue;
-                }
 
-                // Присваивания (включая await и compile); нормализуем var x := y в x = y
-                if (line.Contains("=") && !line.Contains("=>"))
-                {
-                    var trimmedForAssign = line.Trim().TrimEnd(';');
-                    var varAssignMatch = System.Text.RegularExpressions.Regex.Match(trimmedForAssign, @"^var\s+(\w+)\s*:=\s*(.+)$");
-                    if (varAssignMatch.Success)
-                        trimmedForAssign = varAssignMatch.Groups[1].Value + " = " + varAssignMatch.Groups[2].Value.Trim();
-                    else
-                    {
-                        varAssignMatch = System.Text.RegularExpressions.Regex.Match(trimmedForAssign, @"^var\s+(\w+)\s*=\s*(.+)$");
-                        if (varAssignMatch.Success)
-                            trimmedForAssign = varAssignMatch.Groups[1].Value + " = " + varAssignMatch.Groups[2].Value.Trim();
-                    }
-                    var assignmentAsm = CompileAssignment(trimmedForAssign, vars, ref shapeCounter, ref vertexCounter, ref memorySlotCounter);
-                    asmInstructions.AddRange(assignmentAsm);
-                }
-                // Вызовы функций (print и т.д.)
-                else if (line.Contains("(") && line.Contains(")"))
-                {
-                    var callAsm = CompileFunctionCall(line, vars);
-                    asmInstructions.AddRange(callAsm);
-                }
-                // Вызовы процедур
-                else if (!string.IsNullOrWhiteSpace(line) && !line.Contains("{") && !line.Contains("}"))
-                {
-                    var procName = line.Trim().TrimEnd(';');
+                if (TryCompileFunctionCall(line, vars, asmInstructions))
+                    continue;
+
+                if (TryParseProcedureName(line, out var procName))
                     asmInstructions.Add($"call {procName}");
-                }
             }
 
             if (inVarBlock && varBlockLines.Count > 0)
-            {
-                var varAsm = CompileVarBlock(varBlockLines, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter);
-                asmInstructions.AddRange(varAsm);
-            }
+                asmInstructions.AddRange(CompileVarBlock(varBlockLines, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter));
 
             return asmInstructions;
+        }
+
+        private sealed class VertexInitSpec
+        {
+            public List<long> Dimensions { get; } = new List<long> { 1, 0, 0, 0 };
+            public double Weight { get; set; } = 0.5d;
+            public string? TextData { get; set; }
+            public string? BinaryData { get; set; }
+        }
+
+        private sealed class RelationInitSpec
+        {
+            public string? From { get; set; }
+            public string? To { get; set; }
+            public double Weight { get; set; } = 0.5d;
+        }
+
+        private sealed class InlineVertexSpec
+        {
+            public List<long> Dimensions { get; } = new List<long> { 1, 0, 0, 0 };
+            public double? Weight { get; set; }
+        }
+
+        private sealed class ShapeInitSpec
+        {
+            public List<string> VertexNames { get; } = new List<string>();
+            public List<InlineVertexSpec> InlineVertices { get; } = new List<InlineVertexSpec>();
+            public bool UsesInlineVertices => InlineVertices.Count > 0;
         }
 
         private List<string> CompileVarBlock(List<string> varLines, Dictionary<string, (string Kind, int Index)> vars, ref int vertexCounter, ref int relationCounter, ref int shapeCounter, ref int memorySlotCounter)
@@ -2350,60 +697,34 @@ namespace Magic.Kernel.Compilation
 
             foreach (var line in varLines)
             {
-                var trimmed = line.Trim().TrimEnd(';');
-                if (string.IsNullOrWhiteSpace(trimmed)) continue;
-
-                // Парсим stream: name := stream<file>; / stream<messenger, telegram>;
-                var streamMatch = System.Text.RegularExpressions.Regex.Match(
-                    trimmed,
-                    @"^(\w+)\s*:=\s*stream\s*<\s*(\w+)(?:\s*,\s*\w+)*\s*>\s*$",
-                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                if (streamMatch.Success)
+                var scanner = new Scanner(line);
+                if (TryParseStreamDeclaration(scanner, out var streamName, out var elementType))
                 {
-                    var streamName = streamMatch.Groups[1].Value;
-                    var elementType = streamMatch.Groups[2].Value.ToLowerInvariant();
-                    var baseSlot = memorySlotCounter++;
-                    var streamSlot = memorySlotCounter++;
-                    vars[streamName] = ("stream", streamSlot);
-                    asm.Add("push stream");
-                    asm.Add("def");
-                    asm.Add($"pop [{baseSlot}]");
-                    asm.Add($"push [{baseSlot}]");
-                    asm.Add($"push {elementType}");
-                    asm.Add("push 1");
-                    asm.Add("defgen");
-                    asm.Add($"pop [{streamSlot}]");
+                    EmitStreamDeclaration(streamName, elementType, vars, ref memorySlotCounter, asm);
                     continue;
                 }
 
-                // Парсим: name: type = { ... };
-                var match = System.Text.RegularExpressions.Regex.Match(trimmed, @"^(\w+)\s*:\s*(\w+)\s*=\s*(.+)$");
-                if (!match.Success) continue;
-
-                var varName = match.Groups[1].Value;
-                var varType = match.Groups[2].Value.ToLower();
-                var initValue = match.Groups[3].Value.Trim();
+                scanner = new Scanner(line);
+                if (!TryParseEntityDeclaration(line, scanner, out var varName, out var varType, out var initText))
+                    continue;
 
                 if (varType == "vertex")
                 {
                     var index = vertexCounter++;
                     vars[varName] = ("vertex", index);
-                    var vertexAsm = CompileVertexInit(index, initValue);
-                    asm.AddRange(vertexAsm);
+                    asm.AddRange(CompileVertexInit(index, initText));
                 }
                 else if (varType == "relation")
                 {
                     var index = relationCounter++;
                     vars[varName] = ("relation", index);
-                    var relationAsm = CompileRelationInit(index, initValue, vars);
-                    asm.AddRange(relationAsm);
+                    asm.AddRange(CompileRelationInit(index, initText, vars));
                 }
                 else if (varType == "shape")
                 {
                     var index = shapeCounter++;
                     vars[varName] = ("shape", index);
-                    var shapeAsm = CompileShapeInit(index, initValue, vars, ref vertexCounter);
-                    asm.AddRange(shapeAsm);
+                    asm.AddRange(CompileShapeInit(index, initText, vars, ref vertexCounter));
                 }
             }
 
@@ -2413,25 +734,17 @@ namespace Magic.Kernel.Compilation
         private List<string> CompileVertexInit(int index, string initValue)
         {
             var asm = new List<string>();
-            var dims = ExtractDimensionsFromInit(initValue);
-            var weight = ExtractWeightFromInit(initValue);
-            var data = ExtractDataFromInit(initValue);
+            var scanner = new Scanner(initValue);
+            if (!TryParseVertexObject(scanner, out var spec))
+                return asm;
 
-            var dimsStr = string.Join(", ", dims);
-            var asmLine = $"addvertex index: {index}, dimensions: [{dimsStr}], weight: {weight.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+            var dimsStr = string.Join(", ", spec.Dimensions);
+            var asmLine = $"addvertex index: {index}, dimensions: [{dimsStr}], weight: {spec.Weight.ToString(CultureInfo.InvariantCulture)}";
 
-            if (!string.IsNullOrEmpty(data))
-            {
-                if (data.StartsWith("BIN:"))
-                {
-                    var base64 = data.Substring(4).Trim();
-                    asmLine += $", data: binary: base64: \"{base64}\"";
-                }
-                else
-                {
-                    asmLine += $", data: text: \"{data}\"";
-                }
-            }
+            if (!string.IsNullOrEmpty(spec.BinaryData))
+                asmLine += $", data: binary: base64: \"{EscapeStringLiteral(spec.BinaryData)}\"";
+            else if (!string.IsNullOrEmpty(spec.TextData))
+                asmLine += $", data: text: \"{EscapeStringLiteral(spec.TextData)}\"";
 
             asm.Add(asmLine);
             return asm;
@@ -2440,376 +753,805 @@ namespace Magic.Kernel.Compilation
         private List<string> CompileRelationInit(int index, string initValue, Dictionary<string, (string Kind, int Index)> vars)
         {
             var asm = new List<string>();
-            
-            // Парсим: {v1=>v2,W:0.6} или {r1=>r3,W:0.6}
-            var match = System.Text.RegularExpressions.Regex.Match(initValue, @"(\w+)\s*=>\s*(\w+)");
-            if (!match.Success) return asm;
-
-            var fromVar = match.Groups[1].Value;
-            var toVar = match.Groups[2].Value;
-            var weight = ExtractWeightFromInit(initValue);
-
-            if (!vars.ContainsKey(fromVar) || !vars.ContainsKey(toVar))
+            var scanner = new Scanner(initValue);
+            if (!TryParseRelationObject(scanner, out var spec) || string.IsNullOrEmpty(spec.From) || string.IsNullOrEmpty(spec.To))
                 return asm;
 
-            var (fromKind, fromIdx) = vars[fromVar];
-            var (toKind, toIdx) = vars[toVar];
+            if (!vars.TryGetValue(spec.From, out var fromVar) || !vars.TryGetValue(spec.To, out var toVar))
+                return asm;
 
-            var fromType = fromKind is "relation" ? "relation" : "vertex";
-            var toType = toKind is "relation" ? "relation" : "vertex";
+            var fromType = fromVar.Kind == "relation" ? "relation" : "vertex";
+            var toType = toVar.Kind == "relation" ? "relation" : "vertex";
 
-            var asmLine = $"addrelation index: {index}, from: {fromType}: index: {fromIdx}, to: {toType}: index: {toIdx}, weight: {weight.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
-            asm.Add(asmLine);
+            asm.Add($"addrelation index: {index}, from: {fromType}: index: {fromVar.Index}, to: {toType}: index: {toVar.Index}, weight: {spec.Weight.ToString(CultureInfo.InvariantCulture)}");
             return asm;
-        }
-
-        private static string? ExtractBracketContent(string s, string key)
-        {
-            var keyPos = s.IndexOf(key, StringComparison.OrdinalIgnoreCase);
-            if (keyPos < 0) return null;
-            var i = keyPos + key.Length;
-            while (i < s.Length && (char.IsWhiteSpace(s[i]) || s[i] == ':')) i++;
-            if (i >= s.Length || s[i] != '[') return null;
-
-            var start = i + 1;
-            var depth = 1;
-            var inString = false;
-            var escaped = false;
-            for (i = start; i < s.Length; i++)
-            {
-                var ch = s[i];
-                if (inString)
-                {
-                    if (escaped) { escaped = false; continue; }
-                    if (ch == '\\') { escaped = true; continue; }
-                    if (ch == '"') inString = false;
-                    continue;
-                }
-                if (ch == '"') { inString = true; continue; }
-                if (ch == '[') { depth++; continue; }
-                if (ch == ']')
-                {
-                    depth--;
-                    if (depth == 0)
-                        return s.Substring(start, i - start);
-                }
-            }
-            return null;
-        }
-
-        private static List<string> SplitTopLevelComma(string s)
-        {
-            var res = new List<string>();
-            var sb = new System.Text.StringBuilder();
-            var brace = 0;
-            var inString = false;
-            var escaped = false;
-
-            foreach (var ch in s)
-            {
-                if (inString)
-                {
-                    sb.Append(ch);
-                    if (escaped) { escaped = false; continue; }
-                    if (ch == '\\') { escaped = true; continue; }
-                    if (ch == '"') inString = false;
-                    continue;
-                }
-
-                if (ch == '"')
-                {
-                    inString = true;
-                    sb.Append(ch);
-                    continue;
-                }
-
-                if (ch == '{') { brace++; sb.Append(ch); continue; }
-                if (ch == '}') { brace--; sb.Append(ch); continue; }
-
-                if (ch == ',' && brace == 0)
-                {
-                    var item = sb.ToString().Trim();
-                    if (!string.IsNullOrWhiteSpace(item)) res.Add(item);
-                    sb.Clear();
-                    continue;
-                }
-                sb.Append(ch);
-            }
-
-            var tail = sb.ToString().Trim();
-            if (!string.IsNullOrWhiteSpace(tail)) res.Add(tail);
-            return res;
         }
 
         private List<string> CompileShapeInit(int index, string initValue, Dictionary<string, (string Kind, int Index)> vars, ref int vertexCounter)
         {
             var asm = new List<string>();
-            
-            // Парсим: { [v1, v2, v3] } или { VERT:[{DIM:[...]}, {DIM:[...]}] }
-            if (initValue.Contains("VERT:"))
+            var scanner = new Scanner(initValue);
+            if (!TryParseShapeObject(scanner, out var spec))
+                return asm;
+
+            var indices = new List<int>();
+            if (spec.UsesInlineVertices)
             {
-                // Формат с VERT: и DIM:
-                var inside = ExtractBracketContent(initValue, "VERT");
-                var vertices = inside == null ? new List<string>() : SplitTopLevelComma(inside);
-                var indices = new List<int>();
-                foreach (var v in vertices)
+                foreach (var vertex in spec.InlineVertices)
                 {
                     var tempIndex = vertexCounter++;
-                    var dims = ExtractDimensionsFromInit(v);
-                    var dimsStr = string.Join(", ", dims);
+                    var dimsStr = string.Join(", ", vertex.Dimensions);
                     var line = $"addvertex index: {tempIndex}, dimensions: [{dimsStr}]";
-                    if (v.Contains("W:"))
-                        line += $", weight: {ExtractWeightFromInit(v).ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+                    if (vertex.Weight.HasValue)
+                        line += $", weight: {vertex.Weight.Value.ToString(CultureInfo.InvariantCulture)}";
                     asm.Add(line);
                     indices.Add(tempIndex);
-                }
-                if (indices.Count > 0)
-                {
-                    var indicesStr = string.Join(", ", indices);
-                    asm.Add($"addshape index: {index}, vertices: indices: [{indicesStr}]");
                 }
             }
             else
             {
-                // Формат с переменными: [v1, v2, v3]
-                var match = System.Text.RegularExpressions.Regex.Match(initValue, @"\[([^\]]+)\]");
-                if (match.Success)
+                foreach (var name in spec.VertexNames)
                 {
-                    var vnames = match.Groups[1].Value.Split(',').Select(v => v.Trim()).ToList();
-                    var indices = new List<int>();
-                    foreach (var v in vnames)
-                    {
-                        if (vars.ContainsKey(v) && vars[v].Kind == "vertex")
-                        {
-                            indices.Add(vars[v].Index);
-                        }
-                    }
-                    if (indices.Count > 0)
-                    {
-                        var indicesStr = string.Join(", ", indices);
-                        asm.Add($"addshape index: {index}, vertices: indices: [{indicesStr}]");
-                    }
+                    if (vars.TryGetValue(name, out var vertexVar) && vertexVar.Kind == "vertex")
+                        indices.Add(vertexVar.Index);
                 }
             }
+
+            if (indices.Count > 0)
+                asm.Add($"addshape index: {index}, vertices: indices: [{string.Join(", ", indices)}]");
 
             return asm;
         }
 
-        private List<string> CompileAssignment(string line, Dictionary<string, (string Kind, int Index)> vars, ref int shapeCounter, ref int vertexCounter, ref int memorySlotCounter)
+        private bool TryCompileAssignment(string line, Dictionary<string, (string Kind, int Index)> vars, ref int shapeCounter, ref int vertexCounter, ref int memorySlotCounter, List<string> asm)
         {
-            var asm = new List<string>();
-            var trimmed = line.Trim().TrimEnd(';');
-            
-            // Парсим: var = expression;
-            var match = System.Text.RegularExpressions.Regex.Match(trimmed, @"^(\w+)\s*=\s*(.+)$");
-            if (!match.Success) return asm;
-
-            var varName = match.Groups[1].Value;
-            var expression = match.Groups[2].Value.Trim();
-
-            // var vault1 = vault; → декларация "хранилища" без байткода (используется только как маркер в vars)
-            if (string.Equals(expression, "vault", StringComparison.OrdinalIgnoreCase))
+            var scanner = new Scanner(line);
+            if (IsIdentifier(scanner.Current, "var"))
             {
-                // Индекс не используется, но для единообразия создадим слот
+                scanner.Scan();
+            }
+
+            if (scanner.Current.Kind != TokenKind.Identifier)
+                return false;
+            var targetName = scanner.Scan().Value;
+
+            var hasAssign = scanner.Current.Kind == TokenKind.Assign;
+            var hasDefineAssign = scanner.Current.Kind == TokenKind.Colon && scanner.Watch(1)?.Kind == TokenKind.Assign;
+            if (!hasAssign && !hasDefineAssign)
+                return false;
+            if (hasDefineAssign)
+            {
+                scanner.Scan();
+                scanner.Scan();
+            }
+            else
+            {
+                scanner.Scan();
+            }
+
+            SkipSemicolon(scanner);
+            if (scanner.Current.IsEndOfInput)
+                return true;
+
+            if (IsIdentifier(scanner.Current, "vault"))
+            {
                 var vaultSlot = memorySlotCounter++;
-                vars[varName] = ("vault", vaultSlot);
-                return asm;
+                vars[targetName] = ("vault", vaultSlot);
+                return true;
             }
 
-            // var token = vault1.read("token"); → push "token", push 1, call vault_read, pop [tokenSlot]
-            var vaultReadMatch = System.Text.RegularExpressions.Regex.Match(
-                expression,
-                @"^(\w+)\.read\(\s*""([^""]+)""\s*\)\s*$",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            if (vaultReadMatch.Success)
+            if (TryParseVaultReadExpression(scanner, out var vaultVarName, out var tokenKey) &&
+                vars.TryGetValue(vaultVarName, out var vaultVar) &&
+                vaultVar.Kind == "vault")
             {
-                var vaultVarName = vaultReadMatch.Groups[1].Value;
-                if (vars.TryGetValue(vaultVarName, out var vaultVar) && vaultVar.Kind == "vault")
-                {
-                    var tokenKey = vaultReadMatch.Groups[2].Value.Replace("\"", "\\\"");
-                    var resultSlot = memorySlotCounter++;
-                    vars[varName] = ("memory", resultSlot);
-                    asm.Add($"push string: \"{tokenKey}\"");
-                    asm.Add("push 1");
-                    asm.Add("call vault_read");
-                    asm.Add($"pop [{resultSlot}]");
-                    return asm;
-                }
+                var resultSlot = memorySlotCounter++;
+                vars[targetName] = ("memory", resultSlot);
+                asm.Add($"push string: \"{EscapeStringLiteral(tokenKey)}\"");
+                asm.Add("push 1");
+                asm.Add("call vault_read");
+                asm.Add($"pop [{resultSlot}]");
+                return true;
             }
 
-            // var data = await stream1; → push [stream], awaitobj, pop [data]
-            var awaitMatch = System.Text.RegularExpressions.Regex.Match(expression, @"^await\s+(\w+)\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            if (awaitMatch.Success && vars.TryGetValue(awaitMatch.Groups[1].Value, out var streamVar) && streamVar.Kind == "stream")
+            if (TryParseAwaitExpression(scanner, out var awaitVarName) &&
+                vars.TryGetValue(awaitVarName, out var streamVar) &&
+                streamVar.Kind == "stream")
             {
                 var dataSlot = memorySlotCounter++;
-                vars[varName] = ("memory", dataSlot);
+                vars[targetName] = ("memory", dataSlot);
                 asm.Add($"push [{streamVar.Index}]");
                 asm.Add("awaitobj");
                 asm.Add($"pop [{dataSlot}]");
-                return asm;
+                return true;
             }
 
-            // var semantic_file_system = compile(data); → push [data], push 1, call compile, pop [result]
-            var compileMatch = System.Text.RegularExpressions.Regex.Match(expression, @"^compile\s*\(\s*(\w+)\s*\)\s*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            if (compileMatch.Success && vars.TryGetValue(compileMatch.Groups[1].Value, out var dataVar) && (dataVar.Kind == "memory" || dataVar.Kind == "stream"))
+            if (TryParseCompileExpression(scanner, out var compileArgName) &&
+                vars.TryGetValue(compileArgName, out var dataVar) &&
+                (dataVar.Kind == "memory" || dataVar.Kind == "stream"))
             {
                 var resultSlot = memorySlotCounter++;
-                vars[varName] = ("memory", resultSlot);
+                vars[targetName] = ("memory", resultSlot);
                 asm.Add($"push [{dataVar.Index}]");
                 asm.Add("push 1");
                 asm.Add("call compile");
                 asm.Add($"pop [{resultSlot}]");
-                return asm;
+                return true;
             }
 
-            // Оператор ] для origin
-            if (expression.Contains("]") && !expression.Contains("|"))
+            if (TryParseOriginExpression(scanner, out var shapeVarName) &&
+                vars.TryGetValue(shapeVarName, out var shapeVar) &&
+                shapeVar.Kind == "shape")
             {
-                var shapeMatch = System.Text.RegularExpressions.Regex.Match(expression, @"\]\s+(\w+)");
-                if (shapeMatch.Success)
-                {
-                    var shapeVar = shapeMatch.Groups[1].Value;
-                    if (vars.ContainsKey(shapeVar) && vars[shapeVar].Kind == "shape")
-                    {
-                        var shapeIdx = vars[shapeVar].Index;
-                        asm.Add($"call \"origin\", shape: index: {shapeIdx}");
-                        asm.Add($"pop [0]");
-                        vars[varName] = ("memory", 0);
-                    }
-                }
+                asm.Add($"call \"origin\", shape: index: {shapeVar.Index}");
+                asm.Add("pop [0]");
+                vars[targetName] = ("memory", 0);
+                return true;
             }
-            // Оператор | для intersection
-            else if (expression.Contains("|"))
+
+            if (TryParseIntersectionExpression(scanner, line, out var shapeAName, out var shapeBText))
             {
-                var parts = expression.Split('|');
-                if (parts.Length == 2)
+                if (!vars.TryGetValue(shapeAName, out var shapeA) || shapeA.Kind != "shape")
+                    return true;
+
+                int? shapeBIndex = null;
+                if (vars.TryGetValue(shapeBText, out var shapeBVar) && shapeBVar.Kind == "shape")
                 {
-                    var shapeA = parts[0].Trim();
-                    var shapeB = parts[1].Trim();
-                    
-                    int? shapeAIdx = null, shapeBIdx = null;
-                    
-                    if (vars.ContainsKey(shapeA) && vars[shapeA].Kind == "shape")
+                    shapeBIndex = shapeBVar.Index;
+                }
+                else
+                {
+                    var tempShapeIndex = shapeCounter++;
+                    asm.AddRange(CompileShapeInit(tempShapeIndex, shapeBText, vars, ref vertexCounter));
+                    shapeBIndex = tempShapeIndex;
+                }
+
+                if (shapeBIndex.HasValue)
+                {
+                    asm.Add($"call \"intersect\", shapeA: shape: index: {shapeA.Index}, shapeB: shape: index: {shapeBIndex.Value}");
+                    asm.Add("pop [1]");
+                    vars[targetName] = ("memory", 1);
+                }
+                return true;
+            }
+
+            return true;
+        }
+
+        private bool TryCompileFunctionCall(string line, Dictionary<string, (string Kind, int Index)> vars, List<string> asm)
+        {
+            var scanner = new Scanner(line);
+            if (scanner.Current.Kind != TokenKind.Identifier)
+                return false;
+            var functionName = scanner.Scan().Value;
+            if (scanner.Current.Kind != TokenKind.LParen)
+                return false;
+            scanner.Scan();
+            if (scanner.Current.Kind != TokenKind.Identifier)
+                return false;
+            var argName = scanner.Scan().Value;
+            if (scanner.Current.Kind != TokenKind.RParen)
+                return false;
+            scanner.Scan();
+            SkipSemicolon(scanner);
+            if (!scanner.Current.IsEndOfInput)
+                return false;
+
+            if (!string.Equals(functionName, "print", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (vars.TryGetValue(argName, out var argVar) && argVar.Kind == "memory")
+            {
+                asm.Add($"push [{argVar.Index}]");
+                asm.Add("push 1");
+                asm.Add("call print");
+            }
+            return true;
+        }
+
+        private bool TryCompileMethodCall(string line, Dictionary<string, (string Kind, int Index)> vars, List<string> asm)
+        {
+            var scanner = new Scanner(line);
+            if (scanner.Current.Kind != TokenKind.Identifier)
+                return false;
+            var objectName = scanner.Scan().Value;
+            if (scanner.Current.Kind != TokenKind.Dot)
+                return false;
+            scanner.Scan();
+            if (scanner.Current.Kind != TokenKind.Identifier)
+                return false;
+            var methodName = scanner.Scan().Value;
+            if (scanner.Current.Kind != TokenKind.LParen)
+                return false;
+            scanner.Scan();
+
+            string argText;
+            if (scanner.Current.Kind == TokenKind.StringLiteral)
+            {
+                argText = $"\"{EscapeStringLiteral(scanner.Scan().Value)}\"";
+            }
+            else
+            {
+                var start = scanner.Current.Start;
+                var end = start;
+                while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RParen)
+                {
+                    end = scanner.Current.End;
+                    scanner.Scan();
+                }
+                argText = start < end ? line.Substring(start, end - start).Trim() : "";
+                argText = $"\"{EscapeStringLiteral(argText)}\"";
+            }
+
+            if (scanner.Current.Kind != TokenKind.RParen)
+                return false;
+            scanner.Scan();
+            SkipSemicolon(scanner);
+            if (!scanner.Current.IsEndOfInput)
+                return false;
+
+            if (!vars.TryGetValue(objectName, out var objVar))
+                return true;
+
+            asm.Add($"push [{objVar.Index}]");
+            asm.Add($"push string: {argText}");
+            asm.Add("push 1");
+            asm.Add($"callobj \"{methodName}\"");
+            return true;
+        }
+
+        private void EmitStreamDeclaration(string streamName, string elementType, Dictionary<string, (string Kind, int Index)> vars, ref int memorySlotCounter, List<string> asm)
+        {
+            var baseSlot = memorySlotCounter++;
+            var streamSlot = memorySlotCounter++;
+            vars[streamName] = ("stream", streamSlot);
+            asm.Add("push stream");
+            asm.Add("def");
+            asm.Add($"pop [{baseSlot}]");
+            asm.Add($"push [{baseSlot}]");
+            asm.Add($"push {elementType}");
+            asm.Add("push 1");
+            asm.Add("defgen");
+            asm.Add($"pop [{streamSlot}]");
+        }
+
+        private bool IsDeclarationStatement(string line)
+        {
+            var scanner = new Scanner(line);
+            return TryParseStreamDeclaration(scanner, out _, out _) ||
+                   TryParseEntityDeclaration(line, new Scanner(line), out _, out _, out _);
+        }
+
+        private bool TryParseVarKeywordOnly(string line)
+        {
+            var scanner = new Scanner(line);
+            if (!IsIdentifier(scanner.Current, "var"))
+                return false;
+            scanner.Scan();
+            SkipSemicolon(scanner);
+            return scanner.Current.IsEndOfInput;
+        }
+
+        private bool TryStripInlineVarPrefix(string line, out string declarationLine)
+        {
+            declarationLine = "";
+            var scanner = new Scanner(line);
+            if (!IsIdentifier(scanner.Current, "var"))
+                return false;
+            scanner.Scan();
+            if (scanner.Current.IsEndOfInput)
+                return false;
+            var start = scanner.Current.Start;
+            var end = start;
+            while (!scanner.Current.IsEndOfInput)
+            {
+                end = scanner.Current.End;
+                scanner.Scan();
+            }
+            if (end <= start || start >= line.Length)
+                return false;
+            declarationLine = line.Substring(start, end - start).Trim();
+            return !string.IsNullOrEmpty(declarationLine);
+        }
+
+        private bool TryParseStreamDeclaration(Scanner scanner, out string streamName, out string elementType)
+        {
+            streamName = "";
+            elementType = "";
+
+            if (IsIdentifier(scanner.Current, "var"))
+                scanner.Scan();
+
+            if (scanner.Current.Kind != TokenKind.Identifier)
+                return false;
+            streamName = scanner.Scan().Value;
+
+            if (scanner.Current.Kind != TokenKind.Colon || scanner.Watch(1)?.Kind != TokenKind.Assign)
+                return false;
+            scanner.Scan();
+            scanner.Scan();
+
+            if (!IsIdentifier(scanner.Current, "stream"))
+                return false;
+            scanner.Scan();
+
+            if (scanner.Current.Kind != TokenKind.LessThan)
+                return false;
+            scanner.Scan();
+            if (scanner.Current.Kind != TokenKind.Identifier)
+                return false;
+            elementType = scanner.Scan().Value.ToLowerInvariant();
+
+            while (scanner.Current.Kind == TokenKind.Comma)
+            {
+                scanner.Scan();
+                if (scanner.Current.Kind != TokenKind.Identifier)
+                    return false;
+                scanner.Scan();
+            }
+
+            if (scanner.Current.Kind != TokenKind.GreaterThan)
+                return false;
+            scanner.Scan();
+            SkipSemicolon(scanner);
+            return scanner.Current.IsEndOfInput;
+        }
+
+        private bool TryParseEntityDeclaration(string sourceLine, Scanner scanner, out string varName, out string varType, out string initText)
+        {
+            varName = "";
+            varType = "";
+            initText = "";
+
+            if (IsIdentifier(scanner.Current, "var"))
+                scanner.Scan();
+
+            if (scanner.Current.Kind != TokenKind.Identifier)
+                return false;
+            varName = scanner.Scan().Value;
+
+            if (scanner.Current.Kind != TokenKind.Colon)
+                return false;
+            scanner.Scan();
+            if (scanner.Current.Kind != TokenKind.Identifier)
+                return false;
+            varType = scanner.Scan().Value.ToLowerInvariant();
+            if (varType != "vertex" && varType != "relation" && varType != "shape")
+                return false;
+            if (scanner.Current.Kind != TokenKind.Assign)
+                return false;
+            scanner.Scan();
+
+            if (scanner.Current.IsEndOfInput)
+                return false;
+            var start = scanner.Current.Start;
+            var end = start;
+            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.Semicolon)
+            {
+                end = scanner.Current.End;
+                scanner.Scan();
+            }
+            initText = start < end ? sourceLine.Substring(start, end - start).Trim() : "";
+            if (string.IsNullOrWhiteSpace(initText))
+                return false;
+
+            SkipSemicolon(scanner);
+            return scanner.Current.IsEndOfInput;
+        }
+
+        private bool TryParseVertexObject(Scanner scanner, out VertexInitSpec spec)
+        {
+            spec = new VertexInitSpec();
+            if (scanner.Current.Kind != TokenKind.LBrace)
+                return false;
+            scanner.Scan();
+
+            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RBrace)
+            {
+                if (scanner.Current.Kind == TokenKind.Comma)
+                {
+                    scanner.Scan();
+                    continue;
+                }
+
+                if (IsIdentifier(scanner.Current, "DIM"))
+                {
+                    scanner.Scan();
+                    TryConsumeColon(scanner);
+                    var dims = ParseLongArray(scanner);
+                    if (dims.Count > 0)
                     {
-                        shapeAIdx = vars[shapeA].Index;
+                        spec.Dimensions.Clear();
+                        spec.Dimensions.AddRange(dims);
                     }
-                    
-                    if (vars.ContainsKey(shapeB) && vars[shapeB].Kind == "shape")
+                    continue;
+                }
+
+                if (IsIdentifier(scanner.Current, "W"))
+                {
+                    scanner.Scan();
+                    TryConsumeColon(scanner);
+                    if (TryParseDoubleToken(scanner, out var weight))
+                        spec.Weight = weight;
+                    continue;
+                }
+
+                if (IsIdentifier(scanner.Current, "DATA"))
+                {
+                    scanner.Scan();
+                    TryConsumeColon(scanner);
+                    if (IsIdentifier(scanner.Current, "BIN"))
                     {
-                        shapeBIdx = vars[shapeB].Index;
+                        scanner.Scan();
+                        TryConsumeColon(scanner);
+                        if (scanner.Current.Kind == TokenKind.StringLiteral)
+                            spec.BinaryData = scanner.Scan().Value;
                     }
+                    else if (scanner.Current.Kind == TokenKind.StringLiteral)
+                    {
+                        spec.TextData = scanner.Scan().Value;
+                    }
+                    continue;
+                }
+
+                scanner.Scan();
+            }
+
+            if (scanner.Current.Kind != TokenKind.RBrace)
+                return false;
+            scanner.Scan();
+            return scanner.Current.IsEndOfInput;
+        }
+
+        private bool TryParseRelationObject(Scanner scanner, out RelationInitSpec spec)
+        {
+            spec = new RelationInitSpec();
+            if (scanner.Current.Kind != TokenKind.LBrace)
+                return false;
+            scanner.Scan();
+
+            if (scanner.Current.Kind == TokenKind.Identifier)
+                spec.From = scanner.Scan().Value;
+            if (scanner.Current.Kind != TokenKind.Assign || scanner.Watch(1)?.Kind != TokenKind.GreaterThan)
+                return false;
+            scanner.Scan();
+            scanner.Scan();
+            if (scanner.Current.Kind != TokenKind.Identifier)
+                return false;
+            spec.To = scanner.Scan().Value;
+
+            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RBrace)
+            {
+                if (scanner.Current.Kind == TokenKind.Comma)
+                {
+                    scanner.Scan();
+                    continue;
+                }
+                if (IsIdentifier(scanner.Current, "W"))
+                {
+                    scanner.Scan();
+                    TryConsumeColon(scanner);
+                    if (TryParseDoubleToken(scanner, out var weight))
+                        spec.Weight = weight;
+                    continue;
+                }
+                scanner.Scan();
+            }
+
+            if (scanner.Current.Kind != TokenKind.RBrace)
+                return false;
+            scanner.Scan();
+            return scanner.Current.IsEndOfInput;
+        }
+
+        private bool TryParseShapeObject(Scanner scanner, out ShapeInitSpec spec)
+        {
+            spec = new ShapeInitSpec();
+            if (scanner.Current.Kind != TokenKind.LBrace)
+                return false;
+            scanner.Scan();
+
+            if (IsIdentifier(scanner.Current, "VERT"))
+            {
+                scanner.Scan();
+                TryConsumeColon(scanner);
+                if (scanner.Current.Kind != TokenKind.LBracket)
+                    return false;
+                scanner.Scan();
+                while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RBracket)
+                {
+                    if (scanner.Current.Kind == TokenKind.Comma)
+                    {
+                        scanner.Scan();
+                        continue;
+                    }
+                    if (scanner.Current.Kind == TokenKind.LBrace && TryParseInlineVertex(scanner, out var inlineVertex))
+                    {
+                        spec.InlineVertices.Add(inlineVertex);
+                        continue;
+                    }
+                    scanner.Scan();
+                }
+                if (scanner.Current.Kind != TokenKind.RBracket)
+                    return false;
+                scanner.Scan();
+            }
+            else if (scanner.Current.Kind == TokenKind.LBracket)
+            {
+                scanner.Scan();
+                while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RBracket)
+                {
+                    if (scanner.Current.Kind == TokenKind.Comma)
+                    {
+                        scanner.Scan();
+                        continue;
+                    }
+                    if (scanner.Current.Kind == TokenKind.Identifier)
+                        spec.VertexNames.Add(scanner.Scan().Value);
                     else
-                    {
-                        // shapeB может быть литералом, создаем временный shape
-                        var tempShapeIdx = shapeCounter++;
-                        var shapeBAsm = CompileShapeInit(tempShapeIdx, shapeB, vars, ref vertexCounter);
-                        asm.AddRange(shapeBAsm);
-                        shapeBIdx = tempShapeIdx;
-                    }
-
-                    if (shapeAIdx.HasValue && shapeBIdx.HasValue)
-                    {
-                        asm.Add($"call \"intersect\", shapeA: shape: index: {shapeAIdx.Value}, shapeB: shape: index: {shapeBIdx.Value}");
-                        asm.Add($"pop [1]");
-                        vars[varName] = ("memory", 1);
-                    }
+                        scanner.Scan();
                 }
+                if (scanner.Current.Kind != TokenKind.RBracket)
+                    return false;
+                scanner.Scan();
+            }
+            else
+            {
+                return false;
             }
 
-            return asm;
+            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RBrace)
+                scanner.Scan();
+            if (scanner.Current.Kind != TokenKind.RBrace)
+                return false;
+            scanner.Scan();
+            return scanner.Current.IsEndOfInput;
         }
 
-        private List<string> CompileFunctionCall(string line, Dictionary<string, (string Kind, int Index)> vars)
+        private bool TryParseInlineVertex(Scanner scanner, out InlineVertexSpec spec)
         {
-            var asm = new List<string>();
-            var trimmed = line.Trim().TrimEnd(';');
-            
-            // Парсим: print(var);
-            var match = System.Text.RegularExpressions.Regex.Match(trimmed, @"(\w+)\s*\(([^)]+)\)");
-            if (match.Success)
+            spec = new InlineVertexSpec();
+            if (scanner.Current.Kind != TokenKind.LBrace)
+                return false;
+            scanner.Scan();
+
+            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RBrace)
             {
-                var funcName = match.Groups[1].Value;
-                var arg = match.Groups[2].Value.Trim();
-                
-                if (funcName == "print")
+                if (scanner.Current.Kind == TokenKind.Comma)
                 {
-                    if (vars.ContainsKey(arg) && vars[arg].Kind == "memory")
-                    {
-                        var memIdx = vars[arg].Index;
-                        asm.Add($"push [{memIdx}]");
-                        asm.Add("push 1");
-                        asm.Add("call print");
-                    }
+                    scanner.Scan();
+                    continue;
                 }
-            }
-
-            return asm;
-        }
-
-        private List<long> ExtractDimensionsFromInit(string initValue)
-        {
-            var dims = new List<long>();
-            var match = System.Text.RegularExpressions.Regex.Match(initValue, @"DIM:\s*\[([^\]]+)\]");
-            if (match.Success)
-            {
-                var dimsStr = match.Groups[1].Value;
-                var parts = dimsStr.Split(',');
-                foreach (var part in parts)
+                if (IsIdentifier(scanner.Current, "DIM"))
                 {
-                    if (long.TryParse(part.Trim(), out var dim))
+                    scanner.Scan();
+                    TryConsumeColon(scanner);
+                    var dims = ParseLongArray(scanner);
+                    if (dims.Count > 0)
                     {
-                        dims.Add(dim);
+                        spec.Dimensions.Clear();
+                        spec.Dimensions.AddRange(dims);
                     }
+                    continue;
                 }
-            }
-            return dims.Count > 0 ? dims : new List<long> { 1, 0, 0, 0 };
-        }
-
-        private double ExtractWeightFromInit(string initValue)
-        {
-            var match = System.Text.RegularExpressions.Regex.Match(initValue, @"W:\s*([0-9.]+)");
-            if (match.Success && double.TryParse(match.Groups[1].Value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var weight))
-            {
-                return weight;
-            }
-            return 0.5;
-        }
-
-        private string? ExtractDataFromInit(string initValue)
-        {
-            // Парсим DATA:"text" или DATA:BIN:"base64"
-            var textMatch = System.Text.RegularExpressions.Regex.Match(initValue, @"DATA:\s*""([^""]+)""");
-            if (textMatch.Success)
-            {
-                return textMatch.Groups[1].Value;
-            }
-            
-            var binMatch = System.Text.RegularExpressions.Regex.Match(initValue, @"DATA:\s*BIN:\s*""([^""]+)""");
-            if (binMatch.Success)
-            {
-                return "BIN:" + binMatch.Groups[1].Value;
-            }
-
-            return null;
-        }
-
-        private List<string> ExtractVerticesFromShape(string initValue)
-        {
-            var vertices = new List<string>();
-            // Парсим VERT:[{DIM:[...]}, {DIM:[...]}]
-            var match = System.Text.RegularExpressions.Regex.Match(initValue, @"VERT:\s*\[([^\]]+)\]");
-            if (match.Success)
-            {
-                var vertsStr = match.Groups[1].Value;
-                // Разделяем по }, { или просто }
-                var parts = System.Text.RegularExpressions.Regex.Split(vertsStr, @"\}\s*,\s*\{");
-                foreach (var part in parts)
+                if (IsIdentifier(scanner.Current, "W"))
                 {
-                    var clean = part.Trim().TrimStart('{').TrimEnd('}');
-                    vertices.Add(clean);
+                    scanner.Scan();
+                    TryConsumeColon(scanner);
+                    if (TryParseDoubleToken(scanner, out var weight))
+                        spec.Weight = weight;
+                    continue;
                 }
+                scanner.Scan();
             }
-            return vertices;
+
+            if (scanner.Current.Kind != TokenKind.RBrace)
+                return false;
+            scanner.Scan();
+            return true;
+        }
+
+        private static List<long> ParseLongArray(Scanner scanner)
+        {
+            var values = new List<long>();
+            if (scanner.Current.Kind != TokenKind.LBracket)
+                return values;
+            scanner.Scan();
+            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RBracket)
+            {
+                if (scanner.Current.Kind == TokenKind.Comma)
+                {
+                    scanner.Scan();
+                    continue;
+                }
+                if ((scanner.Current.Kind == TokenKind.Number || scanner.Current.Kind == TokenKind.Float) &&
+                    long.TryParse(scanner.Current.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var num))
+                {
+                    values.Add(num);
+                }
+                scanner.Scan();
+            }
+            if (scanner.Current.Kind == TokenKind.RBracket)
+                scanner.Scan();
+            return values;
+        }
+
+        private static bool TryParseDoubleToken(Scanner scanner, out double value)
+        {
+            value = 0d;
+            if (scanner.Current.Kind != TokenKind.Number && scanner.Current.Kind != TokenKind.Float)
+                return false;
+            var ok = double.TryParse(scanner.Current.Value, NumberStyles.Any, CultureInfo.InvariantCulture, out value);
+            scanner.Scan();
+            return ok;
+        }
+
+        private static bool TryParseVaultReadExpression(Scanner scanner, out string vaultVarName, out string tokenKey)
+        {
+            vaultVarName = "";
+            tokenKey = "";
+            var pos = scanner.Save();
+            if (scanner.Current.Kind != TokenKind.Identifier) return false;
+            vaultVarName = scanner.Scan().Value;
+            if (scanner.Current.Kind != TokenKind.Dot || !IsIdentifier(scanner.Watch(1), "read"))
+            {
+                scanner.Restore(pos);
+                return false;
+            }
+            scanner.Scan();
+            scanner.Scan();
+            if (scanner.Current.Kind != TokenKind.LParen)
+            {
+                scanner.Restore(pos);
+                return false;
+            }
+            scanner.Scan();
+            if (scanner.Current.Kind != TokenKind.StringLiteral)
+            {
+                scanner.Restore(pos);
+                return false;
+            }
+            tokenKey = scanner.Scan().Value;
+            if (scanner.Current.Kind != TokenKind.RParen)
+            {
+                scanner.Restore(pos);
+                return false;
+            }
+            scanner.Scan();
+            SkipSemicolon(scanner);
+            var success = scanner.Current.IsEndOfInput;
+            if (!success) scanner.Restore(pos);
+            return success;
+        }
+
+        private static bool TryParseAwaitExpression(Scanner scanner, out string variableName)
+        {
+            variableName = "";
+            var pos = scanner.Save();
+            if (!IsIdentifier(scanner.Current, "await"))
+                return false;
+            scanner.Scan();
+            if (scanner.Current.Kind != TokenKind.Identifier)
+            {
+                scanner.Restore(pos);
+                return false;
+            }
+            variableName = scanner.Scan().Value;
+            SkipSemicolon(scanner);
+            var success = scanner.Current.IsEndOfInput;
+            if (!success) scanner.Restore(pos);
+            return success;
+        }
+
+        private static bool TryParseCompileExpression(Scanner scanner, out string variableName)
+        {
+            variableName = "";
+            var pos = scanner.Save();
+            if (!IsIdentifier(scanner.Current, "compile"))
+                return false;
+            scanner.Scan();
+            if (scanner.Current.Kind != TokenKind.LParen)
+            {
+                scanner.Restore(pos);
+                return false;
+            }
+            scanner.Scan();
+            if (scanner.Current.Kind != TokenKind.Identifier)
+            {
+                scanner.Restore(pos);
+                return false;
+            }
+            variableName = scanner.Scan().Value;
+            if (scanner.Current.Kind != TokenKind.RParen)
+            {
+                scanner.Restore(pos);
+                return false;
+            }
+            scanner.Scan();
+            SkipSemicolon(scanner);
+            var success = scanner.Current.IsEndOfInput;
+            if (!success) scanner.Restore(pos);
+            return success;
+        }
+
+        private static bool TryParseOriginExpression(Scanner scanner, out string shapeVarName)
+        {
+            shapeVarName = "";
+            var pos = scanner.Save();
+            if (!(scanner.Current.Kind == TokenKind.RBracket || scanner.Current.Value == "]"))
+                return false;
+            scanner.Scan();
+            if (scanner.Current.Kind != TokenKind.Identifier)
+            {
+                scanner.Restore(pos);
+                return false;
+            }
+            shapeVarName = scanner.Scan().Value;
+            SkipSemicolon(scanner);
+            var success = scanner.Current.IsEndOfInput;
+            if (!success) scanner.Restore(pos);
+            return success;
+        }
+
+        private static bool TryParseIntersectionExpression(Scanner scanner, string sourceLine, out string shapeAName, out string shapeBText)
+        {
+            shapeAName = "";
+            shapeBText = "";
+            var pos = scanner.Save();
+            if (scanner.Current.Kind != TokenKind.Identifier)
+                return false;
+            shapeAName = scanner.Scan().Value;
+            if (scanner.Current.Value != "|")
+            {
+                scanner.Restore(pos);
+                return false;
+            }
+            scanner.Scan();
+            if (scanner.Current.IsEndOfInput)
+            {
+                scanner.Restore(pos);
+                return false;
+            }
+            var start = scanner.Current.Start;
+            var end = start;
+            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.Semicolon)
+            {
+                end = scanner.Current.End;
+                scanner.Scan();
+            }
+            shapeBText = start < end ? sourceLine.Substring(start, end - start).Trim() : "";
+            var success = !string.IsNullOrWhiteSpace(shapeAName) && !string.IsNullOrWhiteSpace(shapeBText);
+            if (!success)
+                scanner.Restore(pos);
+            return success;
+        }
+
+        private static bool TryParseProcedureName(string line, out string procedureName)
+        {
+            procedureName = "";
+            var scanner = new Scanner(line);
+            if (scanner.Current.Kind != TokenKind.Identifier)
+                return false;
+            procedureName = scanner.Scan().Value;
+            SkipSemicolon(scanner);
+            return scanner.Current.IsEndOfInput;
+        }
+
+        private static bool IsIdentifier(Token token, string value) =>
+            token.Kind == TokenKind.Identifier && string.Equals(token.Value, value, StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsIdentifier(Token? token, string value) =>
+            token.HasValue && token.Value.Kind == TokenKind.Identifier && string.Equals(token.Value.Value, value, StringComparison.OrdinalIgnoreCase);
+
+        private static void SkipSemicolon(Scanner scanner)
+        {
+            while (scanner.Current.Kind == TokenKind.Semicolon)
+                scanner.Scan();
+        }
+
+        private static void TryConsumeColon(Scanner scanner)
+        {
+            if (scanner.Current.Kind == TokenKind.Colon)
+                scanner.Scan();
         }
     }
 }

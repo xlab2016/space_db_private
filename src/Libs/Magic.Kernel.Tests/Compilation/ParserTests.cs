@@ -7,11 +7,11 @@ namespace Magic.Kernel.Tests.Compilation
 {
     public class ParserTests
     {
-        private readonly Parser _parser;
+        private readonly InstructionParser _parser;
 
         public ParserTests()
         {
-            _parser = new Parser();
+            _parser = new InstructionParser();
         }
 
         [Fact]
@@ -437,7 +437,7 @@ namespace Magic.Kernel.Tests.Compilation
         public void Parse_WithScanner_FirstTokenIsOpcode_WatchPreviousReturnsLastConsumed()
         {
             var source = "addvertex index: 1";
-            var parser = new Parser();
+            var parser = new InstructionParser();
             parser.Parse(source);
             var prev = parser.Watch(-1);
             prev.Should().NotBeNull();
@@ -450,7 +450,7 @@ namespace Magic.Kernel.Tests.Compilation
         public void Parse_WhenFirstTokenIsNotIdentifier_ThrowsCompilationException()
         {
             var source = "123 x";
-            var parser = new Parser();
+            var parser = new InstructionParser();
             var act = () => parser.Parse(source);
             act.Should().Throw<CompilationException>()
                 .WithMessage("*Expected*Identifier*");
