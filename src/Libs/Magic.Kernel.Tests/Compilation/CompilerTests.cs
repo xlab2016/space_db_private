@@ -62,10 +62,9 @@ namespace Magic.Kernel.Tests.Compilation
             var result = await _compiler.CompileAsync(source);
 
             // Assert
-            // Парсер создает opcode "invalid", SemanticAnalyzer маппит его в Nop
-            result.Success.Should().BeTrue();
-            result.Result!.EntryPoint.Should().HaveCount(1);
-            result.Result.EntryPoint.First().Opcode.Should().Be(Opcodes.Nop);
+            // BNF-парсер выдаёт ошибку при несоответствии (ожидается Colon после имени параметра)
+            result.Success.Should().BeFalse();
+            result.ErrorMessage.Should().NotBeNullOrEmpty();
         }
 
         [Fact]
@@ -121,11 +120,9 @@ namespace Magic.Kernel.Tests.Compilation
             // Act
             var result = await _compiler.CompileAsync(source);
 
-            // Assert
+            // Assert — BNF-парсер выдаёт ошибку (ожидание Colon или конец ввода)
             result.Success.Should().BeFalse();
-            result.ErrorMessage.Should().NotBeNull();
-            result.ErrorMessage!.Should().Contain("недопустимый тип данных");
-            result.ErrorMessage!.Should().Contain("text V2");
+            result.ErrorMessage.Should().NotBeNullOrEmpty();
         }
 
         [Fact]

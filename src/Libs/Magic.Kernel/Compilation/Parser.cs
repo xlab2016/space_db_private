@@ -66,17 +66,23 @@ namespace Magic.Kernel.Compilation
             }
         }
 
+        private void SkipOptionalComma()
+        {
+            while (_scanner!.Current.Kind == TokenKind.Comma)
+                _scanner.Scan();
+        }
+
         public InstructionNode Parse(string source)
         {
-            source = source.Trim();
+            var trimmed = source?.Trim() ?? "";
             var instruction = new InstructionNode();
-            if (string.IsNullOrEmpty(source))
+            if (string.IsNullOrEmpty(trimmed))
             {
                 instruction.Opcode = "";
                 return instruction;
             }
 
-            _scanner = new Scanner(source);
+            _scanner = new Scanner(trimmed);
             // BNF: instruction = Identifier [parameters]
             var opcodeTok = Expect(TokenKind.Identifier);
             instruction.Opcode = opcodeTok.Value.ToLowerInvariant();
@@ -84,46 +90,410 @@ namespace Magic.Kernel.Compilation
             if (_scanner.Current.IsEndOfInput)
                 return instruction;
 
-            var parametersPart = source.Substring(_scanner.Current.Start).Trim();
-
-            // Специальная обработка для call - имя функции в кавычках
-            if (instruction.Opcode == "call")
+            switch (instruction.Opcode)
             {
-                var parameters = ParseCallParameters(parametersPart);
-                instruction.Parameters = parameters;
-            }
-            else if (instruction.Opcode == "pop" || instruction.Opcode == "push")
-            {
-                // push: [0] | stream | file | 1 | string: "..."
-                var parameters = instruction.Opcode == "push"
-                    ? ParsePushParameters(parametersPart)
-                    : ParseMemoryParameters(parametersPart);
-                instruction.Parameters = parameters;
-            }
-            else if (instruction.Opcode == "def" || instruction.Opcode == "awaitobj")
-            {
-                instruction.Parameters = new List<ParameterNode>();
-            }
-            else if (instruction.Opcode == "defgen")
-            {
-                instruction.Parameters = new List<ParameterNode>();
-            }
-            else if (instruction.Opcode == "callobj")
-            {
-                // callobj "open" — имя метода в кавычках
-                var name = parametersPart.Trim();
-                if (name.Length >= 2 && name.StartsWith("\"") && name.EndsWith("\""))
-                    name = name.Substring(1, name.Length - 2).Replace("\\\"", "\"");
-                instruction.Parameters = new List<ParameterNode> { new FunctionNameParameterNode { FunctionName = name } };
-            }
-            else
-            {
-            // Парсим параметры: name: value, name: value, ...
-            var parameters = ParseParameters(parametersPart);
-            instruction.Parameters = parameters;
+                case "call":
+                    instruction.Parameters = ParseCallParametersFromTokens();
+                    break;
+                case "pop":
+                    instruction.Parameters = ParseMemoryParametersFromTokens();
+                    break;
+                case "push":
+                    instruction.Parameters = ParsePushParametersFromTokens();
+                    break;
+                case "def":
+                case "awaitobj":
+                case "defgen":
+                    instruction.Parameters = new List<ParameterNode>();
+                    break;
+                case "callobj":
+                    instruction.Parameters = ParseCallObjParametersFromTokens();
+                    break;
+                default:
+                    instruction.Parameters = ParseParametersFromTokens();
+                    break;
             }
 
             return instruction;
+        }
+
+        private List<ParameterNode> ParseCallObjParametersFromTokens()
+        {
+            SkipOptionalComma();
+            if (_scanner!.Current.IsEndOfInput)
+                return new List<ParameterNode>();
+            string name;
+            if (_scanner.Current.Kind == TokenKind.StringLiteral)
+                name = _scanner.Scan().Value;
+            else if (_scanner.Current.Kind == TokenKind.Identifier)
+                name = _scanner.Scan().Value;
+            else
+                throw new CompilationException($"Expected string or identifier for callobj at position {_scanner.Current.Start}.", _scanner.Current.Start);
+            return new List<ParameterNode> { new FunctionNameParameterNode { FunctionName = name } };
+        }
+
+        private List<ParameterNode> ParseMemoryParametersFromTokens()
+        {
+            SkipOptionalComma();
+            if (_scanner!.Current.IsEndOfInput || _scanner.Current.Kind != TokenKind.LBracket)
+                return new List<ParameterNode>();
+            Expect(TokenKind.LBracket);
+            var numTok = _scanner.Scan();
+            if (numTok.Kind != TokenKind.Number && numTok.Kind != TokenKind.Float)
+                throw new CompilationException($"Expected number in memory slot at position {numTok.Start}.", numTok.Start);
+            if (!long.TryParse(numTok.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var address))
+                throw new CompilationException($"Invalid number in memory slot at position {numTok.Start}.", numTok.Start);
+            Expect(TokenKind.RBracket);
+            return new List<ParameterNode> { new MemoryParameterNode { Name = "index", Index = address } };
+        }
+
+        private List<ParameterNode> ParsePushParametersFromTokens()
+        {
+            SkipOptionalComma();
+            if (_scanner!.Current.IsEndOfInput)
+                return new List<ParameterNode>();
+            if (_scanner.Current.Kind == TokenKind.LBracket)
+                return ParseMemoryParametersFromTokens();
+            if (_scanner.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("string", StringComparison.OrdinalIgnoreCase))
+            {
+                Expect(TokenKind.Identifier);
+                Expect(TokenKind.Colon);
+                var strTok = Expect(TokenKind.StringLiteral);
+                return new List<ParameterNode> { new StringParameterNode { Name = "string", Value = strTok.Value } };
+            }
+            if (_scanner.Current.Kind == TokenKind.Number)
+            {
+                var t = _scanner.Scan();
+                if (long.TryParse(t.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var numVal))
+                    return new List<ParameterNode> { new IndexParameterNode { Name = "int", Value = numVal } };
+            }
+            if (_scanner.Current.Kind == TokenKind.Identifier)
+            {
+                var typeName = _scanner.Scan().Value;
+                return new List<ParameterNode> { new TypeLiteralParameterNode { TypeName = typeName } };
+            }
+            if (_scanner.Current.Kind == TokenKind.Float)
+            {
+                var t = _scanner.Scan();
+                if (long.TryParse(t.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var numVal))
+                    return new List<ParameterNode> { new IndexParameterNode { Name = "int", Value = numVal } };
+            }
+            return new List<ParameterNode>();
+        }
+
+        private List<ParameterNode> ParseCallParametersFromTokens()
+        {
+            var parameters = new List<ParameterNode>();
+            SkipOptionalComma();
+            if (_scanner!.Current.IsEndOfInput)
+                return parameters;
+            if (_scanner.Current.Kind == TokenKind.StringLiteral)
+                parameters.Add(new FunctionNameParameterNode { Name = "function", FunctionName = _scanner.Scan().Value });
+            else if (_scanner.Current.Kind == TokenKind.Identifier)
+                parameters.Add(new FunctionNameParameterNode { Name = "function", FunctionName = _scanner.Scan().Value });
+            else
+                throw new CompilationException($"Expected function name (string or identifier) at position {_scanner.Current.Start}.", _scanner.Current.Start);
+
+            SkipOptionalComma();
+            while (!_scanner.Current.IsEndOfInput)
+            {
+                if (_scanner.Current.Kind == TokenKind.LBracket)
+                {
+                    Expect(TokenKind.LBracket);
+                    var numTok = _scanner.Scan();
+                    if (numTok.Kind != TokenKind.Number && numTok.Kind != TokenKind.Float)
+                        throw new CompilationException($"Expected number in memory slot at position {numTok.Start}.", numTok.Start);
+                    if (long.TryParse(numTok.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var addr))
+                    {
+                        Expect(TokenKind.RBracket);
+                        parameters.Add(new FunctionParameterNode { Name = "memory", ParameterName = "memory", EntityType = "memory", Index = addr });
+                    }
+                    SkipOptionalComma();
+                    continue;
+                }
+                if (_scanner.Current.Kind != TokenKind.Identifier)
+                    break;
+                var paramName = _scanner.Scan().Value;
+                Expect(TokenKind.Colon);
+                var paramNode = ParseCallParameterValueFromTokens(paramName);
+                if (paramNode != null)
+                    parameters.Add(paramNode);
+                SkipOptionalComma();
+            }
+            return parameters;
+        }
+
+        private ParameterNode? ParseCallParameterValueFromTokens(string paramName)
+        {
+            if (_scanner!.Current.Kind == TokenKind.StringLiteral)
+            {
+                var v = _scanner.Scan().Value;
+                return new StringParameterNode { Name = paramName, Value = v };
+            }
+            if (_scanner.Current.Kind == TokenKind.LBrace)
+            {
+                var complex = ParseComplexValueFromTokens();
+                return new ComplexValueParameterNode { Name = paramName, ParameterName = paramName, Value = complex };
+            }
+            if (_scanner.Current.Kind == TokenKind.Identifier)
+            {
+                // "shape: index: 1" -> paramName=shape, value=index:1 so entityType=paramName; "shape: shape: index: 1" -> entityType=shape
+                var firstIdent = _scanner.Scan().Value;
+                if (_scanner.Current.Kind == TokenKind.Colon)
+                    _scanner.Scan();
+                SkipOptionalComma();
+                if (_scanner.Current.Kind == TokenKind.LBrace)
+                {
+                    var complex = ParseComplexValueFromTokens();
+                    var dict = new Dictionary<string, object> { { firstIdent, complex } };
+                    return new ComplexValueParameterNode { Name = paramName, ParameterName = paramName, Value = dict };
+                }
+                string entityType;
+                if (firstIdent.Equals("index", StringComparison.OrdinalIgnoreCase))
+                {
+                    entityType = paramName;
+                }
+                else
+                {
+                    entityType = firstIdent;
+                }
+                if (_scanner.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("index", StringComparison.OrdinalIgnoreCase))
+                {
+                    _scanner.Scan();
+                    if (_scanner.Current.Kind == TokenKind.Colon)
+                        _scanner.Scan();
+                }
+                if (_scanner.Current.Kind == TokenKind.Number || _scanner.Current.Kind == TokenKind.Float)
+                {
+                    var numTok = _scanner.Scan();
+                    if (long.TryParse(numTok.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var idx))
+                        return new FunctionParameterNode { Name = paramName, ParameterName = paramName, EntityType = entityType, Index = idx };
+                }
+                throw new CompilationException($"Expected index or {{ after entity type at position {_scanner.Current.Start}.", _scanner.Current.Start);
+            }
+            return null;
+        }
+
+        private Dictionary<string, object> ParseComplexValueFromTokens()
+        {
+            Expect(TokenKind.LBrace);
+            var result = new Dictionary<string, object>();
+            SkipOptionalComma();
+            while (!_scanner!.Current.IsEndOfInput && _scanner.Current.Kind != TokenKind.RBrace)
+            {
+                var keyTok = Expect(TokenKind.Identifier);
+                var key = keyTok.Value;
+                Expect(TokenKind.Colon);
+                object? value = ParseValueFromTokens();
+                if (value != null)
+                    result[key] = value;
+                SkipOptionalComma();
+            }
+            Expect(TokenKind.RBrace);
+            return result;
+        }
+
+        private object? ParseValueFromTokens()
+        {
+            if (_scanner!.Current.IsEndOfInput) return null;
+            if (_scanner.Current.Kind == TokenKind.LBracket)
+            {
+                _scanner.Scan();
+                var list = ParseArrayItemsFromTokens();
+                Expect(TokenKind.RBracket);
+                return list;
+            }
+            if (_scanner.Current.Kind == TokenKind.LBrace)
+                return ParseComplexValueFromTokens();
+            if (_scanner.Current.Kind == TokenKind.StringLiteral)
+                return _scanner.Scan().Value;
+            if (_scanner.Current.Kind == TokenKind.Number)
+            {
+                var t = _scanner.Scan();
+                if (long.TryParse(t.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var l))
+                    return l;
+                return t.Value;
+            }
+            if (_scanner.Current.Kind == TokenKind.Float)
+            {
+                var t = _scanner.Scan();
+                if (double.TryParse(t.Value, System.Globalization.NumberStyles.Float, CultureInfo.InvariantCulture, out var d))
+                    return d;
+                return t.Value;
+            }
+            if (_scanner.Current.Kind == TokenKind.Identifier)
+                return _scanner.Scan().Value;
+            return null;
+        }
+
+        private List<object> ParseArrayItemsFromTokens()
+        {
+            var items = new List<object>();
+            SkipOptionalComma();
+            while (!_scanner!.Current.IsEndOfInput && _scanner.Current.Kind != TokenKind.RBracket)
+            {
+                var item = ParseValueFromTokens();
+                if (item != null)
+                    items.Add(item);
+                SkipOptionalComma();
+            }
+            return items;
+        }
+
+        private List<ParameterNode> ParseParametersFromTokens()
+        {
+            var parameters = new List<ParameterNode>();
+            SkipOptionalComma();
+            while (!_scanner!.Current.IsEndOfInput && _scanner.Current.Kind == TokenKind.Identifier)
+            {
+                var nameTok = _scanner.Scan();
+                var name = nameTok.Value.ToLowerInvariant();
+                if (_scanner.Current.Kind == TokenKind.Semicolon || _scanner.Current.IsEndOfInput)
+                    break;
+                if (_scanner.Current.Kind == TokenKind.Colon)
+                    _scanner.Scan();
+                else if (_scanner.Current.Kind != TokenKind.Number && _scanner.Current.Kind != TokenKind.Float)
+                    Expect(TokenKind.Colon);
+                var param = ParseParameterValueByNameFromTokens(name);
+                if (param != null)
+                    parameters.Add(param);
+                SkipOptionalComma();
+            }
+            return parameters;
+        }
+
+        private ParameterNode? ParseParameterValueByNameFromTokens(string name)
+        {
+            if (name == "index")
+            {
+                var t = _scanner!.Scan();
+                if (t.Kind != TokenKind.Number && t.Kind != TokenKind.Float)
+                    throw new CompilationException($"Expected number for index at position {t.Start}.", t.Start);
+                if (long.TryParse(t.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var v))
+                    return new IndexParameterNode { Name = name, Value = v };
+            }
+            if (name == "dimensions")
+            {
+                Expect(TokenKind.LBracket);
+                var values = new List<float>();
+                SkipOptionalComma();
+                while (!_scanner!.Current.IsEndOfInput && _scanner.Current.Kind != TokenKind.RBracket)
+                {
+                    var t = _scanner.Scan();
+                    if (t.Kind == TokenKind.Number || t.Kind == TokenKind.Float)
+                    {
+                        if (float.TryParse(t.Value, System.Globalization.NumberStyles.Float, CultureInfo.InvariantCulture, out var f))
+                            values.Add(f);
+                    }
+                    SkipOptionalComma();
+                }
+                Expect(TokenKind.RBracket);
+                return new DimensionsParameterNode { Name = name, Values = values };
+            }
+            if (name == "weight")
+            {
+                var t = _scanner!.Scan();
+                if (t.Kind != TokenKind.Number && t.Kind != TokenKind.Float)
+                    throw new CompilationException($"Expected number for weight at position {t.Start}.", t.Start);
+                if (float.TryParse(t.Value, System.Globalization.NumberStyles.Float, CultureInfo.InvariantCulture, out var f))
+                    return new WeightParameterNode { Name = name, Value = f };
+            }
+            if (name == "data")
+            {
+                var (typeStr, valueStr, hasColon) = ParseDataFromTokens();
+                var dataParam = new DataParameterNode { Name = name, Type = typeStr, Value = valueStr, HasColon = hasColon };
+                if (!string.IsNullOrEmpty(typeStr))
+                {
+                    foreach (var part in typeStr.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        if (!string.IsNullOrEmpty(part))
+                            dataParam.Types.Add(part.ToLowerInvariant());
+                }
+                dataParam.OriginalString = !string.IsNullOrEmpty(typeStr) && !string.IsNullOrEmpty(valueStr) ? (hasColon ? $"{typeStr} \"{valueStr}\"" : $"{typeStr} {valueStr}") : typeStr ?? "";
+                return dataParam;
+            }
+            if (name == "from" || name == "to")
+            {
+                var (entityType, index) = ParseEntityReferenceFromTokens();
+                return name == "from"
+                    ? (ParameterNode)new FromParameterNode { Name = name, EntityType = entityType, Index = index }
+                    : new ToParameterNode { Name = name, EntityType = entityType, Index = index };
+            }
+            if (name == "vertices")
+            {
+                var indices = ParseVerticesFromTokens();
+                return new VerticesParameterNode { Name = name, Indices = indices };
+            }
+            return null;
+        }
+
+        private (string type, string value, bool hasColon) ParseDataFromTokens()
+        {
+            var types = new List<string>();
+            var sawColon = false;
+            while (_scanner!.Current.Kind == TokenKind.Identifier)
+            {
+                types.Add(_scanner.Scan().Value.ToLowerInvariant());
+                if (_scanner.Current.Kind != TokenKind.Colon)
+                    break;
+                sawColon = true;
+                _scanner.Scan();
+            }
+            if (types.Count == 0)
+                return ("", "", false);
+            var mainType = types[types.Count - 1];
+            types.RemoveAt(types.Count - 1);
+            var typeString = types.Count > 0 ? string.Join(":", types) + ":" + mainType : mainType;
+            // После типа без двоеточия допускается только строковый литерал; иначе — ошибка (например "data: text V2")
+            if (!sawColon && _scanner.Current.Kind == TokenKind.Identifier)
+                throw new CompilationException($"Expected Colon or string literal after type '{typeString}', got Identifier at position {_scanner.Current.Start}.", _scanner.Current.Start);
+            var valueStr = _scanner.Current.Kind == TokenKind.StringLiteral ? _scanner.Scan().Value : "";
+            return (typeString, valueStr, sawColon);
+        }
+
+        private (string entityType, long index) ParseEntityReferenceFromTokens()
+        {
+            if (_scanner!.Current.Kind != TokenKind.Identifier)
+                return ("", 0);
+            var entityType = _scanner.Scan().Value.ToLowerInvariant();
+            if (_scanner.Current.Kind == TokenKind.Colon)
+                _scanner.Scan();
+            if (_scanner.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("index", StringComparison.OrdinalIgnoreCase))
+            {
+                _scanner.Scan();
+                if (_scanner.Current.Kind == TokenKind.Colon)
+                    _scanner.Scan();
+            }
+            if (_scanner.Current.Kind != TokenKind.Number && _scanner.Current.Kind != TokenKind.Float)
+                return ("", 0);
+            var numTok = _scanner.Scan();
+            if (numTok.Kind != TokenKind.Number && numTok.Kind != TokenKind.Float)
+                return ("", 0);
+            long.TryParse(numTok.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var idx);
+            return (entityType, idx);
+        }
+
+        private List<long> ParseVerticesFromTokens()
+        {
+            if (_scanner!.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("indices", StringComparison.OrdinalIgnoreCase))
+            {
+                _scanner.Scan();
+                Expect(TokenKind.Colon);
+            }
+            Expect(TokenKind.LBracket);
+            var indices = new List<long>();
+            SkipOptionalComma();
+            while (!_scanner.Current.IsEndOfInput && _scanner.Current.Kind != TokenKind.RBracket)
+            {
+                var t = _scanner.Scan();
+                if (t.Kind == TokenKind.Number || t.Kind == TokenKind.Float)
+                {
+                    if (long.TryParse(t.Value, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var l))
+                        indices.Add(l);
+                }
+                SkipOptionalComma();
+            }
+            Expect(TokenKind.RBracket);
+            return indices;
         }
 
         private List<ParameterNode> ParseParameters(string parametersPart)
@@ -1338,8 +1708,7 @@ namespace Magic.Kernel.Compilation
         public ProgramStructure ParseProgram(string sourceCode)
         {
             var structure = new ProgramStructure();
-            var lines = sourceCode.Split(new[] { '\r', '\n' }, StringSplitOptions.None);
-            var i = 0;
+            var reader = new LineReader(sourceCode ?? "");
             string? currentProcedure = null;
             string? currentFunction = null;
             var inProcedure = false;
@@ -1347,30 +1716,26 @@ namespace Magic.Kernel.Compilation
             var inEntryPoint = false;
             var inAsmBlock = false;
             var asmBraceDepth = 0;
+            var asmOpenLineIndex = -1;
             var asmBuffer = new System.Text.StringBuilder();
             var blockBraceDepth = 0; // for procedure/function/entrypoint
             var statementLines = new List<string>();
             var unprocessedLines = new List<string>(); // для обратной совместимости
 
-            while (i < lines.Length)
+            for (var i = 0; i < reader.Count; i++)
             {
-                var rawLine = lines[i];
-                var line = rawLine.Trim();
+                var (rawLine, line) = reader.GetLine(i);
                 
                 // Пропускаем пустые строки и комментарии
                 if (string.IsNullOrWhiteSpace(line) || line.StartsWith("//"))
-                {
-                    i++;
                     continue;
-                }
 
                 // Парсим директиву версии @AGI
                 if (line.StartsWith("@AGI"))
                 {
-                    var versionPart = line.Substring(4).Trim();
+                    var versionPart = line.Length > 4 ? line.Substring(4).Trim() : "";
                     structure.Version = versionPart;
                     structure.IsProgramStructure = true;
-                    i++;
                     continue;
                 }
 
@@ -1380,7 +1745,6 @@ namespace Magic.Kernel.Compilation
                     var programPart = line.Substring(7).Trim().TrimEnd(';');
                     structure.ProgramName = programPart;
                     structure.IsProgramStructure = true;
-                    i++;
                     continue;
                 }
 
@@ -1390,7 +1754,6 @@ namespace Magic.Kernel.Compilation
                     var modulePart = line.Substring(6).Trim().TrimEnd(';');
                     structure.Module = modulePart;
                     structure.IsProgramStructure = true;
-                    i++;
                     continue;
                 }
 
@@ -1410,9 +1773,8 @@ namespace Magic.Kernel.Compilation
                     asmBraceDepth = 0;
                     blockBraceDepth = rawLine.Contains("{") ? 1 : 0;
                     statementLines.Clear();
-                    
-                    i++;
-                    continue;
+                    if (!line.Contains("asm") || !line.Contains("{"))
+                        continue;
                 }
 
                 // Парсим function
@@ -1432,9 +1794,8 @@ namespace Magic.Kernel.Compilation
                     asmBraceDepth = 0;
                     blockBraceDepth = rawLine.Contains("{") ? 1 : 0;
                     statementLines.Clear();
-                    
-                    i++;
-                    continue;
+                    if (!line.Contains("asm") || !line.Contains("{"))
+                        continue;
                 }
 
                 // Парсим entrypoint
@@ -1447,25 +1808,62 @@ namespace Magic.Kernel.Compilation
                     asmBraceDepth = 0;
                     blockBraceDepth = rawLine.Contains("{") ? 1 : 0;
                     statementLines.Clear();
-                    
-                    i++;
-                    continue;
+                    if (!line.Contains("asm") || !line.Contains("{"))
+                        continue;
                 }
 
                 // Проверяем начало asm блока
                 if (!inAsmBlock && line.Contains("asm") && line.Contains("{"))
                 {
-                    inAsmBlock = true;
-                    asmBraceDepth = 1;
+                    asmOpenLineIndex = i;
                     asmBuffer.Clear();
 
-                    // Берем все после первой '{' на этой строке (возможны инструкции на той же строке)
-                    var bracePos = rawLine.IndexOf('{');
+                    // Берем все после '{' следующей за "asm", до парной '}' (не включая хвост " } }")
+                    var asmIdx = rawLine.IndexOf("asm", StringComparison.OrdinalIgnoreCase);
+                    var bracePos = asmIdx >= 0 ? rawLine.IndexOf('{', asmIdx) : rawLine.IndexOf('{');
+                    var closedOnSameLine = false;
                     if (bracePos >= 0 && bracePos + 1 < rawLine.Length)
                     {
-                        asmBuffer.AppendLine(rawLine.Substring(bracePos + 1));
+                        var depth = 1;
+                        var contentEnd = rawLine.Length;
+                        for (var j = bracePos + 1; j < rawLine.Length; j++)
+                        {
+                            var c = rawLine[j];
+                            if (c == '{') depth++;
+                            else if (c == '}')
+                            {
+                                depth--;
+                                if (depth == 0) { contentEnd = j; closedOnSameLine = true; break; }
+                            }
+                        }
+                        asmBuffer.AppendLine(rawLine.Substring(bracePos + 1, contentEnd - (bracePos + 1)));
                     }
-                    i++;
+
+                    if (closedOnSameLine)
+                    {
+                        var asmText = asmBuffer.ToString();
+                        var instructions = SplitAsmInstructions(asmText);
+                        foreach (var instruction in instructions)
+                        {
+                            var astNode = Parse(instruction);
+                            if (inProcedure && currentProcedure != null)
+                                structure.Procedures[currentProcedure].Add(astNode);
+                            else if (inFunction && currentFunction != null)
+                                structure.Functions[currentFunction].Add(astNode);
+                            else if (inEntryPoint)
+                                structure.EntryPoint!.Add(astNode);
+                        }
+                        inProcedure = false;
+                        currentProcedure = null;
+                        inEntryPoint = false;
+                        inFunction = false;
+                        currentFunction = null;
+                    }
+                    else
+                    {
+                        inAsmBlock = true;
+                        asmBraceDepth = 1;
+                    }
                     continue;
                 }
 
@@ -1521,10 +1919,8 @@ namespace Magic.Kernel.Compilation
 
                         if (inProcedure) { inProcedure = false; currentProcedure = null; }
                         if (inFunction) { inFunction = false; currentFunction = null; }
-                        if (inEntryPoint) { inEntryPoint = false; }
+                        if (inEntryPoint) { inEntryPoint = false;                         }
                     }
-
-                    i++;
                     continue;
                 }
 
@@ -1592,10 +1988,17 @@ namespace Magic.Kernel.Compilation
                         }
                     }
 
-                    // Добавляем часть строки до закрывающей '}' asm-блока (или всю строку)
-                    if (lineEnd > 0)
+                    // Добавляем содержимое asm на этой строке: на закрывающей строке (lineEnd < length) — только после последней '{'; иначе вся строка (continuation)
+                    if (lineEnd > 0 && i != asmOpenLineIndex)
                     {
-                        asmBuffer.AppendLine(scan.Substring(0, lineEnd));
+                        if (lineEnd < scan.Length)
+                        {
+                            var lastBrace = scan.LastIndexOf('{', lineEnd - 1);
+                            if (lastBrace >= 0)
+                                asmBuffer.AppendLine(scan.Substring(lastBrace + 1, lineEnd - lastBrace - 1));
+                        }
+                        else
+                            asmBuffer.AppendLine(scan.Substring(0, lineEnd));
                     }
 
                     // Если asm блок закрыт — сплитим на инструкции по top-level ';' и сохраняем
@@ -1622,8 +2025,6 @@ namespace Magic.Kernel.Compilation
                                 structure.EntryPoint!.Add(astNode);
                             }
                         }
-
-                        i++;
                         continue;
                     }
                 }
@@ -1638,7 +2039,6 @@ namespace Magic.Kernel.Compilation
                         var callInstruction = Parse($"call {stmt}");
                         structure.EntryPoint.Add(callInstruction);
                         structure.IsProgramStructure = true;
-                        i++;
                         continue;
                     }
                     
@@ -1648,8 +2048,6 @@ namespace Magic.Kernel.Compilation
                         unprocessedLines.Add(line);
                     }
                 }
-
-                i++;
             }
 
             // Если структуры программы нет, но есть необработанные строки - добавляем их в EntryPoint
@@ -1658,12 +2056,11 @@ namespace Magic.Kernel.Compilation
                 // Если не было необработанных строк, собираем все строки которые не пустые и не комментарии
                 if (unprocessedLines.Count == 0)
                 {
-                    foreach (var rawLine in lines)
+                    for (var j = 0; j < reader.Count; j++)
                     {
-                        var trimmedLine = rawLine.Trim();
+                        var (_, trimmedLine) = reader.GetLine(j);
                         if (!string.IsNullOrWhiteSpace(trimmedLine) && !trimmedLine.StartsWith("//"))
                         {
-                            // Проверяем что это не ключевое слово (только начало строки)
                             var firstWord = trimmedLine.Split(new[] { ' ', '\t', '{', '}' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
                             if (firstWord != null && 
                                 firstWord != "@AGI" && 
@@ -1683,7 +2080,7 @@ namespace Magic.Kernel.Compilation
                 
                 if (unprocessedLines.Count > 0)
                 {
-                    structure.EntryPoint = unprocessedLines.Select(line => Parse(line)).ToList();
+                    structure.EntryPoint = unprocessedLines.Select(l => Parse(l)).ToList();
                 }
             }
 
@@ -1694,10 +2091,10 @@ namespace Magic.Kernel.Compilation
         public List<InstructionNode> ParseAsInstructionSet(string sourceCode)
         {
             var nodes = new List<InstructionNode>();
-            var lines = sourceCode.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (var line in lines)
+            var reader = new LineReader(sourceCode ?? "");
+            for (var i = 0; i < reader.Count; i++)
             {
-                var trimmedLine = line.Trim();
+                var (_, trimmedLine) = reader.GetLine(i);
                 if (string.IsNullOrWhiteSpace(trimmedLine))
                     continue;
                 nodes.Add(Parse(trimmedLine));

@@ -441,8 +441,9 @@ namespace Magic.Kernel.Tests.Compilation
             parser.Parse(source);
             var prev = parser.Watch(-1);
             prev.Should().NotBeNull();
-            prev!.Value.Kind.Should().Be(Magic.Kernel.Compilation.TokenKind.Identifier);
-            prev.Value.Value.Should().Be("addvertex");
+            // После полного разбора по токенам последний потреблённый токен — значение параметра
+            prev!.Value.Kind.Should().Be(Magic.Kernel.Compilation.TokenKind.Number);
+            prev.Value.Value.Should().Be("1");
         }
 
         [Fact]

@@ -86,6 +86,7 @@ namespace Magic.Kernel.Compilation
             if (ch == ']') { _index++; return new Token(TokenKind.RBracket, "]", start, _index); }
             if (ch == '{') { _index++; return new Token(TokenKind.LBrace, "{", start, _index); }
             if (ch == '}') { _index++; return new Token(TokenKind.RBrace, "}", start, _index); }
+            if (ch == ';') { _index++; return new Token(TokenKind.Semicolon, ";", start, _index); }
 
             // Строка в кавычках
             if (ch == '"')

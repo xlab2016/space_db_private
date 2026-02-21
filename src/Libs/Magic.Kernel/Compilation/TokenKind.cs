@@ -14,5 +14,6 @@ namespace Magic.Kernel.Compilation
         RBracket,
         LBrace,
         RBrace,
+        Semicolon,
     }
 }
