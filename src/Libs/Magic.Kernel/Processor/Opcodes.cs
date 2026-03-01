@@ -22,6 +22,15 @@ namespace Magic.Kernel.Processor
         Def = 11,
         DefGen = 12,
         CallObj = 13,
-        AwaitObj = 14
+        AwaitObj = 14,
+        StreamWaitObj = 15,
+        Await = 16,
+        Label = 17,
+        Cmp = 18,
+        Je = 19,
+        Jmp = 20,
+        GetObj = 21,
+        SetObj = 22,
+        StreamWait = 23
     }
 }

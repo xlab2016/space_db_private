@@ -444,5 +444,25 @@ namespace Magic.Kernel.Tests.Compilation
             var memoryParam = callInfo.Parameters["memory"].Should().BeOfType<MemoryAddress>().Subject;
             memoryParam.Index.Should().Be(0);
         }
+
+        [Fact]
+        public void Emit_WithCmpOpcode_ShouldSplitMemoryAndLiteralIntoDifferentOperands()
+        {
+            // Arrange
+            var parameters = new List<ParameterNode>
+            {
+                new MemoryParameterNode { Name = "index", Index = 10 },
+                new IndexParameterNode { Name = "int", Value = 1 }
+            };
+
+            // Act
+            var result = _assembler.Emit(Opcodes.Cmp, parameters);
+
+            // Assert
+            result.Opcode.Should().Be(Opcodes.Cmp);
+            var left = result.Operand1.Should().BeOfType<MemoryAddress>().Subject;
+            left.Index.Should().Be(10);
+            result.Operand2.Should().Be(1L);
+        }
     }
 }

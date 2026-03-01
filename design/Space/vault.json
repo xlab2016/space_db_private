@@ -1,0 +1,10 @@
+[{
+	"program": "telegram_to_db",
+	"system": "samples",
+	"module": "telegram",
+	"protected": false,
+	"store": {
+		"token": "8076339927:AAEDNqQxBQGvkdi_eBE4uNDU83CPmAGnYNI",
+		"connectionString": "Server=localhost;Port=5432;Database=telegram_to_db;User Id=pguser;Password=pguserpass"
+	}
+}]

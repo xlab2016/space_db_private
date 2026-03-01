@@ -102,11 +102,24 @@ namespace Magic.Kernel.Compilation
                     break;
                 case "def":
                 case "awaitobj":
+                case "await":
+                case "streamwaitobj":
                 case "defgen":
+                case "getobj":
+                case "setobj":
+                case "streamwait":
                     instruction.Parameters = new List<ParameterNode>();
                     break;
                 case "callobj":
                     instruction.Parameters = ParseCallObjParametersFromTokens();
+                    break;
+                case "label":
+                case "je":
+                case "jmp":
+                    instruction.Parameters = ParseLabelLikeParametersFromTokens();
+                    break;
+                case "cmp":
+                    instruction.Parameters = ParseCmpParametersFromTokens();
                     break;
                 default:
                     instruction.Parameters = ParseParametersFromTokens();
@@ -153,6 +166,54 @@ namespace Magic.Kernel.Compilation
             return new List<ParameterNode> { new FunctionNameParameterNode { FunctionName = name } };
         }
 
+        private List<ParameterNode> ParseLabelLikeParametersFromTokens()
+        {
+            SkipOptionalComma();
+            if (_scanner!.Current.IsEndOfInput)
+                return new List<ParameterNode>();
+
+            Token labelToken = default;
+            var parsed = Or(
+                () =>
+                {
+                    if (_scanner.Current.Kind != TokenKind.StringLiteral) return false;
+                    labelToken = _scanner.Scan();
+                    return true;
+                },
+                () =>
+                {
+                    if (_scanner.Current.Kind != TokenKind.Identifier) return false;
+                    labelToken = _scanner.Scan();
+                    return true;
+                });
+
+            if (!parsed)
+                throw new CompilationException($"Expected label identifier at position {_scanner.Current.Start}.", _scanner.Current.Start);
+
+            return new List<ParameterNode> { new FunctionNameParameterNode { FunctionName = labelToken.Value } };
+        }
+
+        private List<ParameterNode> ParseCmpParametersFromTokens()
+        {
+            var parameters = new List<ParameterNode>();
+            SkipOptionalComma();
+
+            if (_scanner!.Current.Kind != TokenKind.LBracket)
+                return parameters;
+
+            parameters.AddRange(ParseMemoryParametersFromTokens());
+            SkipOptionalComma();
+
+            if (_scanner.Current.Kind == TokenKind.Number || _scanner.Current.Kind == TokenKind.Float)
+            {
+                var numTok = _scanner.Scan();
+                if (long.TryParse(numTok.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+                    parameters.Add(new IndexParameterNode { Name = "int", Value = value });
+            }
+
+            return parameters;
+        }
+
         private List<ParameterNode> ParseMemoryParametersFromTokens()
         {
             SkipOptionalComma();
@@ -173,6 +234,15 @@ namespace Magic.Kernel.Compilation
             SkipOptionalComma();
             if (_scanner!.Current.IsEndOfInput)
                 return new List<ParameterNode>();
+            if (_scanner.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("global", StringComparison.OrdinalIgnoreCase))
+            {
+                _scanner.Scan();
+                Expect(TokenKind.Colon);
+                var mem = ParseMemoryParametersFromTokens();
+                if (mem.Count == 1 && mem[0] is MemoryParameterNode mp)
+                    mp.Name = "global";
+                return mem;
+            }
             if (_scanner.Current.Kind == TokenKind.LBracket)
                 return ParseMemoryParametersFromTokens();
             if (_scanner.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("string", StringComparison.OrdinalIgnoreCase))

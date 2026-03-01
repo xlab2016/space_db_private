@@ -327,6 +327,51 @@ entrypoint {
         }
 
         [Fact]
+        public async Task CompileAsync_WithPrintFunctionCall_MultipleArguments_ShouldCompileWithCorrectArity()
+        {
+            // Arrange
+            var source = @"@AGI 0.0.1
+program Test;
+module Test/Test;
+
+procedure Main {
+	var
+		v1: vertex = {DIM:[1, 0, 0, 0], W:0.5, DATA:""V1""};
+		v2: vertex = {DIM:[1, 1, 0, 0], W:0.5, DATA:""V2""};
+		v3: vertex = {DIM:[1, 2, 0, 0], W:0.5, DATA:""V3""};
+		a: shape = { [v1, v2, v3] };
+		o = ] a;
+		print(o, ""origin"", 42);
+}
+
+entrypoint {
+	asm {
+		call Main;
+	}
+}";
+
+            // Act
+            var result = await _compiler.CompileAsync(source);
+
+            // Assert
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            var main = result.Result!.Procedures["Main"];
+            // 3 AddVertex + 1 AddShape + 1 Call origin + 1 Pop + 3 Push args + 1 Push arity + 1 Call print = 11
+            main.Body.Should().HaveCount(11);
+
+            var callPrint = main.Body.Last();
+            callPrint.Opcode.Should().Be(Opcodes.Call);
+            var callInfo = callPrint.Operand1.Should().BeOfType<CallInfo>().Subject;
+            callInfo.FunctionName.Should().Be("print");
+
+            var arityPush = main.Body[^2];
+            arityPush.Opcode.Should().Be(Opcodes.Push);
+            var pushOperand = arityPush.Operand1.Should().BeOfType<PushOperand>().Subject;
+            pushOperand.Kind.Should().Be("IntLiteral");
+            pushOperand.Value.Should().Be(3L);
+        }
+
+        [Fact]
         public async Task CompileAsync_WithFullStatementProgram_ShouldCompileAllStatements()
         {
             // Arrange - полный пример из документации

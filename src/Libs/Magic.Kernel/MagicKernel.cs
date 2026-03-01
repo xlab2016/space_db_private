@@ -1,4 +1,5 @@
-﻿using Magic.Kernel.Compilation;
+using Magic.Kernel.Compilation;
+using Magic.Kernel.Core.OS;
 using Magic.Kernel.Devices;
 using Magic.Kernel.Interpretation;
 

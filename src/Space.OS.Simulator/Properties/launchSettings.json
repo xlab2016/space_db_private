@@ -1,8 +1,7 @@
 {
   "profiles": {
     "Space.OS.Simulator": {
-      "commandName": "Project",
-      "commandLineArgs": "\"@AGI 0.0.1.agic\""
+      "commandName": "Project"
     }
   }
 }

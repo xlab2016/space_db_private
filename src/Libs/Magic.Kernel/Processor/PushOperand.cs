@@ -5,5 +5,13 @@ namespace Magic.Kernel.Processor
     {
         public string Kind { get; set; } = "Slot"; // Slot | Type | IntLiteral | StringLiteral
         public object? Value { get; set; }
+
+        public override string ToString()
+        {
+            if (Value == null) return $"{Kind}";
+            var v = Value.ToString();
+            if (v != null && v.Length > 50) v = v.Substring(0, 47) + "...";
+            return $"{Kind}({v})";
+        }
     }
 }

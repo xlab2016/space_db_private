@@ -115,6 +115,13 @@ namespace Magic.Kernel.Compilation
                 return new Token(TokenKind.Newline, "\n", start, _index);
             }
 
+            // Symbolic identifiers:
+            // - Messages<>
+            // - Db>  (usually before ':')
+            // - Db>> (tokenized as Identifier("Db>"), GreaterThan)
+            if (TryScanSymbolicIdentifier(out var symbolic))
+                return symbolic;
+
             // Односимвольные разделители
             if (ch == ':') { _index++; return new Token(TokenKind.Colon, ":", start, _index); }
             if (ch == ',') { _index++; return new Token(TokenKind.Comma, ",", start, _index); }
@@ -180,6 +187,65 @@ namespace Magic.Kernel.Compilation
             // Неизвестный символ — считаем концом (или можно один символ как идентификатор для ошибки)
             _index++;
             return new Token(TokenKind.Identifier, _source.Substring(start, 1), start, _index);
+        }
+
+        private bool TryScanSymbolicIdentifier(out Token token)
+        {
+            token = default;
+            if (_index >= _source.Length || !(char.IsLetter(_source[_index]) || _source[_index] == '_'))
+                return false;
+
+            var start = _index;
+            var i = _index + 1;
+            while (i < _source.Length && (char.IsLetterOrDigit(_source[i]) || _source[i] == '_'))
+                i++;
+
+            var consumedSymbolicSuffix = false;
+            while (i < _source.Length)
+            {
+                // "<>" suffix, e.g. Messages<>
+                if (_source[i] == '<' && i + 1 < _source.Length && _source[i + 1] == '>')
+                {
+                    i += 2;
+                    consumedSymbolicSuffix = true;
+                    continue;
+                }
+
+                // "Db>>" -> consume first '>' as symbolic part, leave second '>' as operator
+                if (_source[i] == '>' && i + 1 < _source.Length && _source[i + 1] == '>')
+                {
+                    i += 1;
+                    consumedSymbolicSuffix = true;
+                    break;
+                }
+
+                // "Db> : ..." -> consume '>' as symbolic suffix when declaration-like boundary follows
+                if (_source[i] == '>' && NextNonWhitespaceChar(i + 1) == ':')
+                {
+                    i += 1;
+                    consumedSymbolicSuffix = true;
+                    break;
+                }
+
+                break;
+            }
+
+            if (!consumedSymbolicSuffix)
+                return false;
+
+            token = new Token(TokenKind.Identifier, _source.Substring(start, i - start), start, i);
+            _index = i;
+            return true;
+        }
+
+        private char? NextNonWhitespaceChar(int from)
+        {
+            var i = from;
+            while (i < _source.Length && char.IsWhiteSpace(_source[i]))
+                i++;
+            if (i >= _source.Length)
+                return null;
+            return _source[i];
         }
     }
 }

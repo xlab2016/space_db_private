@@ -138,6 +138,28 @@ namespace Magic.Kernel.Compilation
                     return "defgen";
                 case Opcodes.AwaitObj:
                     return "awaitobj";
+                case Opcodes.Await:
+                    return "await";
+                case Opcodes.StreamWaitObj:
+                    return "streamwaitobj";
+                case Opcodes.GetObj:
+                    return "getobj";
+                case Opcodes.SetObj:
+                    return "setobj";
+                case Opcodes.StreamWait:
+                    return "streamwait";
+                case Opcodes.Label:
+                    return "label " + (cmd.Operand1?.ToString() ?? "");
+                case Opcodes.Je:
+                    return "je " + (cmd.Operand1?.ToString() ?? "");
+                case Opcodes.Jmp:
+                    return "jmp " + (cmd.Operand1?.ToString() ?? "");
+                case Opcodes.Cmp:
+                    if (cmd.Operand1 is MemoryAddress cmpLeft && cmd.Operand2 is long cmpRight)
+                        return $"cmp [{cmpLeft.Index ?? 0}], {cmpRight}";
+                    if (cmd.Operand1 is Tuple<long, long> cmp)
+                        return $"cmp [{cmp.Item1}], {cmp.Item2}";
+                    return "cmp [0], 0";
                 case Opcodes.CallObj:
                     return FormatCallObj(cmd.Operand1 as string);
                 case Opcodes.AddVertex:
@@ -238,13 +260,18 @@ namespace Magic.Kernel.Compilation
         private static string FormatPop(MemoryAddress? ma)
         {
             if (ma?.Index == null) return "pop [0]";
+            if (ma.IsGlobal) return $"pop global: [{ma.Index.Value}]";
             return $"pop [{ma.Index.Value}]";
         }
 
         private static string FormatPush(object? operand)
         {
             if (operand is MemoryAddress ma && ma.Index.HasValue)
+            {
+                if (ma.IsGlobal)
+                    return $"push global: [{ma.Index.Value}]";
                 return $"push [{ma.Index.Value}]";
+            }
             if (operand is PushOperand po)
             {
                 return po.Kind switch

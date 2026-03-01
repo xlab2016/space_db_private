@@ -35,6 +35,18 @@ namespace Magic.Kernel.Compilation
                     command.Operand1 = methodName;
                     break;
 
+                case Opcodes.Label:
+                case Opcodes.Je:
+                case Opcodes.Jmp:
+                    command.Operand1 = parameters?.OfType<FunctionNameParameterNode>().FirstOrDefault()?.FunctionName ?? string.Empty;
+                    break;
+
+                case Opcodes.Cmp:
+                    var (cmpLeft, cmpRight) = BuildCmpOperands(parameters);
+                    command.Operand1 = cmpLeft;
+                    command.Operand2 = cmpRight;
+                    break;
+
                 case Opcodes.Pop:
                     command.Operand1 = BuildMemoryAddress(parameters);
                     break;
@@ -80,6 +92,12 @@ namespace Magic.Kernel.Compilation
         public Command EmitPush(List<ParameterNode>? parameters)
         {
             return Emit(Opcodes.Push, parameters);
+        }
+
+        /// <summary>Emit Push of integer literal (e.g. arity for call).</summary>
+        public Command EmitPushIntLiteral(long value)
+        {
+            return Emit(Opcodes.Push, new List<ParameterNode> { new IndexParameterNode { Name = "int", Value = value } });
         }
 
         private Vertex BuildVertex(List<ParameterNode> parameters)
@@ -438,6 +456,7 @@ namespace Magic.Kernel.Compilation
                 if (param is MemoryParameterNode memoryParam)
                 {
                     memoryAddress.Index = memoryParam.Index;
+                    memoryAddress.IsGlobal = string.Equals(memoryParam.Name, "global", StringComparison.OrdinalIgnoreCase);
                     break;
                 }
             }
@@ -452,7 +471,7 @@ namespace Magic.Kernel.Compilation
 
             var p = parameters[0];
             if (p is MemoryParameterNode mem)
-                return new MemoryAddress { Index = mem.Index };
+                return new MemoryAddress { Index = mem.Index, IsGlobal = string.Equals(mem.Name, "global", StringComparison.OrdinalIgnoreCase) };
             if (p is TypeLiteralParameterNode typeNode)
                 return new PushOperand { Kind = "Type", Value = typeNode.TypeName };
             if (p is IndexParameterNode idx && p.Name == "int")
@@ -460,6 +479,21 @@ namespace Magic.Kernel.Compilation
             if (p is StringParameterNode str && (p.Name == "string" || !string.IsNullOrEmpty(str.Value)))
                 return new PushOperand { Kind = "StringLiteral", Value = str.Value ?? "" };
             return new MemoryAddress { Index = 0 };
+        }
+
+        private (MemoryAddress left, long right) BuildCmpOperands(List<ParameterNode>? parameters)
+        {
+            var left = new MemoryAddress { Index = 0 };
+            long right = 0;
+            foreach (var p in parameters ?? new List<ParameterNode>())
+            {
+                if (p is MemoryParameterNode mem)
+                    left = new MemoryAddress { Index = mem.Index, IsGlobal = string.Equals(mem.Name, "global", StringComparison.OrdinalIgnoreCase) };
+                else if (p is IndexParameterNode idx)
+                    right = idx.Value;
+            }
+
+            return (left, right);
         }
     }
 }

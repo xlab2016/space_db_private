@@ -284,6 +284,7 @@ namespace Magic.Kernel.Compilation
                     w.WritePropertyName("$v");
                     w.WriteStartObject();
                     WriteNullableInt64(w, "index", ma.Index);
+                    w.WriteBoolean("global", ma.IsGlobal);
                     w.WriteEndObject();
                     w.WriteEndObject();
                     return;
@@ -373,6 +374,16 @@ namespace Magic.Kernel.Compilation
                     w.WriteEndArray();
                     w.WriteEndObject();
                     return;
+                case Tuple<long, long> tuple2:
+                    w.WriteStartObject();
+                    w.WriteString("$t", "tuple_i64_i64");
+                    w.WritePropertyName("$v");
+                    w.WriteStartArray();
+                    w.WriteStringValue(tuple2.Item1.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    w.WriteStringValue(tuple2.Item2.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    w.WriteEndArray();
+                    w.WriteEndObject();
+                    return;
             }
 
             // last resort
@@ -411,7 +422,11 @@ namespace Magic.Kernel.Compilation
                         return (DataType)Enum.Parse(typeof(DataType), v.GetString() ?? "Text", ignoreCase: true);
                     return (DataType)v.GetInt32();
                 case "mem":
-                    return new MemoryAddress { Index = ReadNullableInt64(v, "index") };
+                    return new MemoryAddress
+                    {
+                        Index = ReadNullableInt64(v, "index"),
+                        IsGlobal = v.TryGetProperty("global", out var ge) && ge.ValueKind == JsonValueKind.True
+                    };
                 case "call":
                 {
                     var fn = v.TryGetProperty("fn", out var fnEl) ? (fnEl.GetString() ?? string.Empty) : string.Empty;
@@ -495,6 +510,20 @@ namespace Magic.Kernel.Compilation
                         }
                     }
                     return list;
+                }
+                case "tuple_i64_i64":
+                {
+                    if (v.ValueKind == JsonValueKind.Array)
+                    {
+                        var arr = v.EnumerateArray().ToList();
+                        if (arr.Count >= 2)
+                        {
+                            var a = long.Parse(arr[0].GetString() ?? "0", System.Globalization.CultureInfo.InvariantCulture);
+                            var b = long.Parse(arr[1].GetString() ?? "0", System.Globalization.CultureInfo.InvariantCulture);
+                            return Tuple.Create(a, b);
+                        }
+                    }
+                    return Tuple.Create(0L, 0L);
                 }
                 default:
                     return null;

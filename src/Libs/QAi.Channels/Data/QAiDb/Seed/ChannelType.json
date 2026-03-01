@@ -1,0 +1,17 @@
+﻿[
+    {
+        "Id" : "1",
+        "Name" : "Telegram",
+        "Code" : "Telegram"
+    },
+    {
+        "Id" : "2",
+        "Name" : "Whatsapp",
+        "Code" : "Whatsapp"
+    },
+    {
+        "Id" : "3",
+        "Name" : "Instagram",
+        "Code" : "Instagram"
+    }
+]

@@ -6,6 +6,8 @@ using Magic.Kernel.Interpretation;
 using Magic.Kernel.Processor;
 using Magic.Kernel.Space;
 using Moq;
+using System;
+using System.IO;
 using Xunit;
 
 namespace Magic.Kernel.Tests.Interpretation
@@ -228,6 +230,41 @@ namespace Magic.Kernel.Tests.Interpretation
         }
 
         [Fact]
+        public async Task InterpreteAsync_WithPrintMultipleArguments_ShouldWriteAllArguments()
+        {
+            // Arrange
+            var executableUnit = new ExecutableUnit
+            {
+                EntryPoint = new ExecutionBlock
+                {
+                    new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "StringLiteral", Value = "hello" } },
+                    new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "IntLiteral", Value = 7L } },
+                    new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "IntLiteral", Value = 2L } },
+                    new Command { Opcode = Opcodes.Call, Operand1 = new CallInfo { FunctionName = "print" } }
+                }
+            };
+
+            var originalOut = Console.Out;
+            using var writer = new StringWriter();
+            Console.SetOut(writer);
+            try
+            {
+                // Act
+                var result = await _interpreter.InterpreteAsync(executableUnit);
+
+                // Assert
+                result.Success.Should().BeTrue();
+                var output = writer.ToString();
+                output.Should().Contain("arg0: hello");
+                output.Should().Contain("arg1: 7");
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
+        }
+
+        [Fact]
         public async Task InterpreteAsync_WithCallIntoProcedureAndRet_ShouldReturnToCaller()
         {
             // Arrange
@@ -270,6 +307,164 @@ namespace Magic.Kernel.Tests.Interpretation
             result.Success.Should().BeTrue();
             _spaceDiskMock.Verify(x => x.AddVertex(It.Is<Vertex>(v => v.Index == 1), It.IsAny<string?>()), Times.Once);
             _spaceDiskMock.Verify(x => x.AddVertex(It.Is<Vertex>(v => v.Index == 2), It.IsAny<string?>()), Times.Once);
+        }
+
+        [Fact]
+        public async Task InterpreteAsync_WithCmpMemoryAndLiteralEqual_ShouldJumpToLabel()
+        {
+            var executedIndices = new List<long?>();
+
+            _spaceDiskMock
+                .Setup(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()))
+                .ReturnsAsync(SpaceOperationResult.Success)
+                .Callback<Vertex, string?>((v, _) => executedIndices.Add(v.Index));
+
+            var executableUnit = new ExecutableUnit
+            {
+                EntryPoint = new ExecutionBlock
+                {
+                    new Command
+                    {
+                        Opcode = Opcodes.Push,
+                        Operand1 = new PushOperand { Kind = "IntLiteral", Value = 1L }
+                    },
+                    new Command
+                    {
+                        Opcode = Opcodes.Pop,
+                        Operand1 = new MemoryAddress { Index = 10 }
+                    },
+                    new Command { Opcode = Opcodes.Cmp, Operand1 = new MemoryAddress { Index = 10 }, Operand2 = 1L },
+                    new Command { Opcode = Opcodes.Je, Operand1 = "equal" },
+                    new Command { Opcode = Opcodes.AddVertex, Operand1 = new Vertex { Index = 1 } },
+                    new Command { Opcode = Opcodes.Label, Operand1 = "equal" },
+                    new Command { Opcode = Opcodes.AddVertex, Operand1 = new Vertex { Index = 2 } }
+                }
+            };
+
+            var result = await _interpreter.InterpreteAsync(executableUnit);
+
+            result.Success.Should().BeTrue();
+            executedIndices.Should().ContainSingle().Which.Should().Be(2);
+        }
+
+        [Fact]
+        public async Task InterpreteAsync_WithCmpTwoMemoryOperandsEqual_ShouldJumpToLabel()
+        {
+            var executedIndices = new List<long?>();
+
+            _spaceDiskMock
+                .Setup(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()))
+                .ReturnsAsync(SpaceOperationResult.Success)
+                .Callback<Vertex, string?>((v, _) => executedIndices.Add(v.Index));
+
+            var executableUnit = new ExecutableUnit
+            {
+                EntryPoint = new ExecutionBlock
+                {
+                    new Command
+                    {
+                        Opcode = Opcodes.Push,
+                        Operand1 = new PushOperand { Kind = "IntLiteral", Value = 5L }
+                    },
+                    new Command
+                    {
+                        Opcode = Opcodes.Pop,
+                        Operand1 = new MemoryAddress { Index = 10 }
+                    },
+                    new Command
+                    {
+                        Opcode = Opcodes.Push,
+                        Operand1 = new PushOperand { Kind = "IntLiteral", Value = 5L }
+                    },
+                    new Command
+                    {
+                        Opcode = Opcodes.Pop,
+                        Operand1 = new MemoryAddress { Index = 11 }
+                    },
+                    new Command
+                    {
+                        Opcode = Opcodes.Cmp,
+                        Operand1 = new MemoryAddress { Index = 10 },
+                        Operand2 = new MemoryAddress { Index = 11 }
+                    },
+                    new Command { Opcode = Opcodes.Je, Operand1 = "equal" },
+                    new Command { Opcode = Opcodes.AddVertex, Operand1 = new Vertex { Index = 1 } },
+                    new Command { Opcode = Opcodes.Label, Operand1 = "equal" },
+                    new Command { Opcode = Opcodes.AddVertex, Operand1 = new Vertex { Index = 2 } }
+                }
+            };
+
+            var result = await _interpreter.InterpreteAsync(executableUnit);
+
+            result.Success.Should().BeTrue();
+            executedIndices.Should().ContainSingle().Which.Should().Be(2);
+        }
+
+        [Fact]
+        public async Task InterpreteAsync_WithCmpLiteralAndMemoryEqual_ShouldJumpToLabel()
+        {
+            var executedIndices = new List<long?>();
+
+            _spaceDiskMock
+                .Setup(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()))
+                .ReturnsAsync(SpaceOperationResult.Success)
+                .Callback<Vertex, string?>((v, _) => executedIndices.Add(v.Index));
+
+            var executableUnit = new ExecutableUnit
+            {
+                EntryPoint = new ExecutionBlock
+                {
+                    new Command
+                    {
+                        Opcode = Opcodes.Push,
+                        Operand1 = new PushOperand { Kind = "IntLiteral", Value = 7L }
+                    },
+                    new Command
+                    {
+                        Opcode = Opcodes.Pop,
+                        Operand1 = new MemoryAddress { Index = 12 }
+                    },
+                    new Command { Opcode = Opcodes.Cmp, Operand1 = 7L, Operand2 = new MemoryAddress { Index = 12 } },
+                    new Command { Opcode = Opcodes.Je, Operand1 = "equal" },
+                    new Command { Opcode = Opcodes.AddVertex, Operand1 = new Vertex { Index = 1 } },
+                    new Command { Opcode = Opcodes.Label, Operand1 = "equal" },
+                    new Command { Opcode = Opcodes.AddVertex, Operand1 = new Vertex { Index = 2 } }
+                }
+            };
+
+            var result = await _interpreter.InterpreteAsync(executableUnit);
+
+            result.Success.Should().BeTrue();
+            executedIndices.Should().ContainSingle().Which.Should().Be(2);
+        }
+
+        [Fact]
+        public async Task InterpreteAsync_WithCmpEqual_ShouldPushOneToStack()
+        {
+            var executableUnit = new ExecutableUnit
+            {
+                EntryPoint = new ExecutionBlock
+                {
+                    new Command
+                    {
+                        Opcode = Opcodes.Push,
+                        Operand1 = new PushOperand { Kind = "IntLiteral", Value = 3L }
+                    },
+                    new Command
+                    {
+                        Opcode = Opcodes.Pop,
+                        Operand1 = new MemoryAddress { Index = 20 }
+                    },
+                    new Command { Opcode = Opcodes.Cmp, Operand1 = new MemoryAddress { Index = 20 }, Operand2 = 3L },
+                    new Command { Opcode = Opcodes.Pop, Operand1 = new MemoryAddress { Index = 21 } }
+                }
+            };
+
+            var result = await _interpreter.InterpreteAsync(executableUnit);
+
+            result.Success.Should().BeTrue();
+            _interpreter.GlobalMemory.Should().ContainKey(21);
+            _interpreter.GlobalMemory[21].Should().Be(1L);
         }
     }
 }

@@ -257,6 +257,7 @@ namespace Magic.Kernel.Compilation
             id == "@" || string.Equals(id, "AGI", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(id, "program", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(id, "module", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(id, "system", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(id, "procedure", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(id, "function", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(id, "entrypoint", StringComparison.OrdinalIgnoreCase) ||
@@ -338,6 +339,18 @@ namespace Magic.Kernel.Compilation
             return true;
         }
 
+        private bool TryParseSystem(ProgramStructure structure)
+        {
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier || !string.Equals(CurrentScanner.Current.Value, "system", StringComparison.OrdinalIgnoreCase)) return false;
+            ExpectToken(TokenKind.Identifier, "system");
+            var name = ExpectNonEmptyHeaderValue("system name");
+            if (CurrentScanner.Current.Kind == TokenKind.Semicolon) CurrentScanner.Scan();
+            SkipNewlines();
+            structure.System = name;
+            structure.IsProgramStructure = true;
+            return true;
+        }
+
         private bool TryParseProcedure(ProgramStructure structure)
         {
             if (CurrentScanner.Current.Kind != TokenKind.Identifier || !string.Equals(CurrentScanner.Current.Value, "procedure", StringComparison.OrdinalIgnoreCase)) return false;
@@ -401,6 +414,74 @@ namespace Magic.Kernel.Compilation
             return true;
         }
 
+        private bool TryParseTopLevelSchemaDeclaration(ProgramStructure structure)
+        {
+            var pos = CurrentScanner.Save();
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier)
+                return false;
+
+            var start = CurrentScanner.Current.Start;
+            CurrentScanner.Scan(); // name
+            if (CurrentScanner.Current.Kind != TokenKind.Colon)
+            {
+                CurrentScanner.Restore(pos);
+                return false;
+            }
+            CurrentScanner.Scan();
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier)
+            {
+                CurrentScanner.Restore(pos);
+                return false;
+            }
+
+            var kind = CurrentScanner.Scan().Value;
+            if (!string.Equals(kind, "table", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(kind, "database", StringComparison.OrdinalIgnoreCase))
+            {
+                CurrentScanner.Restore(pos);
+                return false;
+            }
+
+            if (CurrentScanner.Current.Kind != TokenKind.LBrace)
+            {
+                CurrentScanner.Restore(pos);
+                return false;
+            }
+
+            var depth = 0;
+            var end = CurrentScanner.Current.End;
+            while (!CurrentScanner.Current.IsEndOfInput)
+            {
+                var tok = CurrentScanner.Scan();
+                end = tok.End;
+                if (tok.Kind == TokenKind.LBrace)
+                    depth++;
+                else if (tok.Kind == TokenKind.RBrace)
+                {
+                    depth--;
+                    if (depth == 0)
+                        break;
+                }
+            }
+
+            while (CurrentScanner.Current.Kind == TokenKind.Semicolon || CurrentScanner.Current.Kind == TokenKind.Newline)
+            {
+                end = CurrentScanner.Current.End;
+                CurrentScanner.Scan();
+            }
+
+            var text = CurrentScanner.Slice(start, end).Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                CurrentScanner.Restore(pos);
+                return false;
+            }
+
+            structure.Prelude.Add(new StatementLineNode { Text = text });
+            structure.IsProgramStructure = true;
+            return true;
+        }
+
         private string ConsumeLineToUnprocessed()
         {
             if (CurrentScanner.Current.IsEndOfInput) return "";
@@ -443,9 +524,11 @@ namespace Magic.Kernel.Compilation
                 if (TryParseAgi(structure)) continue;
                 if (TryParseProgram(structure)) continue;
                 if (TryParseModule(structure)) continue;
+                if (TryParseSystem(structure)) continue;
                 if (TryParseProcedure(structure)) continue;
                 if (TryParseFunction(structure)) continue;
                 if (TryParseEntrypoint(structure)) continue;
+                if (TryParseTopLevelSchemaDeclaration(structure)) continue;
                 if (TryParseTopLevelCall(structure)) continue;
 
                 var line = ConsumeLineToUnprocessed();
@@ -491,7 +574,16 @@ namespace Magic.Kernel.Compilation
             "def",
             "defgen",
             "callobj",
-            "awaitobj"
+            "awaitobj",
+            "streamwaitobj",
+            "await",
+            "label",
+            "cmp",
+            "je",
+            "jmp",
+            "getobj",
+            "setobj",
+            "streamwait"
         };
 
         private bool NextAsmTokenStartsOpcode()

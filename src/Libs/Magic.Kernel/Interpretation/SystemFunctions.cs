@@ -7,8 +7,10 @@ using Magic.Kernel.Functions;
 using Magic.Kernel;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace Magic.Kernel.Interpretation
@@ -76,24 +78,24 @@ namespace Magic.Kernel.Interpretation
                     await ExecutePrintAsync(callInfo);
                     return true;
 
+                case "debug":
+                    await ExecuteDebugAsync(callInfo);
+                    return true;
+
                 case "intersect":
                     await ExecuteIntersectAsync(callInfo);
-                    return true;
-
-                case "stream_open":
-                    await ExecuteStreamOpenAsync(callInfo);
-                    return true;
-
-                case "stream_await":
-                    await ExecuteStreamAwaitAsync(callInfo);
                     return true;
 
                 case "compile":
                     await ExecuteCompileAsync(callInfo);
                     return true;
 
-                case "vault_read":
-                    await ExecuteVaultReadAsync(callInfo);
+                case "get":
+                    await ExecuteGetAsync(callInfo);
+                    return true;
+
+                case "opjson":
+                    await ExecuteOpJsonAsync(callInfo);
                     return true;
 
                 default:
@@ -101,37 +103,263 @@ namespace Magic.Kernel.Interpretation
             }
         }
 
-        private Task ExecuteStreamOpenAsync(CallInfo callInfo)
+        private async Task ExecuteOpJsonAsync(CallInfo callInfo)
         {
-            if (!callInfo.Parameters.TryGetValue("path", out var pathParam) && !callInfo.Parameters.TryGetValue("0", out pathParam))
+            if (!callInfo.Parameters.TryGetValue("source", out var sourceObj))
+                throw new InvalidOperationException("opjson requires 'source' parameter.");
+            if (sourceObj is not MemoryAddress sourceAddr || !sourceAddr.Index.HasValue)
+                throw new InvalidOperationException("opjson source must be memory address.");
+
+            var sourceIndex = sourceAddr.Index.Value;
+            var operation = callInfo.Parameters.TryGetValue("operation", out var opObj)
+                ? (await GetValueFromParameterAsync(opObj).ConfigureAwait(false))?.ToString()
+                : null;
+            var path = callInfo.Parameters.TryGetValue("path", out var pathObj)
+                ? (await GetValueFromParameterAsync(pathObj).ConfigureAwait(false))?.ToString()
+                : null;
+            var data = callInfo.Parameters.TryGetValue("data", out var dataObj)
+                ? await GetValueFromParameterAsync(dataObj).ConfigureAwait(false)
+                : null;
+            var dataJson = callInfo.Parameters.TryGetValue("dataJson", out var dataJsonObj)
+                ? (await GetValueFromParameterAsync(dataJsonObj).ConfigureAwait(false))?.ToString()
+                : null;
+
+            object root = NormalizeJsonRoot(_memory.TryGetValue(sourceIndex, out var current) ? current : null);
+            var value = dataJson != null ? ParseDataJsonLiteral(dataJson) : data;
+
+            switch ((operation ?? "").ToLowerInvariant())
             {
-                throw new InvalidOperationException("stream_open requires path parameter.");
+                case "set":
+                    root = SetPath(root, path ?? "", value);
+                    break;
+                case "append":
+                    root = AppendPath(root, path ?? "", value);
+                    break;
+                case "ensureobject":
+                    root = EnsurePathContainer(root, path ?? "", expectArray: false);
+                    break;
+                case "ensurearray":
+                    root = EnsurePathContainer(root, path ?? "", expectArray: true);
+                    break;
+                default:
+                    throw new InvalidOperationException($"opjson operation '{operation}' is not supported.");
             }
-            var path = pathParam is string s ? s : pathParam?.ToString() ?? "";
-            var handle = new StreamHandle { Path = path };
-            _stack.Add(handle);
+
+            _memory[sourceIndex] = root;
+            _stack.Add(root);
+        }
+
+        private Task ExecuteGetAsync(CallInfo callInfo)
+        {
+            object? key = null;
+            if (callInfo.Parameters.TryGetValue("0", out var keyObj))
+                key = keyObj;
+            else if (callInfo.Parameters.Count > 0)
+                key = callInfo.Parameters.Values.FirstOrDefault();
+
+            var symbolic = key?.ToString() ?? "";
+            if (string.Equals(symbolic, ":time", StringComparison.OrdinalIgnoreCase))
+            {
+                _stack.Add(DateTime.UtcNow);
+                return Task.CompletedTask;
+            }
+
+            _stack.Add(symbolic);
             return Task.CompletedTask;
         }
 
-        private Task ExecuteStreamAwaitAsync(CallInfo callInfo)
+        private static object NormalizeJsonRoot(object? current)
         {
-            object? streamObj = null;
-            if (callInfo.Parameters?.TryGetValue("0", out var p) == true)
-                streamObj = p is MemoryAddress ma && ma.Index.HasValue && _memory.TryGetValue(ma.Index.Value, out var memVal) ? memVal : p;
-            if (streamObj == null && _stack.Count > 0)
+            if (current is Dictionary<string, object> or List<object>)
+                return current;
+            if (current is string s)
             {
-                streamObj = _stack[_stack.Count - 1];
-                _stack.RemoveAt(_stack.Count - 1);
+                if (string.Equals(s.Trim(), "[]", StringComparison.Ordinal))
+                    return new List<object>();
+                if (string.Equals(s.Trim(), "{}", StringComparison.Ordinal))
+                    return new Dictionary<string, object>(StringComparer.Ordinal);
             }
-            if (streamObj == null)
-                throw new InvalidOperationException("stream_await requires stream on stack or path parameter.");
-            if (streamObj is MemoryAddress ma2 && ma2.Index.HasValue && _memory.TryGetValue(ma2.Index.Value, out var memVal2))
-                streamObj = memVal2;
-            if (streamObj is not StreamHandle handle)
-                throw new InvalidOperationException("stream_await expects a stream handle.");
-            var data = ReadStreamData(handle);
-            _stack.Add(data);
-            return Task.CompletedTask;
+            return new Dictionary<string, object>(StringComparer.Ordinal);
+        }
+
+        private static object? ParseDataJsonLiteral(string raw)
+        {
+            using var doc = JsonDocument.Parse(raw);
+            return ConvertJsonElement(doc.RootElement);
+        }
+
+        private static object? ConvertJsonElement(JsonElement el)
+        {
+            switch (el.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    var map = new Dictionary<string, object>(StringComparer.Ordinal);
+                    foreach (var p in el.EnumerateObject())
+                        map[p.Name] = ConvertJsonElement(p.Value)!;
+                    return map;
+                case JsonValueKind.Array:
+                    var list = new List<object>();
+                    foreach (var item in el.EnumerateArray())
+                        list.Add(ConvertJsonElement(item)!);
+                    return list;
+                case JsonValueKind.String:
+                    return el.GetString() ?? "";
+                case JsonValueKind.Number:
+                    if (el.TryGetInt64(out var l)) return l;
+                    if (el.TryGetDouble(out var d)) return d;
+                    return el.ToString();
+                case JsonValueKind.True:
+                    return true;
+                case JsonValueKind.False:
+                    return false;
+                case JsonValueKind.Null:
+                    return null;
+                default:
+                    return el.ToString();
+            }
+        }
+
+        private sealed class PathSegment
+        {
+            public string? Property { get; set; }
+            public int? Index { get; set; }
+        }
+
+        private static List<PathSegment> ParsePath(string path)
+        {
+            var result = new List<PathSegment>();
+            var text = path?.Trim() ?? "";
+            if (string.IsNullOrEmpty(text))
+                return result;
+
+            var i = 0;
+            while (i < text.Length)
+            {
+                if (text[i] == '.')
+                {
+                    i++;
+                    continue;
+                }
+                if (text[i] == '[')
+                {
+                    i++;
+                    var start = i;
+                    while (i < text.Length && text[i] != ']') i++;
+                    var token = text.Substring(start, i - start);
+                    if (int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var idx))
+                        result.Add(new PathSegment { Index = idx });
+                    if (i < text.Length && text[i] == ']') i++;
+                    continue;
+                }
+
+                var propStart = i;
+                while (i < text.Length && text[i] != '.' && text[i] != '[') i++;
+                var prop = text.Substring(propStart, i - propStart);
+                result.Add(new PathSegment { Property = prop });
+            }
+
+            return result;
+        }
+
+        private static object EnsurePathContainer(object root, string path, bool expectArray)
+        {
+            var segments = ParsePath(path);
+            if (segments.Count == 0)
+                return expectArray ? (root is List<object> ? root : new List<object>()) : (root is Dictionary<string, object> ? root : new Dictionary<string, object>(StringComparer.Ordinal));
+
+            root = EnsureContainer(root, segments, expectArray);
+            return root;
+        }
+
+        private static object SetPath(object root, string path, object? value)
+        {
+            var segments = ParsePath(path);
+            if (segments.Count == 0)
+                return value ?? new Dictionary<string, object>(StringComparer.Ordinal);
+
+            var parent = EnsureContainer(root, segments.Take(segments.Count - 1).ToList(), expectArray: false);
+            var last = segments[segments.Count - 1];
+
+            if (last.Property != null)
+            {
+                var map = parent as Dictionary<string, object> ?? new Dictionary<string, object>(StringComparer.Ordinal);
+                map[last.Property] = value!;
+                if (segments.Count == 1) root = map;
+            }
+            else if (last.Index.HasValue)
+            {
+                var arr = parent as List<object> ?? new List<object>();
+                EnsureArraySize(arr, last.Index.Value + 1);
+                arr[last.Index.Value] = value!;
+                if (segments.Count == 1) root = arr;
+            }
+
+            return root;
+        }
+
+        private static object AppendPath(object root, string path, object? value)
+        {
+            var segments = ParsePath(path);
+            if (segments.Count == 0)
+            {
+                var rootArr = root as List<object> ?? new List<object>();
+                rootArr.Add(value!);
+                return rootArr;
+            }
+
+            var target = EnsureContainer(root, segments, expectArray: true);
+            var arr = target as List<object> ?? new List<object>();
+            arr.Add(value!);
+            return root;
+        }
+
+        private static object EnsureContainer(object root, List<PathSegment> segments, bool expectArray)
+        {
+            object current = root;
+            if (segments.Count == 0)
+                return current;
+
+            for (var i = 0; i < segments.Count; i++)
+            {
+                var seg = segments[i];
+                var last = i == segments.Count - 1;
+                var nextExpectArray = last ? expectArray : segments[i + 1].Index.HasValue;
+
+                if (seg.Property != null)
+                {
+                    var map = current as Dictionary<string, object>;
+                    if (map == null)
+                        throw new InvalidOperationException("opjson path expects object container.");
+
+                    if (!map.TryGetValue(seg.Property, out var child) || child == null)
+                    {
+                        child = nextExpectArray ? new List<object>() : new Dictionary<string, object>(StringComparer.Ordinal);
+                        map[seg.Property] = child;
+                    }
+                    current = child;
+                    continue;
+                }
+
+                if (!seg.Index.HasValue)
+                    continue;
+
+                var arr = current as List<object>;
+                if (arr == null)
+                    throw new InvalidOperationException("opjson path expects array container.");
+
+                EnsureArraySize(arr, seg.Index.Value + 1);
+                if (arr[seg.Index.Value] == null)
+                    arr[seg.Index.Value] = nextExpectArray ? new List<object>() : new Dictionary<string, object>(StringComparer.Ordinal);
+                current = arr[seg.Index.Value]!;
+            }
+
+            return current;
+        }
+
+        private static void EnsureArraySize(List<object> arr, int size)
+        {
+            while (arr.Count < size)
+                arr.Add(new Dictionary<string, object>(StringComparer.Ordinal));
         }
 
         private async Task ExecuteCompileAsync(CallInfo callInfo)
@@ -149,77 +377,28 @@ namespace Magic.Kernel.Interpretation
             if (dataObj == null)
                 dataObj = new Dictionary<string, object> { ["content"] = "" };
 
-            // Если на стеке был stream handle — вызываем disk.CompileAsync(device, compiler)
+            if (dataObj is IStreamDevice streamDevice && _configuration?.DefaultDisk != null && _configuration.DefaultSSCCompiler != null)
+            {
+                var result = await _configuration.DefaultDisk.CompileAsync(streamDevice, _configuration.DefaultSSCCompiler).ConfigureAwait(false);
+                _stack.Add(result);
+                return;
+            }
+
+            // StreamHandle (path-only) — создаём FileStreamDevice и компилируем
             if (dataObj is StreamHandle streamHandle && _configuration?.DefaultDisk != null && _configuration.DefaultSSCCompiler != null)
             {
-                var device = new FileStreamDevice(streamHandle.Path);
+                var device = new FileStreamDevice { Path = streamHandle.Path };
                 var result = await _configuration.DefaultDisk.CompileAsync(device, _configuration.DefaultSSCCompiler).ConfigureAwait(false);
                 _stack.Add(result);
                 return;
             }
 
-            var ssfs = CompileToSsfs(dataObj);
-            _stack.Add(ssfs);
-        }
-
-        private static object ReadStreamData(StreamHandle handle)
-        {
-            if (string.IsNullOrEmpty(handle.Path))
-                return new Dictionary<string, object> { ["content"] = "" };
-            try
-            {
-                if (File.Exists(handle.Path))
-                {
-                    var content = File.ReadAllText(handle.Path);
-                    return new Dictionary<string, object> { ["content"] = content, ["path"] = handle.Path };
-                }
-            }
-            catch
-            {
-                // fallback for tests: path may be logical name
-            }
-            return new Dictionary<string, object> { ["content"] = "", ["path"] = handle.Path };
-        }
-
-        private static object CompileToSsfs(object data)
-        {
-            var dict = new Dictionary<string, object>(StringComparer.Ordinal)
-            {
-                ["type"] = "SSFS",
-                ["structural_layer"] = new Dictionary<string, object>(StringComparer.Ordinal),
-                ["semantic_layer"] = new Dictionary<string, object>(StringComparer.Ordinal),
-                ["ontology_layer"] = new Dictionary<string, object>(StringComparer.Ordinal)
-            };
-            if (data is Dictionary<string, object> dataDict && dataDict.TryGetValue("content", out var content))
-            {
-                ((Dictionary<string, object>)dict["semantic_layer"])["source"] = content;
-            }
-            else
-            {
-                ((Dictionary<string, object>)dict["semantic_layer"])["source"] = data?.ToString() ?? "";
-            }
-            return dict;
+            throw new CompileByUnknownDeviceException(dataObj);
         }
 
         private sealed class StreamHandle
         {
             public string Path { get; set; } = "";
-        }
-
-        private Task ExecuteVaultReadAsync(CallInfo callInfo)
-        {
-            if (!callInfo.Parameters.TryGetValue("0", out var keyParam))
-            {
-                throw new InvalidOperationException("vault_read requires key parameter at position 0.");
-            }
-
-            var key = keyParam?.ToString() ?? string.Empty;
-
-            // Чтение секрета делегируем IVaultReader, по умолчанию EnvironmentVaultReader.
-            var value = _vaultReader.Read(key) ?? string.Empty;
-            _stack.Add(value);
-
-            return Task.CompletedTask;
         }
 
         private async Task ExecuteOriginAsync(CallInfo callInfo)
@@ -310,6 +489,13 @@ namespace Magic.Kernel.Interpretation
         private async Task ExecutePrintAsync(CallInfo callInfo)
         {
             await _printFunctions.ExecutePrintAsync(callInfo);
+        }
+
+        private Task ExecuteDebugAsync(CallInfo callInfo)
+        {
+            // Debug hook: place a breakpoint here when debugging AGI programs.
+            System.Diagnostics.Debugger.Break();
+            return Task.CompletedTask;
         }
 
         private async Task ExecuteIntersectAsync(CallInfo callInfo)

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Magic.Kernel.Compilation
 {
@@ -13,7 +14,8 @@ namespace Magic.Kernel.Compilation
         public string Version { get; set; } = "0.0.1";
         public string? Name { get; set; }
         public string? Module { get; set; }
-        /// <summary>Space name for disk key prefix: module|program. Set at interpretation start from Module+Name.</summary>
+        public string? System { get; set; }
+        /// <summary>Space name for disk key prefix: system|module|program. Set at interpretation start from System+Module+Name.</summary>
         public string? SpaceName { get; set; }
         /// <summary>Output format when saving: "agic" (default, binary/JSON) or "agiasm" (text assembly).</summary>
         public string? OutputFormat { get; set; }
@@ -25,6 +27,10 @@ namespace Magic.Kernel.Compilation
         public Dictionary<string, Processor.Function> Functions { get; set; } = new Dictionary<string, Processor.Function>();
 
         public List<Export> Exports { get; set; } = new List<Export>();
+
+        /// <summary>Runtime-only outputs (for streamwait print). Not serialized.</summary>
+        [JsonIgnore]
+        public List<object?> RuntimeOutputs { get; set; } = new List<object?>();
 
         public async Task SaveAsync(string filePath)
         {

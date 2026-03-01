@@ -24,29 +24,40 @@ namespace Magic.Kernel.Functions
 
         public async Task ExecutePrintAsync(CallInfo callInfo)
         {
-            object? valueToPrint = null;
+            var valuesToPrint = new List<object?>();
+            var indexedArgs = callInfo.Parameters
+                .Select(kvp =>
+                {
+                    var parsed = int.TryParse(kvp.Key, out var index);
+                    return new { Parsed = parsed, Index = index, Value = kvp.Value };
+                })
+                .Where(x => x.Parsed)
+                .OrderBy(x => x.Index)
+                .ToList();
 
-            // Ищем параметр с индексом [0] или первый параметр
-            if (callInfo.Parameters.TryGetValue("0", out var param0))
+            if (indexedArgs.Count > 0)
             {
-                valueToPrint = await GetValueFromParameterAsync(param0);
+                foreach (var indexedArg in indexedArgs)
+                    valuesToPrint.Add(await GetValueFromParameterAsync(indexedArg.Value));
             }
-            else if (callInfo.Parameters.Count > 0)
+            else
             {
-                var firstParam = callInfo.Parameters.Values.First();
-                valueToPrint = await GetValueFromParameterAsync(firstParam);
+                foreach (var parameter in callInfo.Parameters.Where(p => !string.Equals(p.Key, "type", StringComparison.OrdinalIgnoreCase)))
+                    valuesToPrint.Add(await GetValueFromParameterAsync(parameter.Value));
             }
 
-            if (valueToPrint == null)
+            if (valuesToPrint.Count == 0)
             {
                 throw new InvalidOperationException("Print function requires a value parameter.");
             }
 
             // Проверяем тип вывода
             var outputType = "console";
-            if (callInfo.Parameters.TryGetValue("type", out var typeParam) && typeParam is string typeStr)
+            if (callInfo.Parameters.TryGetValue("type", out var typeParam))
             {
-                outputType = typeStr.ToLower();
+                var resolvedType = await GetValueFromParameterAsync(typeParam);
+                if (resolvedType is string typeStr)
+                    outputType = typeStr.ToLowerInvariant();
             }
 
             if (outputType == "infer")
@@ -57,7 +68,10 @@ namespace Magic.Kernel.Functions
                     throw new InvalidOperationException("DefaultInferenceDevice is not configured. Cannot print to inference device.");
                 }
 
-                var inputData = ConvertToEntityData(valueToPrint);
+                var inferredPayload = valuesToPrint.Count == 1
+                    ? valuesToPrint[0]
+                    : string.Join(" | ", valuesToPrint.Select(value => FormatValue(value ?? "null")));
+                var inputData = ConvertToEntityData(inferredPayload ?? string.Empty);
                 var outputData = new EntityData
                 {
                     Type = new HierarchicalDataType()
@@ -75,7 +89,9 @@ namespace Magic.Kernel.Functions
             else
             {
                 // Вывод в консоль с форматированием по типам
-                var formattedOutput = FormatValue(valueToPrint);
+                var formattedOutput = valuesToPrint.Count == 1
+                    ? FormatValue(valuesToPrint[0] ?? "null")
+                    : string.Join(" | ", valuesToPrint.Select((value, index) => $"arg{index}: {FormatValue(value ?? "null")}"));
                 Console.WriteLine(formattedOutput);
             }
         }

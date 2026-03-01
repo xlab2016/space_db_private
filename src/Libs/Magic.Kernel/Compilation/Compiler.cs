@@ -38,6 +38,7 @@ namespace Magic.Kernel.Compilation
                 executableUnit.Version = programStructure.Version;
                 executableUnit.Name = programStructure.ProgramName;
                 executableUnit.Module = programStructure.Module;
+                executableUnit.System = programStructure.System;
 
                 var analyzed = semanticAnalyzer.AnalyzeProgram(programStructure, parser, sourceCode);
                 executableUnit.EntryPoint = analyzed.EntryPoint;

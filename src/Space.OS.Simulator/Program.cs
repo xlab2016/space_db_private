@@ -1,4 +1,7 @@
+using System.Diagnostics;
 using Magic.Kernel;
+using Magic.Kernel.Core;
+using Magic.Kernel.Core.OS;
 using Magic.Kernel.Interpretation;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -46,9 +49,16 @@ static long? GetLong(Microsoft.Extensions.Configuration.IConfiguration cfg, stri
     return long.TryParse(raw, out var v) ? v : null;
 }
 
-var filePath = GetFirstNonOptionArg(args);
+OSSystem.StartKernel();
+var debugEl2 = SpaceEnvironment.Configuration.TryGetValue("debug", out var debugEl) ? debugEl : default(System.Text.Json.JsonElement);
+var debug = debugEl2.GetString();
 
-if (args.Length == 0 || filePath is null || args.Any(a => a is "--help" or "-h" or "/?"))
+var filePath = GetFirstNonOptionArg(args);
+var isDebugMode = Debugger.IsAttached;
+if (string.IsNullOrEmpty(filePath) && isDebugMode && !string.IsNullOrWhiteSpace(debug))
+    filePath = SpaceEnvironment.GetFilePath(debug);
+
+if (filePath is null || args.Any(a => a is "--help" or "-h" or "/?"))
 {
     Console.WriteLine("Usage: Space.OS.Simulator [options] [file.agi|file.agic|file.agiasm]");
     Console.WriteLine();

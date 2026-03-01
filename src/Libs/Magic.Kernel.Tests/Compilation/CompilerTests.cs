@@ -415,6 +415,25 @@ entrypoint {
             var memoryParam = callInfo.Parameters["memory"].Should().BeOfType<MemoryAddress>().Subject;
             memoryParam.Index.Should().Be(0);
         }
+
+        [Fact]
+        public async Task CompileAsync_WithCmpMemoryAndLiteral_ShouldSplitOperandsCorrectly()
+        {
+            // Arrange
+            var source = "cmp [10], 1";
+
+            // Act
+            var result = await _compiler.CompileAsync(source);
+
+            // Assert
+            result.Success.Should().BeTrue();
+            var command = result.Result!.EntryPoint.First();
+            command.Opcode.Should().Be(Opcodes.Cmp);
+            var left = command.Operand1.Should().BeOfType<MemoryAddress>().Subject;
+            left.Index.Should().Be(10);
+            command.Operand2.Should().Be(1L);
+        }
+
         [Fact]
         public async Task CompileAsync_WithFullProgramExample_ShouldCompileAllInstructions()
         {
@@ -504,8 +523,47 @@ entrypoint {
             result.Result.Module.Should().Be("L/L0");
             result.Result.Procedures.Should().ContainKey("Main");
             result.Result.Procedures["Main"].Body.Should().HaveCount(2);
-            result.Result.EntryPoint.Should().HaveCount(1);
-            result.Result.EntryPoint[0].Opcode.Should().Be(Opcodes.Call);
+            result.Result.EntryPoint.Should().HaveCount(2);
+            result.Result.EntryPoint[0].Opcode.Should().Be(Opcodes.Push);
+            var entryArityPush = result.Result.EntryPoint[0].Operand1.Should().BeOfType<PushOperand>().Subject;
+            entryArityPush.Kind.Should().Be("IntLiteral");
+            entryArityPush.Value.Should().Be(0L);
+            result.Result.EntryPoint[1].Opcode.Should().Be(Opcodes.Call);
+        }
+
+        [Fact]
+        public async Task CompileAsync_WithEntrypointCallMain_ShouldInjectZeroArityBeforeCall()
+        {
+            // Arrange
+            var source = @"@AGI 0.0.1
+
+program L0;
+module L/L0;
+
+procedure Main {
+}
+
+entrypoint {
+    asm {
+        call Main;
+    }
+}";
+
+            // Act
+            var result = await _compiler.CompileAsync(source);
+
+            // Assert
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            result.Result!.EntryPoint.Should().HaveCount(2);
+
+            result.Result.EntryPoint[0].Opcode.Should().Be(Opcodes.Push);
+            var arityPush = result.Result.EntryPoint[0].Operand1.Should().BeOfType<PushOperand>().Subject;
+            arityPush.Kind.Should().Be("IntLiteral");
+            arityPush.Value.Should().Be(0L);
+
+            result.Result.EntryPoint[1].Opcode.Should().Be(Opcodes.Call);
+            var callInfo = result.Result.EntryPoint[1].Operand1.Should().BeOfType<CallInfo>().Subject;
+            callInfo.FunctionName.Should().Be("Main");
         }
     }
 }

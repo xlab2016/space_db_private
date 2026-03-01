@@ -517,5 +517,25 @@ namespace Magic.Kernel.Tests.Compilation
             var memoryParam = callInfo.Parameters["memory"].Should().BeOfType<MemoryAddress>().Subject;
             memoryParam.Index.Should().Be(0);
         }
+
+        [Fact]
+        public void AnalyzeProgram_WithUndeclaredVariable_ShouldThrowUndeclaredVariableException()
+        {
+            var source = @"@AGI 0.0.1;
+program test;
+module test;
+procedure Main {
+    print(notDeclared);
+}
+entrypoint { Main; }";
+            var parser = new Parser();
+            var structure = parser.ParseProgram(source);
+
+            var act = () => _analyzer.AnalyzeProgram(structure, parser, source);
+
+            act.Should().Throw<UndeclaredVariableException>()
+                .WithMessage("*'notDeclared'*")
+                .Which.VariableName.Should().Be("notDeclared");
+        }
     }
 }
