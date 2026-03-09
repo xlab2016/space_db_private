@@ -1,11 +1,10 @@
 using Magic.Kernel.Processor;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading.Tasks;
 
 namespace Magic.Kernel.Compilation
 {
@@ -20,10 +19,14 @@ namespace Magic.Kernel.Compilation
         /// <summary>Output format when saving: "agic" (default, binary/JSON) or "agiasm" (text assembly).</summary>
         public string? OutputFormat { get; set; }
 
+        /// <summary>Optional instance index when unit is hosted with multiple instances (vault instanceIndex routing, etc.). Runtime-only, not serialized.</summary>
+        [JsonIgnore]
+        public int? InstanceIndex { get; set; }
+
         public ExecutionBlock EntryPoint { get; set; } = new ExecutionBlock();
 
         public Dictionary<string, Processor.Procedure> Procedures { get; set; } = new Dictionary<string, Processor.Procedure>();
-        
+
         public Dictionary<string, Processor.Function> Functions { get; set; } = new Dictionary<string, Processor.Function>();
 
         public List<Export> Exports { get; set; } = new List<Export>();

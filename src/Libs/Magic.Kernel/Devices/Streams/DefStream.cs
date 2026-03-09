@@ -70,10 +70,20 @@ namespace Magic.Kernel.Devices.Streams
 
         public virtual async Task<(bool IsEnd, object? Delta, object? Aggregate)> StreamWaitAsync(string streamWaitType)
         {
-            var read = await ReadChunkAsync().ConfigureAwait(false);
-            if (!read.Result.IsSuccess || read.Chunk == null)
-                return (true, null, null);
-            return (false, read.Chunk, null);
+            switch (streamWaitType)
+            {
+                case "delta":
+                    var read = await ReadChunkAsync().ConfigureAwait(false);
+                    if (!read.Result.IsSuccess || read.Chunk == null)
+                        return (true, null, null);
+                    return (false, read.Chunk, null);
+                case "data":
+                    var read2 = await ReadAsync().ConfigureAwait(false);
+                    if (!read2.Result.IsSuccess || read2.Bytes == null)
+                        return (true, null, null);
+                    return (true, read2.Bytes, null);
+            }
+            return (true, null, null);
         }
 
         protected static byte[] ToBytes(object? o)

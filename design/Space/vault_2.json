@@ -8,5 +8,16 @@
 		"token": "8076339927:AAEDNqQxBQGvkdi_eBE4uNDU83CPmAGnYNI",
 		"connectionString": "Server=localhost;Port=5432;Database=telegram_to_db;User Id=pguser;Password=pguserpass"
 	}
+},
+{
+	"program": "telegram_to_db",
+	"system": "samples",
+	"module": "telegram",
+	"protected": false,
+	"instanceIndex": 1,
+	"store": {
+		"token": "8699082940:AAFajj1Te8cnqI85hiZj2vflxTFciHg-1x8",
+		"connectionString": "Server=localhost;Port=5432;Database=telegram_to_db;User Id=pguser;Password=pguserpass"
+	}
 }
 ]

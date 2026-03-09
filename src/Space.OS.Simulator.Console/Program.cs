@@ -174,7 +174,7 @@ static async Task RunProgramAsync(IHost host, List<string> args, string configPa
             Console.WriteLine($"Compilation failed: {comp.ErrorMessage}");
             return;
         }
-        result = await kernel.Interpreter.InterpreteAsync(comp.Result!);
+        result = await kernel.InterpreteAsync(comp.Result!);
     }
     else
     {

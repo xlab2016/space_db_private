@@ -51,6 +51,8 @@ namespace Magic.Kernel.Functions
                 throw new InvalidOperationException("Print function requires a value parameter.");
             }
 
+            var prefix = Magic.Kernel.Interpretation.ExecutionContext.GetPrefix();
+
             // Проверяем тип вывода
             var outputType = "console";
             if (callInfo.Parameters.TryGetValue("type", out var typeParam))
@@ -68,10 +70,14 @@ namespace Magic.Kernel.Functions
                     throw new InvalidOperationException("DefaultInferenceDevice is not configured. Cannot print to inference device.");
                 }
 
-                var inferredPayload = valuesToPrint.Count == 1
-                    ? valuesToPrint[0]
+                string inferredPayload = valuesToPrint.Count == 1
+                    ? (valuesToPrint[0]?.ToString() ?? "null")
                     : string.Join(" | ", valuesToPrint.Select(value => FormatValue(value ?? "null")));
-                var inputData = ConvertToEntityData(inferredPayload ?? string.Empty);
+
+                if (!string.IsNullOrEmpty(prefix))
+                    inferredPayload = prefix + inferredPayload;
+
+                var inputData = ConvertToEntityData(inferredPayload);
                 var outputData = new EntityData
                 {
                     Type = new HierarchicalDataType()
@@ -92,7 +98,7 @@ namespace Magic.Kernel.Functions
                 var formattedOutput = valuesToPrint.Count == 1
                     ? FormatValue(valuesToPrint[0] ?? "null")
                     : string.Join(" | ", valuesToPrint.Select((value, index) => $"arg{index}: {FormatValue(value ?? "null")}"));
-                Console.WriteLine(formattedOutput);
+                Console.WriteLine(prefix + formattedOutput);
             }
         }
 
@@ -262,7 +268,7 @@ namespace Magic.Kernel.Functions
                 {
                     if (_configuration?.DefaultDisk != null)
                     {
-                        var sn = _configuration.CurrentExecutableUnit?.SpaceName;
+                        var sn = Magic.Kernel.Interpretation.ExecutionContext.CurrentUnit?.SpaceName;
                         switch (entityType)
                         {
                             case EntityType.Vertex:

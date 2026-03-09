@@ -52,42 +52,39 @@ procedure Main {
 		print(tokenHash, chatId, text, photo, document, user, time);
 
 		if (photo) {
-			stream2.open({
+			var photoStream := streamwait {
+			  stream2.open({
 				token: token,
 				file: photo
-			});
-			debug;
-			var photoData := streamwait stream2;
-			message.Photo = {
+			  });
+			  var photoData := await stream2;
+			  message.Photo := {
 				data: photoData
+			  }
+			  await db1;
 			}
 		}
 
 		if (document) {
-			stream2.open({
+			var documentStream := streamwait {
+			  stream2.open({
 				token: token,
 				file: document
-			});
-			var documentData := streamwait stream2;
-			message.Document = {
+			  });
+			  var documentData := streamwait stream2;
+			  message.Document := {
 				data: documentData
+			  }
+			  streamwait read();
+			  await db1;
 			}
 		}
 
 		db1.Message<> += message;
 		// save data
 		await db1;
-
-		// untyped version:
-		//db1.write({
-		//	operation: "insert",
-		//	columns: "Time, User, Message",
-		//	data: {
-		//		Time: time,
-		//		User: user,
-		//		Message: message
-		//	}
-		//});
+		await photoStream;
+		await documentStream;
 		
 		// pipeline message to external code
 		streamwait print(message);

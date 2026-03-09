@@ -44,8 +44,9 @@ namespace Magic.Kernel.Devices.Store
                         var program = GetString(el, "program");
                         var system = GetString(el, "system");
                         var module = GetString(el, "module");
+                        var instanceIndex = GetInt32OrDefault(el, "instanceIndex", 0);
                         var store = GetStore(el);
-                        _entries.Add(new VaultEntry(program, system, module, store));
+                        _entries.Add(new VaultEntry(program, system, module, instanceIndex, store));
                     }
                 }
                 catch
@@ -61,6 +62,15 @@ namespace Magic.Kernel.Devices.Store
             if (el.TryGetProperty(name, out var p))
                 return p.GetString() ?? "";
             return "";
+        }
+
+        private static int GetInt32OrDefault(JsonElement el, string name, int defaultValue)
+        {
+            if (!el.TryGetProperty(name, out var p))
+                return defaultValue;
+            if (p.ValueKind == JsonValueKind.Number && p.TryGetInt32(out var value))
+                return value;
+            return defaultValue;
         }
 
         private static Dictionary<string, object> GetStore(JsonElement el)
@@ -109,10 +119,30 @@ namespace Magic.Kernel.Devices.Store
                     var s = system ?? "";
                     var m = module ?? "";
                     var entries = GetEntries();
-                    var entry = entries.FirstOrDefault(e =>
+                    var positionInstanceIndex = GetPositionInstanceIndex();
+                    var candidates = entries.Where(e =>
                         string.Equals(e.Program, p, StringComparison.OrdinalIgnoreCase) &&
                         string.Equals(e.System, s, StringComparison.OrdinalIgnoreCase) &&
-                        string.Equals(e.Module, m, StringComparison.OrdinalIgnoreCase));
+                        string.Equals(e.Module, m, StringComparison.OrdinalIgnoreCase)).ToList();
+
+                    VaultEntry? entry = null;
+
+                    if (positionInstanceIndex.HasValue)
+                    {
+                        // 1) Exact match by instanceIndex
+                        entry = candidates.FirstOrDefault(e => e.InstanceIndex == positionInstanceIndex.Value);
+                        // 2) Fallback to instanceIndex == 0 for backward-compat configs
+                        entry ??= candidates.FirstOrDefault(e => e.InstanceIndex == 0);
+                    }
+                    else
+                    {
+                        // No instance index in position: prefer instanceIndex == 0 when present
+                        entry = candidates.FirstOrDefault(e => e.InstanceIndex == 0);
+                    }
+
+                    // 3) Final fallback: any matching entry
+                    entry ??= candidates.FirstOrDefault();
+
                     var store = entry?.Store;
                     if (store != null && !string.IsNullOrWhiteSpace(key) && store.TryGetValue(key, out var value))
                         return value;
@@ -125,6 +155,14 @@ namespace Magic.Kernel.Devices.Store
             }
 
             throw new CallUnknownMethodException(methodName ?? "", this);
+        }
+
+        private int? GetPositionInstanceIndex()
+        {
+            var indices = Position?.Indices;
+            if (indices == null || indices.Count == 0)
+                return null;
+            return indices[0];
         }
 
         private (string? program, string? system, string? module, string? key) GetProgramSystemModuleKeyFromPositionOrArgs(object?[]? args)
@@ -158,13 +196,15 @@ namespace Magic.Kernel.Devices.Store
             public string Program { get; }
             public string System { get; }
             public string Module { get; }
+            public int InstanceIndex { get; }
             public Dictionary<string, object> Store { get; }
 
-            public VaultEntry(string program, string system, string module, Dictionary<string, object> store)
+            public VaultEntry(string program, string system, string module, int instanceIndex, Dictionary<string, object> store)
             {
                 Program = program;
                 System = system;
                 Module = module;
+                InstanceIndex = instanceIndex;
                 Store = store;
             }
         }

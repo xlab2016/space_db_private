@@ -51,6 +51,20 @@ namespace Magic.Kernel.Compilation
                     Result = executableUnit
                 };
             }
+            catch (CompilationException cex)
+            {
+                // Добавляем позицию (строка/колонка), если она есть.
+                var (line, column) = GetLineAndColumn(sourceCode, cex.Position);
+                var posSuffix = cex.Position >= 0
+                    ? $" (line {line}, column {column})"
+                    : string.Empty;
+
+                return new CompilationResult
+                {
+                    Success = false,
+                    ErrorMessage = cex.Message + posSuffix
+                };
+            }
             catch (Exception ex)
             {
                 return new CompilationResult
@@ -59,6 +73,28 @@ namespace Magic.Kernel.Compilation
                     ErrorMessage = ex.Message
                 };
             }
+        }
+
+        private static (int Line, int Column) GetLineAndColumn(string source, int position)
+        {
+            if (position < 0 || position > source.Length)
+                return (0, 0);
+
+            var line = 1;
+            var col = 1;
+            for (var i = 0; i < position; i++)
+            {
+                if (source[i] == '\n')
+                {
+                    line++;
+                    col = 1;
+                }
+                else
+                {
+                    col++;
+                }
+            }
+            return (line, col);
         }
     }
 }

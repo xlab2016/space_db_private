@@ -62,7 +62,7 @@ public static class ExecutionUnitRunner
                     var comp = await kernel.CompileAsync(await File.ReadAllTextAsync(request.ProgramPath));
                     if (!comp.Success)
                         return new ExecutionResult { Success = false, ErrorMessage = comp.ErrorMessage ?? "Compilation failed." };
-                    result = await kernel.Interpreter.InterpreteAsync(comp.Result!);
+                    result = await kernel.InterpreteAsync(comp.Result!);
                 }
                 else
                     return new ExecutionResult { Success = false, ErrorMessage = $"Unsupported extension: {ext}. Use .agi, .agic or .agiasm." };
@@ -72,7 +72,7 @@ public static class ExecutionUnitRunner
                 var comp = await kernel.CompileAsync(request.ProgramCode);
                 if (!comp.Success)
                     return new ExecutionResult { Success = false, ErrorMessage = comp.ErrorMessage ?? "Compilation failed." };
-                result = await kernel.Interpreter.InterpreteAsync(comp.Result!);
+                result = await kernel.InterpreteAsync(comp.Result!);
             }
             else
                 return new ExecutionResult { Success = false, ErrorMessage = "Provide ProgramPath or ProgramCode." };

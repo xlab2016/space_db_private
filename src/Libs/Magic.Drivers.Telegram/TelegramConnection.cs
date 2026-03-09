@@ -1,3 +1,6 @@
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 
@@ -8,11 +11,19 @@ namespace Magic.Drivers.Telegram
     {
         private readonly TelegramBotClient _client;
         private readonly string _botToken;
+        private readonly string _tokenHash;
 
         public TelegramConnection(string botToken)
         {
             _botToken = botToken ?? throw new ArgumentNullException(nameof(botToken));
             _client = new TelegramBotClient(_botToken);
+            _tokenHash = ComputeTokenHash(_botToken);
+        }
+
+        private static string ComputeTokenHash(string token)
+        {
+            var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(token));
+            return Convert.ToHexString(bytes).ToLowerInvariant();
         }
 
         /// <summary>Send text to chat. Uses the same client instance as receive.</summary>
@@ -22,8 +33,16 @@ namespace Magic.Drivers.Telegram
             return message.MessageId;
         }
 
-        /// <summary>Runs long-polling loop and invokes onMessage for each received text message. Exits when cancellation is requested.</summary>
-        public async Task RunReceiveLoopAsync(Action<long, string, string?> onMessage, CancellationToken cancellationToken = default)
+        /// <summary>
+        /// Runs long-polling loop and invokes onMessage for each received message.
+        /// Exits when cancellation is requested.
+        /// </summary>
+        /// <param name="onMessage">
+        /// (chatId, textOrCaption, username, tokenHash, photo, document)
+        /// </param>
+        public async Task RunReceiveLoopAsync(
+            Action<long, string, string?, string, PhotoSize[]?, Document?> onMessage,
+            CancellationToken cancellationToken = default)
         {
             int? offset = null;
             while (!cancellationToken.IsCancellationRequested)
@@ -36,12 +55,22 @@ namespace Magic.Drivers.Telegram
                         if (cancellationToken.IsCancellationRequested) return;
                         offset = update.Id + 1;
                         var msg = update.Message;
-                        if (msg?.Text == null) continue;
+                        if (msg == null) continue;
+
+                        var text = msg.Text ?? msg.Caption ?? string.Empty;
+                        var hasPhoto = msg.Photo != null && msg.Photo.Length > 0;
+                        var hasDocument = msg.Document != null;
+
+                        if (string.IsNullOrEmpty(text) && !hasPhoto && !hasDocument)
+                            continue;
+
                         var chatId = msg.Chat.Id;
                         var username = msg.Chat.Username;
+                        var photo = msg.Photo;
+                        var document = msg.Document;
                         try
                         {
-                            onMessage(chatId, msg.Text, username);
+                            onMessage(chatId, text, username, _tokenHash, photo, document);
                         }
                         catch
                         {
@@ -59,6 +88,24 @@ namespace Magic.Drivers.Telegram
                     await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
                 }
             }
+        }
+
+        /// <summary>Get Telegram FilePath for file_id without downloading file bytes.</summary>
+        public static async Task<string?> GetFilePathAsync(string botToken, string fileId, CancellationToken cancellationToken = default)
+        {
+            var client = new TelegramBotClient(botToken);
+            var tgFile = await client.GetFile(fileId, cancellationToken).ConfigureAwait(false);
+            return tgFile.FilePath;
+        }
+
+        /// <summary>Download file by file_id and return bytes. Used by TelegramNetworkFileDriver.</summary>
+        public static async Task<byte[]> GetFileBytesAsync(string botToken, string fileId, CancellationToken cancellationToken = default)
+        {
+            var client = new TelegramBotClient(botToken);
+            var tgFile = await client.GetFile(fileId, cancellationToken).ConfigureAwait(false);
+            await using var ms = new MemoryStream();
+            await client.DownloadFile(tgFile, ms, cancellationToken).ConfigureAwait(false);
+            return ms.ToArray();
         }
     }
 }

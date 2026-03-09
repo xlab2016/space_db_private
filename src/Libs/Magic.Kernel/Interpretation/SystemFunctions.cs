@@ -12,6 +12,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
+using System.Text;
 
 namespace Magic.Kernel.Interpretation
 {
@@ -79,6 +80,7 @@ namespace Magic.Kernel.Interpretation
                     return true;
 
                 case "debug":
+                case "debugger":
                     await ExecuteDebugAsync(callInfo);
                     return true;
 
@@ -96,6 +98,10 @@ namespace Magic.Kernel.Interpretation
 
                 case "opjson":
                     await ExecuteOpJsonAsync(callInfo);
+                    return true;
+
+                case "convert":
+                    await ExecuteConvertAsync(callInfo);
                     return true;
 
                 default:
@@ -279,18 +285,19 @@ namespace Magic.Kernel.Interpretation
 
             var parent = EnsureContainer(root, segments.Take(segments.Count - 1).ToList(), expectArray: false);
             var last = segments[segments.Count - 1];
+            var normalizedValue = NormalizeJsonValue(value);
 
             if (last.Property != null)
             {
                 var map = parent as Dictionary<string, object> ?? new Dictionary<string, object>(StringComparer.Ordinal);
-                map[last.Property] = value!;
+                map[last.Property] = normalizedValue!;
                 if (segments.Count == 1) root = map;
             }
             else if (last.Index.HasValue)
             {
                 var arr = parent as List<object> ?? new List<object>();
                 EnsureArraySize(arr, last.Index.Value + 1);
-                arr[last.Index.Value] = value!;
+                arr[last.Index.Value] = normalizedValue!;
                 if (segments.Count == 1) root = arr;
             }
 
@@ -303,13 +310,13 @@ namespace Magic.Kernel.Interpretation
             if (segments.Count == 0)
             {
                 var rootArr = root as List<object> ?? new List<object>();
-                rootArr.Add(value!);
+                rootArr.Add(NormalizeJsonValue(value)!);
                 return rootArr;
             }
 
             var target = EnsureContainer(root, segments, expectArray: true);
             var arr = target as List<object> ?? new List<object>();
-            arr.Add(value!);
+            arr.Add(NormalizeJsonValue(value)!);
             return root;
         }
 
@@ -360,6 +367,104 @@ namespace Magic.Kernel.Interpretation
         {
             while (arr.Count < size)
                 arr.Add(new Dictionary<string, object>(StringComparer.Ordinal));
+        }
+
+        private static object? NormalizeJsonValue(object? value)
+        {
+            if (value is null)
+                return null;
+
+            // Специальный случай: бинарные данные в JSON храним как base64-строку
+            if (value is byte[] || value is IReadOnlyList<byte> || (value is IEnumerable<byte> && value is not string))
+            {
+                return ConvertValue(value, "base64");
+            }
+
+            return value;
+        }
+
+        private async Task ExecuteConvertAsync(CallInfo callInfo)
+        {
+            if (callInfo == null) throw new ArgumentNullException(nameof(callInfo));
+
+            object? valueParam = null;
+            if (callInfo.Parameters.TryGetValue("value", out var v))
+                valueParam = v;
+            else if (callInfo.Parameters.TryGetValue("0", out var v0))
+                valueParam = v0;
+            else if (callInfo.Parameters.Count > 0)
+                valueParam = callInfo.Parameters.Values.FirstOrDefault();
+
+            object? typeParam = null;
+            if (callInfo.Parameters.TryGetValue("type", out var t))
+                typeParam = t;
+            else if (callInfo.Parameters.TryGetValue("1", out var t1))
+                typeParam = t1;
+
+            if (typeParam == null)
+                throw new InvalidOperationException("convert requires 'type' parameter.");
+
+            var typeString = (await GetValueFromParameterAsync(typeParam).ConfigureAwait(false))?.ToString();
+            var value = valueParam != null ? await GetValueFromParameterAsync(valueParam).ConfigureAwait(false) : null;
+
+            var converted = ConvertValue(value, typeString);
+            _stack.Add(converted!);
+        }
+
+        private static object? ConvertValue(object? value, string? type)
+        {
+            if (string.IsNullOrWhiteSpace(type))
+                return value;
+
+            var kind = type.Trim().ToLowerInvariant();
+            switch (kind)
+            {
+                case "base64":
+                case "to_base64":
+                    if (value == null)
+                        return string.Empty;
+
+                    if (value is byte[] bytes)
+                        return Convert.ToBase64String(bytes);
+
+                    if (value is IReadOnlyList<byte> roList)
+                    {
+                        var tmp = new byte[roList.Count];
+                        for (var i = 0; i < roList.Count; i++)
+                            tmp[i] = roList[i];
+                        return Convert.ToBase64String(tmp);
+                    }
+
+                    if (value is IEnumerable<byte> seqBytes && value is not string)
+                    {
+                        var tmp = seqBytes.ToArray();
+                        return Convert.ToBase64String(tmp);
+                    }
+
+                    if (value is Stream stream)
+                    {
+                        if (stream.CanSeek)
+                            stream.Position = 0;
+                        using var ms = new MemoryStream();
+                        stream.CopyTo(ms);
+                        return Convert.ToBase64String(ms.ToArray());
+                    }
+
+                    var s = value.ToString() ?? string.Empty;
+                    var strBytes = Encoding.UTF8.GetBytes(s);
+                    return Convert.ToBase64String(strBytes);
+
+                case "string":
+                case "str":
+                    return value?.ToString() ?? string.Empty;
+
+                case "identity":
+                case "none":
+                    return value;
+
+                default:
+                    return value;
+            }
         }
 
         private async Task ExecuteCompileAsync(CallInfo callInfo)
@@ -421,7 +526,7 @@ namespace Magic.Kernel.Interpretation
                     {
                         if (_configuration?.DefaultDisk != null)
                         {
-                            shape = await _configuration.DefaultDisk.GetShape(index, null, _configuration.CurrentExecutableUnit?.SpaceName);
+                            shape = await _configuration.DefaultDisk.GetShape(index, null, Magic.Kernel.Interpretation.ExecutionContext.CurrentUnit?.SpaceName);
                         }
                     }
                 }
@@ -467,7 +572,7 @@ namespace Magic.Kernel.Interpretation
                 {
                     foreach (var vertexIndex in shape.VertexIndices)
                     {
-                        var vertex = await _configuration.DefaultDisk.GetVertex(vertexIndex, null, _configuration.CurrentExecutableUnit?.SpaceName);
+                        var vertex = await _configuration.DefaultDisk.GetVertex(vertexIndex, null, Magic.Kernel.Interpretation.ExecutionContext.CurrentUnit?.SpaceName);
                         if (vertex?.Position != null)
                         {
                             positions.Add(vertex.Position);
@@ -532,7 +637,7 @@ namespace Magic.Kernel.Interpretation
             }
 
             // Вычисляем пересечение
-            var intersection = await MathFunctions.CalculateIntersectionAsync(shapeA, shapeB, _configuration?.DefaultDisk, _configuration?.CurrentExecutableUnit?.SpaceName);
+            var intersection = await MathFunctions.CalculateIntersectionAsync(shapeA, shapeB, _configuration?.DefaultDisk, Magic.Kernel.Interpretation.ExecutionContext.CurrentUnit?.SpaceName);
             _stack.Add(intersection);
         }
 
@@ -548,7 +653,7 @@ namespace Magic.Kernel.Interpretation
                 {
                     if (_configuration?.DefaultDisk != null)
                     {
-                        var sn = _configuration.CurrentExecutableUnit?.SpaceName;
+                        var sn = Magic.Kernel.Interpretation.ExecutionContext.CurrentUnit?.SpaceName;
                         switch (entityType)
                         {
                             case EntityType.Vertex:

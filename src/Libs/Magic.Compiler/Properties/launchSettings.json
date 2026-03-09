@@ -2,7 +2,7 @@
   "profiles": {
     "Magic.Compiler": {
       "commandName": "Project",
-      "commandLineArgs": "\"@AGI 0.0.1.agi\""
+      "commandLineArgs": "\"telegram_to_db.agi\""
     }
   }
 }

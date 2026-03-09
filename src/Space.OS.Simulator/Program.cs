@@ -1,8 +1,9 @@
 using System.Diagnostics;
 using Magic.Kernel;
+using Magic.Kernel.Build;
 using Magic.Kernel.Core;
 using Magic.Kernel.Core.OS;
-using Magic.Kernel.Interpretation;
+using Magic.Kernel.Runtime;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using SpaceDb.Services;
@@ -50,37 +51,47 @@ static long? GetLong(Microsoft.Extensions.Configuration.IConfiguration cfg, stri
 }
 
 OSSystem.StartKernel();
-var debugEl2 = SpaceEnvironment.Configuration.TryGetValue("debug", out var debugEl) ? debugEl : default(System.Text.Json.JsonElement);
-var debug = debugEl2.GetString();
 
-var filePath = GetFirstNonOptionArg(args);
-var isDebugMode = Debugger.IsAttached;
-if (string.IsNullOrEmpty(filePath) && isDebugMode && !string.IsNullOrWhiteSpace(debug))
-    filePath = SpaceEnvironment.GetFilePath(debug);
+// Prefer executionUnits from SpaceEnvironment configuration. If present, we ignore CLI file arguments.
+var executionUnits = SpaceEnvironment.ExecutionUnits;
 
-if (filePath is null || args.Any(a => a is "--help" or "-h" or "/?"))
+string? filePath = null;
+var runFromConfig = executionUnits.Count > 0;
+
+if (!runFromConfig)
 {
-    Console.WriteLine("Usage: Space.OS.Simulator [options] [file.agi|file.agic|file.agiasm]");
-    Console.WriteLine();
-    Console.WriteLine("  file.agi    - Source file (will be compiled and executed)");
-    Console.WriteLine("  file.agic   - Compiled file binary/JSON (executed directly)");
-    Console.WriteLine("  file.agiasm - Compiled file text assembly (executed directly)");
-    Console.WriteLine();
-    Console.WriteLine("Options (when compiling .agi):");
-    Console.WriteLine("  --output agiasm|agic, -o agiasm|agic   Output format (default: agiasm)");
-    Console.WriteLine();
-    Console.WriteLine("Config:");
-    Console.WriteLine("  RocksDb:Path            (or env ROCKSDB_PATH)");
-    Console.WriteLine("  SpaceDisk:SpaceName (key prefix; else from program: module|program)");
-    Console.WriteLine("  SpaceDisk:VertexSequenceIndex / RelationSequenceIndex / ShapeSequenceIndex");
-    return;
-}
+    var debugEl2 = SpaceEnvironment.Configuration.TryGetValue("debug", out var debugEl) ? debugEl : default(System.Text.Json.JsonElement);
+    var debug = debugEl2.GetString();
 
-if (!File.Exists(filePath))
-{
-    Console.Error.WriteLine($"File not found: {Path.GetFullPath(filePath)}");
-    Environment.ExitCode = 2;
-    return;
+    filePath = GetFirstNonOptionArg(args);
+    var isDebugMode = Debugger.IsAttached;
+    if (string.IsNullOrEmpty(filePath) && isDebugMode && !string.IsNullOrWhiteSpace(debug))
+        filePath = SpaceEnvironment.GetFilePath(debug);
+
+    if (filePath is null || args.Any(a => a is "--help" or "-h" or "/?"))
+    {
+        Console.WriteLine("Usage: Space.OS.Simulator [options] [file.agi|file.agic|file.agiasm]");
+        Console.WriteLine();
+        Console.WriteLine("  file.agi    - Source file (will be compiled and executed)");
+        Console.WriteLine("  file.agic   - Compiled file binary/JSON (executed directly)");
+        Console.WriteLine("  file.agiasm - Compiled file text assembly (executed directly)");
+        Console.WriteLine();
+        Console.WriteLine("Options (when compiling .agi):");
+        Console.WriteLine("  --output agiasm|agic, -o agiasm|agic   Output format (default: agiasm)");
+        Console.WriteLine();
+        Console.WriteLine("Config:");
+        Console.WriteLine("  RocksDb:Path            (or env ROCKSDB_PATH)");
+        Console.WriteLine("  SpaceDisk:SpaceName (key prefix; else from program: module|program)");
+        Console.WriteLine("  SpaceDisk:VertexSequenceIndex / RelationSequenceIndex / ShapeSequenceIndex");
+        return;
+    }
+
+    if (!File.Exists(filePath))
+    {
+        Console.Error.WriteLine($"File not found: {Path.GetFullPath(filePath)}");
+        Environment.ExitCode = 2;
+        return;
+    }
 }
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -104,43 +115,19 @@ defaultDisk.Configuration.VertexSequenceIndex ??= GetLong(builder.Configuration,
 defaultDisk.Configuration.RelationSequenceIndex ??= GetLong(builder.Configuration, "SpaceDisk:RelationSequenceIndex") ?? 0;
 defaultDisk.Configuration.ShapeSequenceIndex ??= GetLong(builder.Configuration, "SpaceDisk:ShapeSequenceIndex") ?? 0;
 
-InterpretationResult result;
-var extension = Path.GetExtension(filePath).ToLowerInvariant();
+var execHost = new ExecutionUnitHost(kernel);
+bool success;
 
-if (extension == ".agic" || extension == ".agiasm")
+if (runFromConfig)
 {
-    // Execute compiled file directly (binary/JSON or text assembly)
-    result = await kernel.InterpreteCompiledFileAsync(filePath);
-}
-else if (extension == ".agi")
-{
-    // Compile source file
-    var compilationResult = await kernel.CompileAsync(await File.ReadAllTextAsync(filePath));
-    
-    if (!compilationResult.Success)
-    {
-        Console.Error.WriteLine($"Compilation failed: {compilationResult.ErrorMessage}");
-        Environment.ExitCode = 1;
-        return;
-    }
-    
-    // Save compiled file to disk: формат вывода из args (--output agiasm|agic), по умолчанию agiasm
-    var outputFormat = GetOutputFormatFromArgs(args) ?? "agiasm";
-    compilationResult.Result!.OutputFormat = outputFormat;
-    var compiledPath = Path.ChangeExtension(filePath, outputFormat == "agiasm" ? ".agiasm" : ".agic");
-    await compilationResult.Result.SaveAsync(compiledPath);
-    
-    // Execute compiled structure directly from memory (not reading from disk)
-    result = await kernel.Interpreter.InterpreteAsync(compilationResult.Result);
+    success = await RunUnitsFromConfigAsync(execHost, executionUnits);
 }
 else
 {
-    Console.Error.WriteLine($"Unsupported file extension: {extension}. Expected .agi, .agic or .agiasm");
-    Environment.ExitCode = 2;
-    return;
+    success = await RunSingleFileAsync(execHost, filePath!, args);
 }
 
-if (!result.Success)
+if (!success)
 {
     Console.Error.WriteLine("Execution failed.");
     Environment.ExitCode = 1;
@@ -148,3 +135,117 @@ if (!result.Success)
 }
 
 Console.WriteLine("OK");
+Console.ReadLine();
+
+static async Task<bool> RunSingleFileAsync(ExecutionUnitHost execHost, string filePath, string[] args)
+{
+    var artifact = new Artifact
+    {
+        Name = Path.GetFileNameWithoutExtension(filePath) ?? string.Empty,
+        Namespace = string.Empty
+    };
+
+    var extension = Path.GetExtension(filePath).ToLowerInvariant();
+    var runCommand = new RunCommand { Type = RunType.NewThread };
+
+    if (extension == ".agic" || extension == ".agiasm")
+    {
+        if (extension == ".agic")
+        {
+            artifact.Type = ArtifactType.Agic;
+            artifact.Body = filePath;
+        }
+        else
+        {
+            artifact.Type = ArtifactType.AgiAsm;
+            artifact.Body = await File.ReadAllTextAsync(filePath);
+        }
+
+        execHost.UnitArtifact = artifact;
+        return await execHost.RunAsync(runCommand);
+    }
+
+    if (extension == ".agi")
+    {
+        var source = await File.ReadAllTextAsync(filePath);
+        artifact.Type = ArtifactType.Agi;
+        artifact.Body = source;
+
+        runCommand.OutputFormat = GetOutputFormatFromArgs(args) ?? "agiasm";
+        runCommand.SourcePath = filePath;
+
+        execHost.UnitArtifact = artifact;
+        return await execHost.RunAsync(runCommand);
+    }
+
+    Console.Error.WriteLine($"Unsupported file extension: {extension}. Expected .agi, .agic or .agiasm");
+    Environment.ExitCode = 2;
+    return false;
+}
+
+static async Task<bool> RunUnitsFromConfigAsync(ExecutionUnitHost execHost, IReadOnlyList<SpaceEnvironment.ExecutionUnitConfig> executionUnits)
+{
+    var results = new List<bool>();
+
+    foreach (var unit in executionUnits)
+    {
+        var fullPath = SpaceEnvironment.GetFilePath(unit.Path);
+
+        if (!File.Exists(fullPath))
+        {
+            Console.Error.WriteLine($"Configured executionUnit file not found: {Path.GetFullPath(fullPath)}");
+            results.Add(false);
+            continue;
+        }
+
+        var artifact = new Artifact
+        {
+            Name = Path.GetFileNameWithoutExtension(fullPath) ?? string.Empty,
+            Namespace = string.Empty
+        };
+
+        var extension = Path.GetExtension(fullPath).ToLowerInvariant();
+
+        if (extension == ".agic" || extension == ".agiasm")
+        {
+            if (extension == ".agic")
+            {
+                artifact.Type = ArtifactType.Agic;
+                artifact.Body = fullPath;
+            }
+            else
+            {
+                artifact.Type = ArtifactType.AgiAsm;
+                artifact.Body = await File.ReadAllTextAsync(fullPath);
+            }
+
+            execHost.UnitArtifact = artifact;
+
+            var cmd = new RunCommand { Type = RunType.NewThread, InstanceCount = unit.InstanceCount };
+            var ok = await execHost.RunAllInstancesAsync(cmd);
+            results.Add(ok);
+
+            continue;
+        }
+
+        if (extension == ".agi")
+        {
+            var source = await File.ReadAllTextAsync(fullPath);
+            artifact.Type = ArtifactType.Agi;
+            artifact.Body = source;
+
+            execHost.UnitArtifact = artifact;
+
+            var cmd = new RunCommand { Type = RunType.NewThread, InstanceCount = unit.InstanceCount };
+            var ok = await execHost.RunAllInstancesAsync(cmd);
+            results.Add(ok);
+
+            continue;
+        }
+
+        Console.Error.WriteLine($"Unsupported file extension in executionUnits config: {extension}. Expected .agi, .agic or .agiasm");
+        results.Add(false);
+    }
+
+    return results.Count > 0 && results.All(r => r);
+}

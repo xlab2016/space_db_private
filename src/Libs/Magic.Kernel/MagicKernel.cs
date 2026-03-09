@@ -11,14 +11,19 @@ namespace Magic.Kernel
 
         public KernelMemory Memory { get; } = new KernelMemory();
         public Compiler Compiler { get; } = new Compiler();
-        public Interpreter Interpreter { get; } = new Interpreter { Configuration = null };
 
         public List<IDevice> Devices { get; } = new List<IDevice>();
 
+        private Interpreter CreateInterpreter()
+        {
+            return new Interpreter
+            {
+                Configuration = Configuration
+            };
+        }
+
         public async Task StartKernel()
         {
-            Interpreter.Configuration = Configuration;
-
             foreach (var device in Devices)
             {
                 if (device is ISpaceDisk spaceDisk)
@@ -53,8 +58,7 @@ namespace Magic.Kernel
                 }
             }
 
-            // Назначаем конфигурацию интерпретатору
-            Interpreter.Configuration = Configuration;
+            // Конфигурация передаётся при создании интерпретатора
         }
 
         public async Task<List<CompilationResult>> CompileDirectoryAsync(string directoryPath)
@@ -70,7 +74,7 @@ namespace Magic.Kernel
         public async Task<InterpretationResult> InterpreteCompiledFileAsync(string compiledPath)
         {
             var executableUnit = await ExecutableUnit.LoadAsync(compiledPath);
-            return await Interpreter.InterpreteAsync(executableUnit);
+            return await InterpreteAsync(executableUnit);
         }
 
         public async Task<List<InterpretationResult>> InterpreteCompiledDirectoryAsync(string directoryPath)
@@ -95,7 +99,16 @@ namespace Magic.Kernel
                     Success = false
                 };
             }
-            return await Interpreter.InterpreteAsync(compilationResult.Result);
+            return await InterpreteAsync(compilationResult.Result);
+        }
+
+        public async Task<InterpretationResult> InterpreteAsync(ExecutableUnit executableUnit)
+        {
+            if (executableUnit == null)
+                throw new ArgumentNullException(nameof(executableUnit));
+
+            var interpreter = CreateInterpreter();
+            return await interpreter.InterpreteAsync(executableUnit);
         }
     }
 }

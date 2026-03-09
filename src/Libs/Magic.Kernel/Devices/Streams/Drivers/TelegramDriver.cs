@@ -4,6 +4,8 @@ using System.Text.Json;
 using Magic.Kernel.Devices;
 using Magic.Kernel.Core.OS;
 using Magic.Drivers.Telegram;
+using Magic.Kernel.Interpretation;
+using Telegram.Bot.Types;
 
 namespace Magic.Kernel.Devices.Streams.Drivers
 {
@@ -27,17 +29,18 @@ namespace Magic.Kernel.Devices.Streams.Drivers
             _streamWaitPollIntervalMs = Math.Clamp(streamWaitPollIntervalMs, 10, 10_000);
         }
 
-        public async Task<DeviceOperationResult> OpenAsync()
+        public Task<DeviceOperationResult> OpenAsync()
         {
             if (string.IsNullOrEmpty(_botToken))
-                return DeviceOperationResult.Fail(DeviceOperationState.InvalidState, "Bot token is required");
+                return Task.FromResult(DeviceOperationResult.Fail(DeviceOperationState.InvalidState, "Bot token is required"));
             _connection = new TelegramConnection(_botToken);
             _receiveCts = new CancellationTokenSource();
-            _ = _connection.RunReceiveLoopAsync((chatId, text, username) =>
-                EnqueueIncomingMessage(chatId, text, username), _receiveCts.Token);
+            _ = _connection.RunReceiveLoopAsync(
+                (chatId, text, username, tokenHash, photo, document) =>
+                    EnqueueIncomingMessage(chatId, text, username, tokenHash, photo, document),
+                _receiveCts.Token);
             _opened = true;
-            await Task.CompletedTask.ConfigureAwait(false);
-            return DeviceOperationResult.Success;
+            return Task.FromResult(DeviceOperationResult.Success);
         }
 
         public async Task<(DeviceOperationResult Result, byte[] Bytes)> ReadAsync()
@@ -76,7 +79,9 @@ namespace Magic.Kernel.Devices.Streams.Drivers
             if (!_opened)
                 return (DeviceOperationResult.Fail(DeviceOperationState.InvalidState, "Not open"), null);
 
-            Console.WriteLine("TelegramDriver: Waiting for incoming stream...");
+            var prefix = Magic.Kernel.Interpretation.ExecutionContext.GetPrefix();
+
+            Console.WriteLine(prefix + "TelegramDriver: Waiting for incoming stream...");
 
             while (true)
             {
@@ -141,10 +146,34 @@ namespace Magic.Kernel.Devices.Streams.Drivers
                 _incomingQueue.Enqueue(messageBytes);
         }
 
-        /// <summary>Enqueue incoming message as JSON: { "chatId", "text", "username" }.</summary>
-        public void EnqueueIncomingMessage(long chatId, string text, string? username = null)
+        /// <summary>
+        /// Enqueue incoming message as JSON:
+        /// {
+        ///   "chatId",
+        ///   "text",
+        ///   "username",
+        ///   "tokenHash",
+        ///   "photo",
+        ///   "document"
+        /// }
+        /// </summary>
+        public void EnqueueIncomingMessage(
+            long chatId,
+            string text,
+            string? username = null,
+            string? tokenHash = null,
+            PhotoSize[]? photo = null,
+            Document? document = null)
         {
-            var obj = new { chatId, text, username = username ?? "" };
+            var obj = new
+            {
+                chatId,
+                text,
+                username = username ?? string.Empty,
+                tokenHash = tokenHash ?? string.Empty,
+                photo,
+                document
+            };
             var json = JsonSerializer.Serialize(obj);
             EnqueueIncoming(Encoding.UTF8.GetBytes(json));
         }

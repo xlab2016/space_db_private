@@ -78,8 +78,9 @@ namespace Magic.Kernel.Compilation
 
                 if (TryStripInlineVarPrefix(line, out var inlineDecl) && IsDeclarationStatement(inlineDecl))
                 {
+                    if (!inVarBlock)
+                        varBlockLines.Clear();
                     inVarBlock = true;
-                    varBlockLines.Clear();
                     varBlockLines.Add(inlineDecl);
                     continue;
                 }
@@ -101,6 +102,9 @@ namespace Magic.Kernel.Compilation
                     instructions.AddRange(CompileVarBlock(new List<string> { line }, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter));
                     continue;
                 }
+
+                if (TryCompileIfStatement(line, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter, ref streamLoopCounter, instructions))
+                    continue;
 
                 if (TryCompileStreamWaitForLoop(line, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter, ref streamLoopCounter, instructions))
                     continue;
@@ -472,6 +476,81 @@ namespace Magic.Kernel.Compilation
             return true;
         }
 
+        private bool TryCompileIfStatement(
+            string line,
+            Dictionary<string, (string Kind, int Index)> vars,
+            ref int vertexCounter,
+            ref int relationCounter,
+            ref int shapeCounter,
+            ref int memorySlotCounter,
+            ref int streamLoopCounter,
+            List<InstructionNode> instructions)
+        {
+            if (!TryParseIfStatement(line, out var condVarName, out var bodyText))
+                return false;
+            if (string.IsNullOrEmpty(condVarName) || !vars.TryGetValue(condVarName, out var condVar))
+                throw new UndeclaredVariableException(condVarName);
+            if (condVar.Kind != "memory" && condVar.Kind != "stream" && condVar.Kind != "def")
+                return false;
+
+            var ifCounter = ++streamLoopCounter + 1000;
+            var endLabel = $"if_end_{ifCounter}";
+            var condSlot = memorySlotCounter++;
+
+            instructions.Add(CreatePushMemoryInstruction(condVar.Index));
+            instructions.Add(CreatePopMemoryInstruction(condSlot));
+            instructions.Add(CreateCmpInstruction(condSlot, 0));
+            instructions.Add(CreateJumpIfEqualInstruction(endLabel));
+
+            var bodyLines = SplitStatementLines(bodyText);
+            var bodyInstructions = CompileStatementLines(bodyLines, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter, ref streamLoopCounter);
+            instructions.AddRange(bodyInstructions);
+
+            instructions.Add(CreateLabelInstruction(endLabel));
+            return true;
+        }
+
+        private static bool TryParseIfStatement(string line, out string condVarName, out string bodyText)
+        {
+            condVarName = "";
+            bodyText = "";
+            var scanner = new Scanner(line);
+            if (!scanner.Current.IsEndOfInput && string.Equals(scanner.Current.Value, "if", StringComparison.OrdinalIgnoreCase))
+                scanner.Scan();
+            else
+                return false;
+            if (scanner.Current.Kind != TokenKind.LParen)
+                return false;
+            scanner.Scan();
+            if (scanner.Current.Kind != TokenKind.Identifier)
+                return false;
+            condVarName = scanner.Scan().Value;
+            if (scanner.Current.Kind != TokenKind.RParen)
+                return false;
+            scanner.Scan();
+            if (scanner.Current.Kind != TokenKind.LBrace)
+                return false;
+            var bodyStart = scanner.Current.End;
+            scanner.Scan();
+            var braceDepth = 1;
+            var bodyEnd = bodyStart;
+            while (!scanner.Current.IsEndOfInput)
+            {
+                var token = scanner.Scan();
+                if (token.Kind == TokenKind.LBrace) { braceDepth++; continue; }
+                if (token.Kind == TokenKind.RBrace)
+                {
+                    braceDepth--;
+                    if (braceDepth == 0) { bodyEnd = token.Start; break; }
+                }
+            }
+            if (braceDepth != 0)
+                return false;
+            if (bodyEnd > bodyStart && bodyStart >= 0 && bodyEnd <= line.Length)
+                bodyText = line.Substring(bodyStart, bodyEnd - bodyStart);
+            return true;
+        }
+
         private bool TryCompileAssignment(string line, Dictionary<string, (string Kind, int Index)> vars, ref int shapeCounter, ref int vertexCounter, ref int memorySlotCounter, List<InstructionNode> instructions)
         {
             var previous = _scanner;
@@ -506,15 +585,46 @@ namespace Magic.Kernel.Compilation
                     return true;
 
                 var rhsText = ExtractRemainingExpressionText(line, CurrentScanner.Current.Start);
-                if (LooksLikeJsonLiteral(rhsText) && TryParseJsonArgument(rhsText, out var jsonArg))
+                if (LooksLikeJsonLiteral(rhsText))
                 {
-                    var targetSlot = memorySlotCounter++;
-                    vars[targetName] = ("memory", targetSlot);
-                    var initJson = jsonArg is JsonArrayNode ? "[]" : "{}";
-                    instructions.Add(CreatePushStringInstruction(initJson));
-                    instructions.Add(CreatePopMemoryInstruction(targetSlot));
-                    EmitBuildJsonNode(jsonArg, targetSlot, "", vars, instructions);
-                    return true;
+                    // RHS of := : allow object literal with ; (e.g. a := { key: x; }). Only forbid ; in strict JSON.
+                    if (TryParseObjectLiteralWithVarRefs(rhsText, out var keyVars) && keyVars != null && keyVars.Count > 0)
+                    {
+                        var targetSlot = memorySlotCounter++;
+                        vars[targetName] = ("memory", targetSlot);
+                        instructions.Add(CreatePushStringInstruction("{}"));
+                        instructions.Add(CreatePopMemoryInstruction(targetSlot));
+                        foreach (var (key, varName) in keyVars)
+                        {
+                            if (!vars.TryGetValue(varName, out var valVar) || (valVar.Kind != "memory" && valVar.Kind != "stream" && valVar.Kind != "def"))
+                                return false;
+                            EmitOpJsonCall(
+                                targetSlot,
+                                "set",
+                                key,
+                                instructions,
+                                dataRef: new FunctionParameterNode
+                                {
+                                    Name = "data",
+                                    ParameterName = "data",
+                                    EntityType = "memory",
+                                    Index = valVar.Index
+                                });
+                        }
+                        return true;
+                    }
+                    if (HasSemicolonInsideJsonLiteral(rhsText))
+                        throw new CompilationException("JSON literal cannot contain ';' inside object or array.", CurrentScanner.Current.Start);
+                    if (TryParseJsonArgument(rhsText, out var jsonArg))
+                    {
+                        var targetSlot = memorySlotCounter++;
+                        vars[targetName] = ("memory", targetSlot);
+                        var initJson = jsonArg is JsonArrayNode ? "[]" : "{}";
+                        instructions.Add(CreatePushStringInstruction(initJson));
+                        instructions.Add(CreatePopMemoryInstruction(targetSlot));
+                        EmitBuildJsonNode(jsonArg, targetSlot, "", vars, instructions);
+                        return true;
+                    }
                 }
 
                 if (TryParseSymbolicVariableExpression(out var symbolicVariableName))
@@ -595,6 +705,21 @@ namespace Magic.Kernel.Compilation
                     vars[targetName] = ("memory", dataSlot);
                     instructions.Add(CreatePushMemoryInstruction(streamVar.Index));
                     instructions.Add(new InstructionNode { Opcode = "awaitobj" });
+                    instructions.Add(CreatePopMemoryInstruction(dataSlot));
+                    return true;
+                }
+
+                if (TryParseStreamWaitExpression(out var streamWaitVarName))
+                {
+                    if (!vars.TryGetValue(streamWaitVarName, out var streamVar))
+                        throw new UndeclaredVariableException(streamWaitVarName);
+                    if (streamVar.Kind != "stream" && streamVar.Kind != "def")
+                        return true;
+                    var dataSlot = memorySlotCounter++;
+                    vars[targetName] = ("memory", dataSlot);
+                    instructions.Add(CreatePushMemoryInstruction(streamVar.Index));
+                    instructions.Add(CreatePushStringInstruction("data"));
+                    instructions.Add(new InstructionNode { Opcode = "streamwaitobj" });
                     instructions.Add(CreatePopMemoryInstruction(dataSlot));
                     return true;
                 }
@@ -740,10 +865,25 @@ namespace Magic.Kernel.Compilation
 
             var rhsStart = scanner.Current.Start;
             var rhsEnd = rhsStart;
-            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.Semicolon)
+            if (scanner.Current.Kind == TokenKind.LBrace)
             {
-                rhsEnd = scanner.Current.End;
+                var depth = 1;
                 scanner.Scan();
+                while (!scanner.Current.IsEndOfInput && depth > 0)
+                {
+                    if (scanner.Current.Kind == TokenKind.LBrace) depth++;
+                    else if (scanner.Current.Kind == TokenKind.RBrace) depth--;
+                    rhsEnd = scanner.Current.End;
+                    scanner.Scan();
+                }
+            }
+            else
+            {
+                while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.Semicolon)
+                {
+                    rhsEnd = scanner.Current.End;
+                    scanner.Scan();
+                }
             }
             while (scanner.Current.Kind == TokenKind.Semicolon)
                 scanner.Scan();
@@ -769,15 +909,62 @@ namespace Magic.Kernel.Compilation
                 instructions.Add(new InstructionNode { Opcode = "getobj" });
             }
             instructions.Add(CreatePushStringInstruction(pathSegments[pathSegments.Count - 1]));
-            if (!TryEmitValuePush(rhsText, vars, instructions))
+            if (!TryEmitValuePush(rhsText, vars, ref memorySlotCounter, instructions))
                 return true;
             instructions.Add(new InstructionNode { Opcode = "setobj" });
             instructions.Add(CreatePopMemoryInstruction(memorySlotCounter++));
             return true;
         }
 
-        private bool TryEmitValuePush(string valueText, Dictionary<string, (string Kind, int Index)> vars, List<InstructionNode> instructions)
+        private bool TryEmitValuePush(string valueText, Dictionary<string, (string Kind, int Index)> vars, ref int memorySlotCounter, List<InstructionNode> instructions)
         {
+            var trimmed = valueText.Trim();
+
+            // JSON only in valid context: RHS of := or inside (). Object literal with ; (e.g. { data: photoData; }) is allowed.
+            if (LooksLikeJsonLiteral(trimmed))
+            {
+                // Prefer object literal with var refs (allows ; as separator). Only forbid ; in strict JSON literal.
+                if (TryParseObjectLiteralWithVarRefs(trimmed, out var keyVars) && keyVars != null && keyVars.Count > 0)
+                {
+                    var objSlot = memorySlotCounter++;
+                    instructions.Add(CreatePushStringInstruction("{}"));
+                    instructions.Add(CreatePopMemoryInstruction(objSlot));
+                    foreach (var (key, varName) in keyVars)
+                    {
+                        if (!vars.TryGetValue(varName, out var valVar) || (valVar.Kind != "memory" && valVar.Kind != "stream" && valVar.Kind != "def"))
+                            return false;
+                        EmitOpJsonCall(
+                            objSlot,
+                            "set",
+                            key,
+                            instructions,
+                            dataRef: new FunctionParameterNode
+                            {
+                                Name = "data",
+                                ParameterName = "data",
+                                EntityType = "memory",
+                                Index = valVar.Index
+                            });
+                    }
+                    instructions.Add(CreatePushMemoryInstruction(objSlot));
+                    return true;
+                }
+
+                if (HasSemicolonInsideJsonLiteral(trimmed))
+                    throw new CompilationException("JSON literal cannot contain ';' inside object or array.", -1);
+
+                if (TryParseJsonArgument(trimmed, out var jsonArg))
+                {
+                    var targetSlot = memorySlotCounter++;
+                    var initJson = jsonArg is JsonArrayNode ? "[]" : "{}";
+                    instructions.Add(CreatePushStringInstruction(initJson));
+                    instructions.Add(CreatePopMemoryInstruction(targetSlot));
+                    EmitBuildJsonNode(jsonArg, targetSlot, "", vars, instructions);
+                    instructions.Add(CreatePushMemoryInstruction(targetSlot));
+                    return true;
+                }
+            }
+
             var scanner = new Scanner(valueText);
             if (scanner.Current.Kind == TokenKind.StringLiteral)
             {
@@ -1160,6 +1347,8 @@ namespace Magic.Kernel.Compilation
                 emit();
             instructions.Add(CreatePushIntInstruction(printArgs.Count));
             instructions.Add(CreateCallInstruction("print"));
+            // Результат print в виде statement не используется — очищаем стек.
+            instructions.Add(CreatePopInstruction());
             return true;
         }
 
@@ -1184,6 +1373,8 @@ namespace Magic.Kernel.Compilation
 
             instructions.Add(CreatePushMemoryInstruction(targetVar.Index));
             instructions.Add(new InstructionNode { Opcode = "awaitobj" });
+            // await как отдельный statement — результат не используется.
+            instructions.Add(CreatePopInstruction());
             return true;
         }
 
@@ -1260,27 +1451,72 @@ namespace Magic.Kernel.Compilation
             if (!vars.TryGetValue(objectName, out var objVar))
                 throw new UndeclaredVariableException(objectName);
 
-            if (LooksLikeJsonLiteral(argText) && TryParseJsonArgument(argText, out var jsonArg))
+            if (LooksLikeJsonLiteral(argText))
             {
-                var objectSlot = memorySlotCounter++;
-                var init = jsonArg is JsonArrayNode ? "[]" : "{}";
-                instructions.Add(CreatePushStringInstruction(init));
-                instructions.Add(CreatePopMemoryInstruction(objectSlot));
-
-                EmitBuildJsonNode(jsonArg, objectSlot, "", vars, instructions);
-
-                instructions.Add(CreatePushMemoryInstruction(objVar.Index));
-                instructions.Add(CreatePushMemoryInstruction(objectSlot));
-                instructions.Add(CreatePushIntInstruction(1));
-                instructions.Add(new InstructionNode
+                // Argument inside (): allow object literal with ; (e.g. obj.method({ key: x; })). Only forbid ; in strict JSON.
+                if (TryParseObjectLiteralWithVarRefs(argText, out var keyVars) && keyVars != null && keyVars.Count > 0)
                 {
-                    Opcode = "callobj",
-                    Parameters = new List<ParameterNode>
+                    var objectSlot = memorySlotCounter++;
+                    instructions.Add(CreatePushStringInstruction("{}"));
+                    instructions.Add(CreatePopMemoryInstruction(objectSlot));
+                    foreach (var (key, varName) in keyVars)
                     {
-                        new FunctionNameParameterNode { FunctionName = methodName }
+                        if (!vars.TryGetValue(varName, out var valVar) || (valVar.Kind != "memory" && valVar.Kind != "stream" && valVar.Kind != "def"))
+                            return false;
+                        EmitOpJsonCall(
+                            objectSlot,
+                            "set",
+                            key,
+                            instructions,
+                            dataRef: new FunctionParameterNode
+                            {
+                                Name = "data",
+                                ParameterName = "data",
+                                EntityType = "memory",
+                                Index = valVar.Index
+                            });
                     }
-                });
-                return true;
+                    instructions.Add(CreatePushMemoryInstruction(objVar.Index));
+                    instructions.Add(CreatePushMemoryInstruction(objectSlot));
+                    instructions.Add(CreatePushIntInstruction(1));
+                    instructions.Add(new InstructionNode
+                    {
+                        Opcode = "callobj",
+                        Parameters = new List<ParameterNode>
+                        {
+                            new FunctionNameParameterNode { FunctionName = methodName }
+                        }
+                    });
+                    // Вызов метода как statement — результат не используется.
+                    instructions.Add(CreatePopInstruction());
+                    return true;
+                }
+                if (HasSemicolonInsideJsonLiteral(argText))
+                    throw new CompilationException("JSON literal cannot contain ';' inside object or array.", -1);
+                if (TryParseJsonArgument(argText, out var jsonArg))
+                {
+                    var objectSlot = memorySlotCounter++;
+                    var init = jsonArg is JsonArrayNode ? "[]" : "{}";
+                    instructions.Add(CreatePushStringInstruction(init));
+                    instructions.Add(CreatePopMemoryInstruction(objectSlot));
+
+                    EmitBuildJsonNode(jsonArg, objectSlot, "", vars, instructions);
+
+                    instructions.Add(CreatePushMemoryInstruction(objVar.Index));
+                    instructions.Add(CreatePushMemoryInstruction(objectSlot));
+                    instructions.Add(CreatePushIntInstruction(1));
+                    instructions.Add(new InstructionNode
+                    {
+                        Opcode = "callobj",
+                        Parameters = new List<ParameterNode>
+                        {
+                            new FunctionNameParameterNode { FunctionName = methodName }
+                        }
+                    });
+                    // Вызов метода как statement — результат не используется.
+                    instructions.Add(CreatePopInstruction());
+                    return true;
+                }
             }
 
             instructions.Add(CreatePushMemoryInstruction(objVar.Index));
@@ -1301,6 +1537,8 @@ namespace Magic.Kernel.Compilation
                     new FunctionNameParameterNode { FunctionName = methodName }
                 }
             });
+            // Вызов метода как statement — результат не используется.
+            instructions.Add(CreatePopInstruction());
             return true;
         }
 
@@ -1310,6 +1548,42 @@ namespace Magic.Kernel.Compilation
                 return false;
             var trimmed = text.TrimStart();
             return trimmed.StartsWith("{", StringComparison.Ordinal) || trimmed.StartsWith("[", StringComparison.Ordinal);
+        }
+
+        /// <summary>Returns true if there is a semicolon inside the top-level JSON object or array body (between matching { } or [ ]).</summary>
+        private static bool HasSemicolonInsideJsonLiteral(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return false;
+            var t = text.Trim();
+            if (t.Length < 2 || (t[0] != '{' && t[0] != '['))
+                return false;
+            var depth = 1;
+            var inString = false;
+            var escape = false;
+            var quote = '\0';
+            for (var i = 1; i < t.Length && depth > 0; i++)
+            {
+                var ch = t[i];
+                if (inString)
+                {
+                    if (escape) { escape = false; continue; }
+                    if (ch == '\\') { escape = true; continue; }
+                    if (ch == quote) { inString = false; continue; }
+                    continue;
+                }
+                if (ch == '"' || ch == '\'')
+                {
+                    inString = true;
+                    quote = ch;
+                    continue;
+                }
+                if (ch == '{' || ch == '[') { depth++; continue; }
+                if (ch == '}' || ch == ']') { depth--; continue; }
+                if (ch == ';' && depth >= 1)
+                    return true;
+            }
+            return false;
         }
 
         private static string ExtractRemainingExpressionText(string sourceLine, int startIndex)
@@ -1363,6 +1637,10 @@ namespace Magic.Kernel.Compilation
                 parameters.Add(new StringParameterNode { Name = "dataJson", Value = dataJson });
 
             instructions.Add(new InstructionNode { Opcode = "call", Parameters = parameters });
+            // opjson возвращает корень JSON на вершину стека.
+            // Везде, где мы его эмитим из компилятора, он используется только по side‑effect'у,
+            // поэтому сразу очищаем стек от результата.
+            instructions.Add(CreatePopInstruction());
         }
 
         private static void EmitBuildJsonNode(JsonArgumentNode node, long sourceIndex, string path, Dictionary<string, (string Kind, int Index)> vars, List<InstructionNode> instructions)
@@ -2016,6 +2294,15 @@ namespace Magic.Kernel.Compilation
             };
         }
 
+        private static InstructionNode CreatePopInstruction()
+        {
+            return new InstructionNode
+            {
+                Opcode = "pop",
+                Parameters = new List<ParameterNode>()
+            };
+        }
+
         private static InstructionNode CreatePopMemoryInstruction(long index)
         {
             return new InstructionNode
@@ -2558,6 +2845,61 @@ namespace Magic.Kernel.Compilation
             var success = CurrentScanner.Current.IsEndOfInput;
             if (!success) CurrentScanner.Restore(pos);
             return success;
+        }
+
+        private bool TryParseStreamWaitExpression(out string streamVarName)
+        {
+            streamVarName = "";
+            var pos = CurrentScanner.Save();
+            if (!IsIdentifier(CurrentScanner.Current, "streamwait"))
+                return false;
+            CurrentScanner.Scan();
+            if (CurrentScanner.Current.Kind != TokenKind.Identifier)
+            {
+                CurrentScanner.Restore(pos);
+                return false;
+            }
+            streamVarName = CurrentScanner.Scan().Value;
+            SkipSemicolon();
+            var success = CurrentScanner.Current.IsEndOfInput;
+            if (!success) CurrentScanner.Restore(pos);
+            return success;
+        }
+
+        private static bool TryParseObjectLiteralWithVarRefs(string valueText, out List<(string Key, string VarName)>? keyVars)
+        {
+            keyVars = null;
+            var trimmed = valueText.Trim();
+            var scanner = new Scanner(trimmed);
+            if (scanner.Current.Kind != TokenKind.LBrace)
+                return false;
+            scanner.Scan();
+            var list = new List<(string, string)>();
+            while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RBrace)
+            {
+                while (scanner.Current.Kind == TokenKind.Semicolon || scanner.Current.Kind == TokenKind.Comma)
+                    scanner.Scan();
+                if (scanner.Current.Kind == TokenKind.RBrace)
+                    break;
+                if (scanner.Current.Kind != TokenKind.Identifier)
+                    return false;
+                var key = scanner.Scan().Value ?? "";
+                if (scanner.Current.Kind != TokenKind.Colon)
+                    return false;
+                scanner.Scan();
+                while (scanner.Current.Kind == TokenKind.Semicolon)
+                    scanner.Scan();
+                if (scanner.Current.Kind != TokenKind.Identifier)
+                    return false;
+                var varName = scanner.Scan().Value ?? "";
+                list.Add((key, varName));
+                while (scanner.Current.Kind == TokenKind.Semicolon || scanner.Current.Kind == TokenKind.Comma)
+                    scanner.Scan();
+            }
+            if (scanner.Current.Kind != TokenKind.RBrace)
+                return false;
+            keyVars = list;
+            return true;
         }
 
         private bool TryParseCompileExpression(out string variableName)

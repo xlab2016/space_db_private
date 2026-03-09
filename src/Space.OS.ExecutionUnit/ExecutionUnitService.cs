@@ -35,7 +35,7 @@ public class ExecutionUnitService : IExecutionUnitService
             var comp = await _kernel.CompileAsync(programCode);
             if (!comp.Success)
                 return new ExecutionResult { Success = false, ErrorMessage = comp.ErrorMessage ?? "Compilation failed." };
-            var result = await _kernel.Interpreter.InterpreteAsync(comp.Result!);
+                var result = await _kernel.InterpreteAsync(comp.Result!);
             return new ExecutionResult { Success = result.Success, ErrorMessage = result.Success ? null : "Execution failed." };
         }
 
@@ -54,7 +54,7 @@ public class ExecutionUnitService : IExecutionUnitService
             var comp = await _kernel.CompileAsync(await File.ReadAllTextAsync(programPath));
             if (!comp.Success)
                 return new ExecutionResult { Success = false, ErrorMessage = comp.ErrorMessage ?? "Compilation failed." };
-            result2 = await _kernel.Interpreter.InterpreteAsync(comp.Result!);
+            result2 = await _kernel.InterpreteAsync(comp.Result!);
         }
 
         return new ExecutionResult { Success = result2.Success, ErrorMessage = result2.Success ? null : "Execution failed." };

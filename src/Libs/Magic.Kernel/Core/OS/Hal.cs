@@ -27,11 +27,26 @@ namespace Magic.Kernel.Core.OS
                 return new StreamDevice();
             if (string.Equals(typeObj as string, "vault", StringComparison.OrdinalIgnoreCase))
             {
-                var vault = new Vault();
-                vault.ExecutableUnit = executableUnit;
+                var vault = new Vault
+                {
+                    ExecutableUnit = executableUnit
+                };
+
+                var indexNames = new List<string?>
+                {
+                    executableUnit?.System,
+                    executableUnit?.Module,
+                    executableUnit?.Name
+                };
+
+                var indices = new List<int>();
+                if (executableUnit?.InstanceIndex is int instanceIndex)
+                    indices.Add(instanceIndex);
+
                 vault.Position = new StructurePosition
                 {
-                    IndexNames = new List<string> { executableUnit.System, executableUnit.Module, executableUnit.Name },
+                    IndexNames = indexNames.Where(n => n != null).Select(n => n!).ToList(),
+                    Indices = indices
                 };
                 return vault;
             }
@@ -111,11 +126,25 @@ namespace Magic.Kernel.Core.OS
             if (streamDevice == null && defType == null)
                 throw new DefGenTypeUnknownException(defObj);
 
+            var genSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var g in genValues)
+            {
+                if (g is string s)
+                    genSet.Add(s);
+            }
+            if (streamDevice != null && genSet.Contains("network") && genSet.Contains("file") && genSet.Contains("telegram"))
+            {
+                defType.Generalizations.Add(new Devices.Streams.TelegramNetworkFileStreamDevice());
+                return defObj;
+            }
+
             foreach (var g in genValues)
             {
                 if (string.Equals(g as string, "file", StringComparison.OrdinalIgnoreCase))
                     defType.Generalizations.Add(new FileStreamDevice());
                 else if (string.Equals(g as string, "messenger", StringComparison.OrdinalIgnoreCase))
+                    ;
+                else if (string.Equals(g as string, "network", StringComparison.OrdinalIgnoreCase))
                     ;
                 else if (string.Equals(g as string, "telegram", StringComparison.OrdinalIgnoreCase))
                     defType.Generalizations.Add(new Devices.Streams.Telegram());
@@ -162,13 +191,15 @@ namespace Magic.Kernel.Core.OS
         /// <summary>StreamWait output: switch on function name — "print" writes to console and adds to RuntimeOutputs.</summary>
         public static void StreamWaitAsync(ExecutableUnit? unit, string? functionName, object? value)
         {
+            var prefix = Magic.Kernel.Interpretation.ExecutionContext.GetPrefix(unit);
+
             switch (functionName?.ToLowerInvariant())
             {
                 case "print":
                     var display = value is string s ? s : (value is System.Collections.IDictionary or System.Collections.IEnumerable && value is not string
                         ? JsonSerializer.Serialize(value)
                         : value?.ToString() ?? "");
-                    Console.WriteLine("Streamwait output: " + display);
+                    Console.WriteLine(prefix + "Streamwait output: " + display);
                     if (unit != null)
                         unit.RuntimeOutputs.Add(value);
                     break;

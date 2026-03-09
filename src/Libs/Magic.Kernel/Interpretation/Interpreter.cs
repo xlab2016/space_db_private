@@ -63,35 +63,42 @@ namespace Magic.Kernel.Interpretation
 
             // SpaceName в ExecutableUnit: system|module|program для префикса ключей диска
             executableUnit.SpaceName = BuildSpaceName(executableUnit.System, executableUnit.Module, executableUnit.Name);
-            if (_configuration != null)
-                _configuration.CurrentExecutableUnit = executableUnit;
 
-            while (true)
+            var previousUnit = ExecutionContext.CurrentUnit;
+            ExecutionContext.CurrentUnit = executableUnit;
+            try
             {
-                if (_currentBlock == null)
-                    break;
-
-                // Implicit return when reaching end of a procedure/function body.
-                if (instructionPointer >= _currentBlock.Count)
+                while (true)
                 {
-                    if (_callStack.Count == 0)
+                    if (_currentBlock == null)
                         break;
 
-                    var frame = _callStack.Pop();
-                    _currentBlock = frame.Block;
-                    instructionPointer = frame.ReturnIp;
-                    continue;
+                    // Implicit return when reaching end of a procedure/function body.
+                    if (instructionPointer >= _currentBlock.Count)
+                    {
+                        if (_callStack.Count == 0)
+                            break;
+
+                        var frame = _callStack.Pop();
+                        _currentBlock = frame.Block;
+                        instructionPointer = frame.ReturnIp;
+                        continue;
+                    }
+
+                    var command = _currentBlock[(int)instructionPointer];
+                    instructionPointer++; // advance first; Call/Ret may override instructionPointer
+                    await ExecuteAsync(command);
                 }
 
-                var command = _currentBlock[(int)instructionPointer];
-                instructionPointer++; // advance first; Call/Ret may override instructionPointer
-                await ExecuteAsync(command);
+                return new InterpretationResult
+                {
+                    Success = true,
+                };
             }
-
-            return new InterpretationResult
+            finally
             {
-                Success = true,
-            };
+                ExecutionContext.CurrentUnit = previousUnit;
+            }
         }
 
         private async Task ExecuteAsync(Command command)
@@ -320,19 +327,25 @@ namespace Magic.Kernel.Interpretation
 
         private Task ExecutePopAsync(Command command)
         {
-            if (command.Operand1 is not MemoryAddress memoryAddress)
-            {
-                throw new InvalidOperationException($"Pop command expects MemoryAddress as Operand1, but got {command.Operand1?.GetType().Name ?? "null"}");
-            }
-
             if (Stack.Count == 0)
             {
-                throw new InvalidOperationException("Stack is empty. Cannot pop value.");
+                // Нечего снимать со стека — просто выходим.
+                return Task.CompletedTask;
+            }
+
+            // Вариант без операнда: просто снять верхнее значение со стека и отбросить.
+            if (command.Operand1 is not MemoryAddress memoryAddress)
+            {
+                Stack.RemoveAt(Stack.Count - 1);
+                return Task.CompletedTask;
             }
 
             if (memoryAddress.Index == null)
             {
-                throw new InvalidOperationException("Memory address index is not specified.");
+                // Исторически пустой pop мог компилироваться как pop с MemoryAddress без индекса.
+                // В таком случае ведём себя как унарный pop: просто снимаем верхнее значение.
+                Stack.RemoveAt(Stack.Count - 1);
+                return Task.CompletedTask;
             }
 
             // Извлекаем значение из стека
@@ -459,7 +472,7 @@ namespace Magic.Kernel.Interpretation
             {
                 var single = Stack[Stack.Count - 1];
                 Stack.RemoveAt(Stack.Count - 1);
-                Hal.StreamWaitAsync(_configuration?.CurrentExecutableUnit, null, single);
+                Hal.StreamWaitAsync(ExecutionContext.CurrentUnit, null, single);
                 return Task.CompletedTask;
             }
 
@@ -476,7 +489,7 @@ namespace Magic.Kernel.Interpretation
             Stack.RemoveAt(Stack.Count - 1);
             var fnName = fnObj?.ToString() ?? string.Empty;
 
-            Hal.StreamWaitAsync(_configuration?.CurrentExecutableUnit, fnName, args);
+            Hal.StreamWaitAsync(ExecutionContext.CurrentUnit, fnName, args);
             return Task.CompletedTask;
         }
 
@@ -490,9 +503,14 @@ namespace Magic.Kernel.Interpretation
 
             var streamWaitType = streamWaitTypeObj?.ToString() ?? "delta";
             var result = await Hal.StreamWaitObjAsync(obj, streamWaitType).ConfigureAwait(false);
-            Stack.Add(result.Aggregate!);
-            Stack.Add(result.Delta!);
-            Stack.Add(result.IsEnd ? 1L : 0L);
+            if (string.Equals(streamWaitType, "data", StringComparison.OrdinalIgnoreCase))
+                Stack.Add(result.Delta!);
+            else
+            {
+                Stack.Add(result.Aggregate!);
+                Stack.Add(result.Delta!);
+                Stack.Add(result.IsEnd ? 1L : 0L);
+            }
         }
 
         private async Task ExecuteAwaitObjAsync(Command command)
@@ -677,7 +695,7 @@ namespace Magic.Kernel.Interpretation
             switch (value)
             {
                 case null:
-                    return false;
+                    return true;
                 case byte b:
                     result = b;
                     return true;
@@ -713,6 +731,9 @@ namespace Magic.Kernel.Interpretation
                     return true;
                 case bool b:
                     result = b ? 1m : 0m;
+                    return true;
+                case object o:
+                    result = o != null ? 1m : 0m;
                     return true;
                 default:
                     return false;
