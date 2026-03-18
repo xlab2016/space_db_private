@@ -116,6 +116,7 @@ namespace Magic.Kernel.Interpretation
                     return true;
 
                 case "print":
+                case "println":
                     await ExecutePrintAsync(callInfo);
                     return true;
 
