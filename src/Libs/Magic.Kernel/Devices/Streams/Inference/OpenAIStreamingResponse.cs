@@ -2,7 +2,6 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Text;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Magic.Kernel.Devices;
@@ -49,10 +48,13 @@ namespace Magic.Kernel.Devices.Streams.Inference
 
         private async Task RunStreamAsync()
         {
-            // Delegate to the OpenAI driver if available, otherwise use a basic HTTP streaming implementation.
-            // The full implementation is provided by Magic.Drivers.Inference.OpenAI.
-            await Task.CompletedTask.ConfigureAwait(false);
-            _streamFinished = true;
+            var client = new Magic.Drivers.Inference.OpenAI.OpenAIHttpClient(_apiToken, _apiBase, _model);
+            await client.SendStreamingAsync(
+                _payload,
+                _history,
+                _systemPrompt,
+                delta => EnqueueDelta(delta),
+                () => FinishStream()).ConfigureAwait(false);
         }
 
         public override async Task<(bool IsEnd, object? Delta, object? Aggregate)> StreamWaitAsync(string streamWaitType)

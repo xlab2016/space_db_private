@@ -5,7 +5,4 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>Magic.Drivers.Inference.OpenAI</RootNamespace>
   </PropertyGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\Magic.Kernel\Magic.Kernel.csproj" />
-  </ItemGroup>
 </Project>
