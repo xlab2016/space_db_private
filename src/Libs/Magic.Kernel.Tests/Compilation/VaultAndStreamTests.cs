@@ -35,7 +35,7 @@ entrypoint {
             // Assert
             analyzed.Procedures.Should().ContainKey("Main");
             var asm = analyzed.Procedures["Main"].Body;
-            asm.Should().HaveCount(4);
+            asm.Should().HaveCount(5);
             asm[0].Opcode.Should().Be(Opcodes.Push);
             asm[1].Opcode.Should().Be(Opcodes.Push);
             asm[2].Opcode.Should().Be(Opcodes.Def);
@@ -70,7 +70,7 @@ entrypoint {
             // Assert
             analyzed.Procedures.Should().ContainKey("Main");
             var asm = analyzed.Procedures["Main"].Body;
-            asm.Should().HaveCount(9);
+            asm.Should().HaveCount(10);
             asm[0].Opcode.Should().Be(Opcodes.Push);
             asm[1].Opcode.Should().Be(Opcodes.Push);
             asm[2].Opcode.Should().Be(Opcodes.Def);
@@ -110,7 +110,7 @@ entrypoint {
             // Assert
             analyzed.Procedures.Should().ContainKey("Main");
             var asm = analyzed.Procedures["Main"].Body;
-            asm.Should().HaveCount(10);
+            asm.Should().HaveCount(11);
             asm[0].Opcode.Should().Be(Opcodes.Push);
             asm[1].Opcode.Should().Be(Opcodes.Push);
             asm[2].Opcode.Should().Be(Opcodes.Def);
@@ -446,6 +446,7 @@ entrypoint {
             asm.Should().Contain(c => c.Opcode == Opcodes.Cmp);
             asm.Should().Contain(c => c.Opcode == Opcodes.Je);
             asm.Should().Contain(c => c.Opcode == Opcodes.Jmp);
+            asm.Any(c => c.Opcode == Opcodes.ACall && c.Operand1 is CallInfo ci && ci.FunctionName.StartsWith("streamwait_loop_", StringComparison.Ordinal)).Should().BeTrue();
             asm.Should().Contain(c => c.Opcode == Opcodes.Await);
             asm.Any(c => c.Opcode == Opcodes.Call && c.Operand1 is CallInfo ci && ci.FunctionName == "compile").Should().BeTrue();
             asm.Any(c => c.Opcode == Opcodes.Call && c.Operand1 is CallInfo ci && ci.FunctionName == "print").Should().BeTrue();

@@ -164,7 +164,7 @@ static async Task RunProgramAsync(IHost host, List<string> args, string configPa
     InterpretationResult result;
     if (ext == ".agic" || ext == ".agiasm")
     {
-        result = await kernel.InterpreteCompiledFileAsync(filePath);
+        result = await kernel.InterpreteCompiledRootFileAsync(filePath);
     }
     else if (ext == ".agi")
     {
@@ -174,7 +174,7 @@ static async Task RunProgramAsync(IHost host, List<string> args, string configPa
             Console.WriteLine($"Compilation failed: {comp.ErrorMessage}");
             return;
         }
-        result = await kernel.InterpreteAsync(comp.Result!);
+        result = await kernel.InterpreteRootAsync(comp.Result!);
     }
     else
     {

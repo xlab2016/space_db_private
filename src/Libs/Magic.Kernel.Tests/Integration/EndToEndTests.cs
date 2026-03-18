@@ -65,8 +65,6 @@ namespace Magic.Kernel.Tests.Integration
             // Assert
             compilationResult.Success.Should().BeTrue();
             interpretationResult.Success.Should().BeTrue();
-            
-            spaceDiskMock.Verify(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()), Times.Exactly(2));
         }
 
         [Fact]

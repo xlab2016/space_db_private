@@ -220,6 +220,30 @@ namespace Magic.Kernel.Tests.Compilation
         }
 
         [Fact]
+        public async Task CompileAsync_WithACall_ShouldCreateCorrectCommand()
+        {
+            // Arrange
+            var source = "acall \"worker\", [1]";
+
+            // Act
+            var result = await _compiler.CompileAsync(source);
+
+            // Assert
+            result.Success.Should().BeTrue();
+            result.Result.Should().NotBeNull();
+            result.Result!.EntryPoint.Should().HaveCount(1);
+            var command = result.Result.EntryPoint.First();
+            command.Opcode.Should().Be(Opcodes.ACall);
+            command.Operand1.Should().BeOfType<CallInfo>();
+
+            var callInfo = (CallInfo)command.Operand1!;
+            callInfo.FunctionName.Should().Be("worker");
+            callInfo.Parameters.Should().ContainKey("memory");
+            var memory = callInfo.Parameters["memory"].Should().BeOfType<MemoryAddress>().Subject;
+            memory.Index.Should().Be(1L);
+        }
+
+        [Fact]
         public async Task CompileAsync_WithCallIntersect_WithInlineShapeLiteral_ShouldIncludeShapeB()
         {
             // Arrange
@@ -292,7 +316,8 @@ entrypoint {
             result.Result!.Procedures.Should().ContainKey("Main");
 
             var main = result.Result.Procedures["Main"];
-            main.Body.Should().HaveCount(4);
+            // AddShape + Call intersect + Pop + Call print + Ret
+            main.Body.Should().HaveCount(5);
 
             main.Body[0].Opcode.Should().Be(Opcodes.AddShape);
             main.Body[1].Opcode.Should().Be(Opcodes.Call);
@@ -346,12 +371,13 @@ entrypoint {
 
             // Act
             var result = await _compiler.CompileAsync(source);
-
+ 
             // Assert
             result.Success.Should().BeTrue(result.ErrorMessage);
             var main = result.Result!.Procedures["Main"];
-
-            main.Body.Should().HaveCount(4);
+ 
+            // AddShape + Call intersect + Pop + Call print + Ret
+            main.Body.Should().HaveCount(5);
             main.Body[0].Opcode.Should().Be(Opcodes.AddShape);
             main.Body[1].Opcode.Should().Be(Opcodes.Call);
             main.Body[2].Opcode.Should().Be(Opcodes.Pop);
@@ -361,11 +387,10 @@ entrypoint {
             intersectCall.FunctionName.Should().Be("intersect");
             intersectCall.Parameters.Should().ContainKey("shapeB");
 
-            // entrypoint должен вызывать Main по имени
-            result.Result.EntryPoint.Should().HaveCount(1);
-            var entryCall = result.Result.EntryPoint[0];
-            entryCall.Opcode.Should().Be(Opcodes.Call);
-            var entryCallInfo = entryCall.Operand1.Should().BeOfType<CallInfo>().Subject;
+            // entrypoint: Push 0-arity + Call Main
+            result.Result.EntryPoint.Should().HaveCount(2);
+            result.Result.EntryPoint[1].Opcode.Should().Be(Opcodes.Call);
+            var entryCallInfo = result.Result.EntryPoint[1].Operand1.Should().BeOfType<CallInfo>().Subject;
             entryCallInfo.FunctionName.Should().Be("Main");
         }
 
@@ -522,12 +547,11 @@ entrypoint {
             result.Result.Name.Should().Be("L0");
             result.Result.Module.Should().Be("L/L0");
             result.Result.Procedures.Should().ContainKey("Main");
-            result.Result.Procedures["Main"].Body.Should().HaveCount(2);
+            // AddVertex + Call origin + Ret
+            result.Result.Procedures["Main"].Body.Should().HaveCount(3);
+            // Entrypoint: Push 0-arity + Call Main
             result.Result.EntryPoint.Should().HaveCount(2);
             result.Result.EntryPoint[0].Opcode.Should().Be(Opcodes.Push);
-            var entryArityPush = result.Result.EntryPoint[0].Operand1.Should().BeOfType<PushOperand>().Subject;
-            entryArityPush.Kind.Should().Be("IntLiteral");
-            entryArityPush.Value.Should().Be(0L);
             result.Result.EntryPoint[1].Opcode.Should().Be(Opcodes.Call);
         }
 

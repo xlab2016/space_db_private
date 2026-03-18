@@ -56,13 +56,13 @@ public static class ExecutionUnitRunner
                     return new ExecutionResult { Success = false, ErrorMessage = $"Program file not found: {request.ProgramPath}" };
                 var ext = Path.GetExtension(request.ProgramPath).ToLowerInvariant();
                 if (ext == ".agic" || ext == ".agiasm")
-                    result = await kernel.InterpreteCompiledFileAsync(request.ProgramPath);
+                    result = await kernel.InterpreteCompiledRootFileAsync(request.ProgramPath);
                 else if (ext == ".agi")
                 {
                     var comp = await kernel.CompileAsync(await File.ReadAllTextAsync(request.ProgramPath));
                     if (!comp.Success)
                         return new ExecutionResult { Success = false, ErrorMessage = comp.ErrorMessage ?? "Compilation failed." };
-                    result = await kernel.InterpreteAsync(comp.Result!);
+                    result = await kernel.InterpreteRootAsync(comp.Result!);
                 }
                 else
                     return new ExecutionResult { Success = false, ErrorMessage = $"Unsupported extension: {ext}. Use .agi, .agic or .agiasm." };
@@ -72,7 +72,7 @@ public static class ExecutionUnitRunner
                 var comp = await kernel.CompileAsync(request.ProgramCode);
                 if (!comp.Success)
                     return new ExecutionResult { Success = false, ErrorMessage = comp.ErrorMessage ?? "Compilation failed." };
-                result = await kernel.InterpreteAsync(comp.Result!);
+                result = await kernel.InterpreteRootAsync(comp.Result!);
             }
             else
                 return new ExecutionResult { Success = false, ErrorMessage = "Provide ProgramPath or ProgramCode." };

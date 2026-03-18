@@ -1,3 +1,4 @@
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.8.34511.84
@@ -43,6 +44,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Space.OS.ExecutionUnit.Container", "Space.OS.ExecutionUnit.Container\Space.OS.ExecutionUnit.Container.csproj", "{B2C3D4E5-F6A7-8901-BCDE-F12345678901}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Space.OS.Simulator.Console", "Space.OS.Simulator.Console\Space.OS.Simulator.Console.csproj", "{C3D4E5F6-A7B8-9012-CDEF-123456789012}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Magic.Drivers.WTelegram", "Libs\Magic.Drivers.WTelegram\Magic.Drivers.WTelegram.csproj", "{CD98A14F-BE25-4F41-97F8-AE525A462BFC}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -294,6 +297,18 @@ Global
 		{C3D4E5F6-A7B8-9012-CDEF-123456789012}.Release|x64.Build.0 = Release|Any CPU
 		{C3D4E5F6-A7B8-9012-CDEF-123456789012}.Release|x86.ActiveCfg = Release|Any CPU
 		{C3D4E5F6-A7B8-9012-CDEF-123456789012}.Release|x86.Build.0 = Release|Any CPU
+		{CD98A14F-BE25-4F41-97F8-AE525A462BFC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CD98A14F-BE25-4F41-97F8-AE525A462BFC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CD98A14F-BE25-4F41-97F8-AE525A462BFC}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{CD98A14F-BE25-4F41-97F8-AE525A462BFC}.Debug|x64.Build.0 = Debug|Any CPU
+		{CD98A14F-BE25-4F41-97F8-AE525A462BFC}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{CD98A14F-BE25-4F41-97F8-AE525A462BFC}.Debug|x86.Build.0 = Debug|Any CPU
+		{CD98A14F-BE25-4F41-97F8-AE525A462BFC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CD98A14F-BE25-4F41-97F8-AE525A462BFC}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CD98A14F-BE25-4F41-97F8-AE525A462BFC}.Release|x64.ActiveCfg = Release|Any CPU
+		{CD98A14F-BE25-4F41-97F8-AE525A462BFC}.Release|x64.Build.0 = Release|Any CPU
+		{CD98A14F-BE25-4F41-97F8-AE525A462BFC}.Release|x86.ActiveCfg = Release|Any CPU
+		{CD98A14F-BE25-4F41-97F8-AE525A462BFC}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -312,6 +327,7 @@ Global
 		{2E28A24B-6D87-57B9-20B1-838C02ECD093} = {D706DD7D-F543-40E5-A8F1-0B11DA27D26D}
 		{427F6397-FCE6-4EB1-A45D-2B2765D922EE} = {D706DD7D-F543-40E5-A8F1-0B11DA27D26D}
 		{E8F9A1B2-3C4D-5E6F-7890-ABCDEF123456} = {D706DD7D-F543-40E5-A8F1-0B11DA27D26D}
+		{CD98A14F-BE25-4F41-97F8-AE525A462BFC} = {D706DD7D-F543-40E5-A8F1-0B11DA27D26D}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {0989C933-027C-481E-A961-1167A99C0239}

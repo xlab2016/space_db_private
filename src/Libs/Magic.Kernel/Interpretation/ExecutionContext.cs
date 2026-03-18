@@ -10,11 +10,44 @@ namespace Magic.Kernel.Interpretation
     public static class ExecutionContext
     {
         private static readonly AsyncLocal<ExecutableUnit?> currentUnit = new AsyncLocal<ExecutableUnit?>();
+        private static readonly AsyncLocal<Interpreter?> currentInterpreter = new AsyncLocal<Interpreter?>();
+        private static readonly AsyncLocal<Devices.Store.DatabaseDevice?> currentDatabase = new AsyncLocal<Devices.Store.DatabaseDevice?>();
+        private static readonly AsyncLocal<int> queryExecutionDepth = new AsyncLocal<int>();
 
         public static ExecutableUnit? CurrentUnit
         {
             get => currentUnit.Value;
             set => currentUnit.Value = value;
+        }
+
+        /// <summary>Current interpreter (set during execution) so devices can invoke lambdas (e.g. Table.any(predicate)).</summary>
+        public static Interpreter? CurrentInterpreter
+        {
+            get => currentInterpreter.Value;
+            set => currentInterpreter.Value = value;
+        }
+
+        /// <summary>Current runtime database (set when using Db). Used by Table.any to run predicate as SQL when lambda has ExprTree.</summary>
+        public static Devices.Store.DatabaseDevice? CurrentDatabase
+        {
+            get => currentDatabase.Value;
+            set => currentDatabase.Value = value;
+        }
+
+        public static bool IsExecutingQueryExpr
+        {
+            get => queryExecutionDepth.Value > 0;
+        }
+
+        public static void EnterQueryExprExecution()
+        {
+            queryExecutionDepth.Value++;
+        }
+
+        public static void ExitQueryExprExecution()
+        {
+            if (queryExecutionDepth.Value > 0)
+                queryExecutionDepth.Value--;
         }
 
         /// <summary>

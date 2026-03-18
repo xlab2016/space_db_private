@@ -31,6 +31,19 @@ namespace Magic.Kernel.Processor
         Jmp = 20,
         GetObj = 21,
         SetObj = 22,
-        StreamWait = 23
+        StreamWait = 23,
+        ACall = 24,
+        /// <summary>Start lambda: collect instructions until DefExpr into body, push LambdaValue(body), advance IP past DefExpr.</summary>
+        Expr = 25,
+        /// <summary>End lambda body (excluded from body). When inside lambda invocation: return from lambda.</summary>
+        DefExpr = 26,
+        /// <summary>No-op at runtime; marks end of lambda body before DefExpr (lambda ref already on stack from Expr).</summary>
+        Lambda = 27,
+        /// <summary>Pop b, pop a, push (a equals b).</summary>
+        Equals = 28,
+        /// <summary>Pop value, push logical negation using runtime truthiness rules.</summary>
+        Not = 29,
+        /// <summary>Pop b, pop a, push (a &lt; b) as 1L or 0L. Uses numeric comparison when both convert to number.</summary>
+        Lt = 30
     }
 }

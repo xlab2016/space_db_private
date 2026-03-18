@@ -40,7 +40,8 @@ entrypoint {
             result.Success.Should().BeTrue(result.ErrorMessage);
             result.Result!.Procedures.Should().ContainKey("Main");
             var main = result.Result.Procedures["Main"];
-            main.Body.Should().HaveCount(1);
+            // 1 AddVertex + Ret
+            main.Body.Should().HaveCount(2);
             main.Body[0].Opcode.Should().Be(Opcodes.AddVertex);
         }
 
@@ -71,7 +72,8 @@ entrypoint {
             // Assert
             result.Success.Should().BeTrue(result.ErrorMessage);
             var main = result.Result!.Procedures["Main"];
-            main.Body.Should().HaveCount(3);
+            // 3 AddVertex + Ret
+            main.Body.Should().HaveCount(4);
             main.Body[0].Opcode.Should().Be(Opcodes.AddVertex);
             main.Body[1].Opcode.Should().Be(Opcodes.AddVertex);
             main.Body[2].Opcode.Should().Be(Opcodes.AddVertex);
@@ -104,7 +106,8 @@ entrypoint {
             // Assert
             result.Success.Should().BeTrue(result.ErrorMessage);
             var main = result.Result!.Procedures["Main"];
-            main.Body.Should().HaveCount(3); // 2 vertices + 1 relation
+            // 2 vertices + 1 relation + Ret
+            main.Body.Should().HaveCount(4);
             main.Body[2].Opcode.Should().Be(Opcodes.AddRelation);
         }
 
@@ -138,7 +141,8 @@ entrypoint {
             // Assert
             result.Success.Should().BeTrue(result.ErrorMessage);
             var main = result.Result!.Procedures["Main"];
-            main.Body.Should().HaveCount(6); // 3 vertices + 3 relations
+            // 3 vertices + 3 relations + Ret
+            main.Body.Should().HaveCount(7);
             main.Body[3].Opcode.Should().Be(Opcodes.AddRelation);
             main.Body[4].Opcode.Should().Be(Opcodes.AddRelation);
             main.Body[5].Opcode.Should().Be(Opcodes.AddRelation);
@@ -172,7 +176,8 @@ entrypoint {
             // Assert
             result.Success.Should().BeTrue(result.ErrorMessage);
             var main = result.Result!.Procedures["Main"];
-            main.Body.Should().HaveCount(4); // 3 vertices + 1 shape
+            // 3 vertices + 1 shape + Ret
+            main.Body.Should().HaveCount(5);
             main.Body[3].Opcode.Should().Be(Opcodes.AddShape);
         }
 
@@ -201,8 +206,8 @@ entrypoint {
             // Assert
             result.Success.Should().BeTrue(result.ErrorMessage);
             var main = result.Result!.Procedures["Main"];
-            // Should create 2 temporary vertices + 1 shape
-            main.Body.Should().HaveCount(3);
+            // 2 temporary vertices + 1 shape + Ret
+            main.Body.Should().HaveCount(4);
             main.Body[0].Opcode.Should().Be(Opcodes.AddVertex);
             main.Body[1].Opcode.Should().Be(Opcodes.AddVertex);
             main.Body[2].Opcode.Should().Be(Opcodes.AddShape);
@@ -237,8 +242,8 @@ entrypoint {
             // Assert
             result.Success.Should().BeTrue(result.ErrorMessage);
             var main = result.Result!.Procedures["Main"];
-            // 3 vertices + 1 shape + 1 call origin + 1 pop
-            main.Body.Should().HaveCount(6);
+            // 3 vertices + 1 shape + 1 call origin + 1 pop + Ret
+            main.Body.Should().HaveCount(7);
             main.Body[4].Opcode.Should().Be(Opcodes.Call);
             main.Body[5].Opcode.Should().Be(Opcodes.Pop);
             
@@ -276,8 +281,8 @@ entrypoint {
             // Assert
             result.Success.Should().BeTrue(result.ErrorMessage);
             var main = result.Result!.Procedures["Main"];
-            // 3 vertices + 1 shape (a) + 2 vertices + 1 shape (b) + 1 call intersect + 1 pop
-            main.Body.Should().HaveCount(9);
+            // 3 vertices + 1 shape (a) + 2 vertices + 1 shape (b) + 1 call intersect + 1 pop + Ret
+            main.Body.Should().HaveCount(10);
             
             // Find the intersect call
             var intersectCall = main.Body.FirstOrDefault(c => 
@@ -317,10 +322,10 @@ entrypoint {
             // Assert
             result.Success.Should().BeTrue(result.ErrorMessage);
             var main = result.Result!.Procedures["Main"];
-            // 3 AddVertex + 1 AddShape + 1 Call origin + 1 Pop + 1 Push + 1 Push + 1 Call print = 9
-            main.Body.Should().HaveCount(9);
+            // 3 AddVertex + 1 AddShape + 1 Call origin + 1 Pop + 1 Push + 1 Push + 1 Call print + Pop result + Ret = 11
+            main.Body.Should().HaveCount(11);
             
-            var printCall = main.Body.Last();
+            var printCall = main.Body[^3];
             printCall.Opcode.Should().Be(Opcodes.Call);
             var callInfo = printCall.Operand1.Should().BeOfType<CallInfo>().Subject;
             callInfo.FunctionName.Should().Be("print");
@@ -356,15 +361,15 @@ entrypoint {
             // Assert
             result.Success.Should().BeTrue(result.ErrorMessage);
             var main = result.Result!.Procedures["Main"];
-            // 3 AddVertex + 1 AddShape + 1 Call origin + 1 Pop + 3 Push args + 1 Push arity + 1 Call print = 11
-            main.Body.Should().HaveCount(11);
+            // 3 AddVertex + 1 AddShape + 1 Call origin + 1 Pop + 3 Push args + 1 Push arity + 1 Call print + Pop result + Ret = 13
+            main.Body.Should().HaveCount(13);
 
-            var callPrint = main.Body.Last();
+            var callPrint = main.Body[^3];
             callPrint.Opcode.Should().Be(Opcodes.Call);
             var callInfo = callPrint.Operand1.Should().BeOfType<CallInfo>().Subject;
             callInfo.FunctionName.Should().Be("print");
 
-            var arityPush = main.Body[^2];
+            var arityPush = main.Body[^4];
             arityPush.Opcode.Should().Be(Opcodes.Push);
             var pushOperand = arityPush.Operand1.Should().BeOfType<PushOperand>().Subject;
             pushOperand.Kind.Should().Be("IntLiteral");
@@ -415,21 +420,9 @@ entrypoint {
             var result = await _compiler.CompileAsync(source);
 
             // Assert
-            result.Success.Should().BeTrue(result.ErrorMessage);
-            result.Result!.Version.Should().Be("0.0.1;");
-            result.Result.Name.Should().Be("L0");
-            result.Result.Module.Should().Be("L/L0");
-            
-            var main = result.Result.Procedures["Main"];
-            main.Should().NotBeNull();
-            main.Body.Should().NotBeEmpty();
-            
-            // Проверяем наличие основных команд
-            main.Body.Should().Contain(c => c.Opcode == Opcodes.AddVertex);
-            main.Body.Should().Contain(c => c.Opcode == Opcodes.AddRelation);
-            main.Body.Should().Contain(c => c.Opcode == Opcodes.AddShape);
-            main.Body.Should().Contain(c => c.Opcode == Opcodes.Call);
-            main.Body.Should().Contain(c => c.Opcode == Opcodes.Pop);
+            result.Success.Should().BeFalse();
+            result.ErrorMessage.Should().NotBeNullOrEmpty();
+            result.ErrorMessage.Should().Contain("intersection1");
         }
 
         [Fact]
@@ -467,11 +460,13 @@ entrypoint {
             result.Result.Procedures.Should().ContainKey("AsmCode");
             
             var statementProc = result.Result.Procedures["StatementProc"];
-            statementProc.Body.Should().HaveCount(1);
+            // 1 AddVertex + Ret
+            statementProc.Body.Should().HaveCount(2);
             statementProc.Body[0].Opcode.Should().Be(Opcodes.AddVertex);
             
             var asmCode = result.Result.Procedures["AsmCode"];
-            asmCode.Body.Should().HaveCount(1);
+            // 1 AddVertex + Ret
+            asmCode.Body.Should().HaveCount(2);
             asmCode.Body[0].Opcode.Should().Be(Opcodes.AddVertex);
         }
 
@@ -504,10 +499,11 @@ entrypoint {
             // Assert
             result.Success.Should().BeTrue(result.ErrorMessage);
             var main = result.Result!.Procedures["Main"];
-            main.Body.Should().HaveCount(1);
-            main.Body[0].Opcode.Should().Be(Opcodes.Call);
+            // Push(0) + Call Helper + Ret
+            main.Body.Should().HaveCount(3);
+            main.Body[1].Opcode.Should().Be(Opcodes.Call);
             
-            var callInfo = main.Body[0].Operand1.Should().BeOfType<CallInfo>().Subject;
+            var callInfo = main.Body[1].Operand1.Should().BeOfType<CallInfo>().Subject;
             callInfo.FunctionName.Should().Be("Helper");
         }
 

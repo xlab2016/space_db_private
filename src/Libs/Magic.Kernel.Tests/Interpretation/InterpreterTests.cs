@@ -265,6 +265,38 @@ namespace Magic.Kernel.Tests.Interpretation
         }
 
         [Fact]
+        public async Task InterpreteAsync_WithPrintLongString_ShouldTruncateOutput()
+        {
+            const string longText = "abcdefghijklmnopqrstuvwxyz";
+
+            var executableUnit = new ExecutableUnit
+            {
+                EntryPoint = new ExecutionBlock
+                {
+                    new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "StringLiteral", Value = longText } },
+                    new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "IntLiteral", Value = 1L } },
+                    new Command { Opcode = Opcodes.Call, Operand1 = new CallInfo { FunctionName = "print" } }
+                }
+            };
+
+            var originalOut = Console.Out;
+            using var writer = new StringWriter();
+            Console.SetOut(writer);
+            try
+            {
+                var result = await _interpreter.InterpreteAsync(executableUnit);
+
+                result.Success.Should().BeTrue();
+                writer.ToString().Should().Contain("abcde...xyz...[truncated]");
+                writer.ToString().Should().NotContain(longText);
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
+        }
+
+        [Fact]
         public async Task InterpreteAsync_WithCallIntoProcedureAndRet_ShouldReturnToCaller()
         {
             // Arrange
@@ -307,6 +339,132 @@ namespace Magic.Kernel.Tests.Interpretation
             result.Success.Should().BeTrue();
             _spaceDiskMock.Verify(x => x.AddVertex(It.Is<Vertex>(v => v.Index == 1), It.IsAny<string?>()), Times.Once);
             _spaceDiskMock.Verify(x => x.AddVertex(It.Is<Vertex>(v => v.Index == 2), It.IsAny<string?>()), Times.Once);
+        }
+
+        [Fact]
+        public async Task InterpreteFromEntryAsync_WithCallAndRuntime_ShouldExecuteProcedureInline()
+        {
+            var v1 = new Vertex { Index = 101 };
+            var v2 = new Vertex { Index = 202 };
+            var runtimeKernel = new MagicKernel();
+            runtimeKernel.Configuration.DefaultDisk = _spaceDiskMock.Object;
+            _interpreter.Configuration = new KernelConfiguration
+            {
+                DefaultDisk = _spaceDiskMock.Object,
+                Runtime = runtimeKernel.Runtime
+            };
+
+            var executableUnit = new ExecutableUnit
+            {
+                EntryPoint = new ExecutionBlock
+                {
+                    new Command
+                    {
+                        Opcode = Opcodes.Call,
+                        Operand1 = new CallInfo { FunctionName = "worker" }
+                    },
+                    new Command { Opcode = Opcodes.AddVertex, Operand1 = v2 }
+                },
+                Procedures = new Dictionary<string, Magic.Kernel.Processor.Procedure>
+                {
+                    ["worker"] = new Magic.Kernel.Processor.Procedure
+                    {
+                        Name = "worker",
+                        Body = new ExecutionBlock
+                        {
+                            new Command { Opcode = Opcodes.AddVertex, Operand1 = v1 },
+                            new Command { Opcode = Opcodes.Ret }
+                        }
+                    }
+                }
+            };
+
+            _spaceDiskMock
+                .Setup(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()))
+                .ReturnsAsync(SpaceOperationResult.Success);
+
+            var result = await _interpreter.InterpreteFromEntryAsync(executableUnit);
+
+            result.Success.Should().BeTrue();
+            _spaceDiskMock.Verify(x => x.AddVertex(It.Is<Vertex>(v => v.Index == 101), It.IsAny<string?>()), Times.Once);
+            _spaceDiskMock.Verify(x => x.AddVertex(It.Is<Vertex>(v => v.Index == 202), It.IsAny<string?>()), Times.Once);
+        }
+
+        [Fact]
+        public async Task InterpreteFromEntryAsync_WithACallAndRuntime_ShouldSpawnProcedureInParallel()
+        {
+            var v1 = new Vertex { Index = 301 };
+            var v2 = new Vertex { Index = 302 };
+            var runtimeKernel = new MagicKernel();
+            runtimeKernel.Configuration.DefaultDisk = _spaceDiskMock.Object;
+            runtimeKernel.Runtime.Start();
+
+            _interpreter.Configuration = new KernelConfiguration
+            {
+                DefaultDisk = _spaceDiskMock.Object,
+                Runtime = runtimeKernel.Runtime
+            };
+
+            var executed = new List<long?>();
+            var sync = new object();
+            var completed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            _spaceDiskMock
+                .Setup(x => x.AddVertex(It.IsAny<Vertex>(), It.IsAny<string?>()))
+                .ReturnsAsync(SpaceOperationResult.Success)
+                .Callback<Vertex, string?>((v, _) =>
+                {
+                    lock (sync)
+                    {
+                        executed.Add(v.Index);
+                        if (executed.Count >= 2)
+                            completed.TrySetResult(true);
+                    }
+                });
+
+            var executableUnit = new ExecutableUnit
+            {
+                EntryPoint = new ExecutionBlock
+                {
+                    new Command
+                    {
+                        Opcode = Opcodes.ACall,
+                        Operand1 = new CallInfo { FunctionName = "worker" }
+                    },
+                    new Command { Opcode = Opcodes.AddVertex, Operand1 = v2 }
+                },
+                Procedures = new Dictionary<string, Magic.Kernel.Processor.Procedure>
+                {
+                    ["worker"] = new Magic.Kernel.Processor.Procedure
+                    {
+                        Name = "worker",
+                        Body = new ExecutionBlock
+                        {
+                            new Command { Opcode = Opcodes.AddVertex, Operand1 = v1 },
+                            new Command { Opcode = Opcodes.Ret }
+                        }
+                    }
+                }
+            };
+
+            try
+            {
+                var result = await _interpreter.InterpreteFromEntryAsync(executableUnit);
+
+                result.Success.Should().BeTrue();
+                var finished = await Task.WhenAny(completed.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+                finished.Should().Be(completed.Task);
+
+                lock (sync)
+                {
+                    executed.Should().Contain(301);
+                    executed.Should().Contain(302);
+                }
+            }
+            finally
+            {
+                await runtimeKernel.Runtime.StopAsync();
+            }
         }
 
         [Fact]
@@ -466,5 +624,603 @@ namespace Magic.Kernel.Tests.Interpretation
             _interpreter.GlobalMemory.Should().ContainKey(21);
             _interpreter.GlobalMemory[21].Should().Be(1L);
         }
+
+        [Fact]
+        public async Task InterpreteFromEntryAsync_WhenRuntimeConfiguredAndExecutingEntryPoint_ShouldUseGlobalMemoryForIndexes()
+        {
+            _interpreter.Configuration!.Runtime = new MagicKernel().Runtime;
+            _interpreter.MemoryContext.Global[30] = 123L;
+            _interpreter.MemoryContext.Inherited[30] = 789L;
+
+            var executableUnit = new ExecutableUnit
+            {
+                EntryPoint = new ExecutionBlock
+                {
+                    new Command { Opcode = Opcodes.Push, Operand1 = new MemoryAddress { Index = 30 } },
+                    new Command { Opcode = Opcodes.Pop, Operand1 = new MemoryAddress { Index = 31 } }
+                }
+            };
+
+            var result = await _interpreter.InterpreteFromEntryAsync(executableUnit);
+
+            result.Success.Should().BeTrue();
+            _interpreter.MemoryContext.Global[31].Should().Be(123L);
+            _interpreter.MemoryContext.Local.Should().NotContainKey(31);
+        }
+
+        [Fact]
+        public async Task InterpreteFromEntryAsync_WhenRuntimeConfiguredAndExecutingProcedure_ShouldKeepUsingTaskLocalMemory()
+        {
+            _interpreter.Configuration!.Runtime = new MagicKernel().Runtime;
+            _interpreter.MemoryContext.Global[30] = 123L;
+            _interpreter.MemoryContext.Inherited[30] = 789L;
+
+            var executableUnit = new ExecutableUnit
+            {
+                Procedures = new Dictionary<string, Magic.Kernel.Processor.Procedure>
+                {
+                    ["worker"] = new Magic.Kernel.Processor.Procedure
+                    {
+                        Name = "worker",
+                        Body = new ExecutionBlock
+                        {
+                            new Command { Opcode = Opcodes.Push, Operand1 = new MemoryAddress { Index = 30 } },
+                            new Command { Opcode = Opcodes.Pop, Operand1 = new MemoryAddress { Index = 31 } }
+                        }
+                    }
+                }
+            };
+
+            var result = await _interpreter.InterpreteFromEntryAsync(executableUnit, "worker");
+
+            result.Success.Should().BeTrue();
+            _interpreter.MemoryContext.Local[31].Should().Be(789L);
+            _interpreter.MemoryContext.Global.Should().NotContainKey(31);
+        }
+
+        [Fact]
+        public async Task InterpreteFromEntryAsync_WhenRuntimeConfiguredAndPrintUsesMemoryAddress_ShouldReadInheritedMemory()
+        {
+            _interpreter.Configuration!.Runtime = new MagicKernel().Runtime;
+            _interpreter.MemoryContext.Inherited[30] = "from_inherited";
+
+            var executableUnit = new ExecutableUnit
+            {
+                Procedures = new Dictionary<string, Magic.Kernel.Processor.Procedure>
+                {
+                    ["worker"] = new Magic.Kernel.Processor.Procedure
+                    {
+                        Name = "worker",
+                        Body = new ExecutionBlock
+                        {
+                            new Command
+                            {
+                                Opcode = Opcodes.Call,
+                                Operand1 = new CallInfo
+                                {
+                                    FunctionName = "print",
+                                    Parameters = new Dictionary<string, object>
+                                    {
+                                        ["0"] = new MemoryAddress { Index = 30 }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+
+            var originalOut = Console.Out;
+            using var writer = new StringWriter();
+            Console.SetOut(writer);
+
+            try
+            {
+                var result = await _interpreter.InterpreteFromEntryAsync(executableUnit, "worker");
+
+                result.Success.Should().BeTrue();
+                writer.ToString().Should().Contain("from_inherited");
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
+        }
+
+        [Fact]
+        public async Task InterpreteFromEntryAsync_WhenRuntimeConfiguredAndSysCallUsesMemoryAddress_ShouldReadInheritedMemory()
+        {
+            _interpreter.Configuration!.Runtime = new MagicKernel().Runtime;
+            _interpreter.MemoryContext.Inherited[30] = 789L;
+
+            var executableUnit = new ExecutableUnit
+            {
+                Procedures = new Dictionary<string, Magic.Kernel.Processor.Procedure>
+                {
+                    ["worker"] = new Magic.Kernel.Processor.Procedure
+                    {
+                        Name = "worker",
+                        Body = new ExecutionBlock
+                        {
+                            new Command
+                            {
+                                Opcode = Opcodes.SysCall,
+                                Operand1 = new CallInfo
+                                {
+                                    FunctionName = "convert",
+                                    Parameters = new Dictionary<string, object>
+                                    {
+                                        ["value"] = new MemoryAddress { Index = 30 },
+                                        ["type"] = "string"
+                                    }
+                                }
+                            },
+                            new Command { Opcode = Opcodes.Pop, Operand1 = new MemoryAddress { Index = 31 } }
+                        }
+                    }
+                }
+            };
+
+            var result = await _interpreter.InterpreteFromEntryAsync(executableUnit, "worker");
+
+            result.Success.Should().BeTrue();
+            _interpreter.MemoryContext.Local[31].Should().Be("789");
+        }
+
+        [Fact]
+        public async Task InterpreteFromEntryAsync_WhenEntryNameIsEntryPointLabel_ShouldStartFromThatLabelAndPushArgs()
+        {
+            var originalOut = Console.Out;
+            using var writer = new StringWriter();
+            Console.SetOut(writer);
+
+            try
+            {
+                var executableUnit = new ExecutableUnit
+                {
+                    EntryPoint = new ExecutionBlock
+                    {
+                        new Command
+                        {
+                            Opcode = Opcodes.Push,
+                            Operand1 = new PushOperand { Kind = "StringLiteral", Value = "before_label" }
+                        },
+                        new Command
+                        {
+                            Opcode = Opcodes.Call,
+                            Operand1 = new CallInfo { FunctionName = "print" }
+                        },
+                        new Command { Opcode = Opcodes.Label, Operand1 = "worker" },
+                        new Command
+                        {
+                            Opcode = Opcodes.Call,
+                            Operand1 = new CallInfo { FunctionName = "print" }
+                        }
+                    }
+                };
+
+                var callInfo = new CallInfo
+                {
+                    FunctionName = "worker",
+                    Parameters = new Dictionary<string, object>
+                    {
+                        ["0"] = "from_label"
+                    }
+                };
+
+                var result = await _interpreter.InterpreteFromEntryAsync(executableUnit, "worker", callInfo);
+
+                result.Success.Should().BeTrue();
+                var output = writer.ToString();
+                output.Should().Contain("from_label");
+                output.Should().NotContain("before_label");
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
+        }
+
+        [Fact]
+        public async Task InterpreteFromEntryAsync_WhenEntryNameIsLabelInProvidedStartBlock_ShouldStartFromThatBlock()
+        {
+            var originalOut = Console.Out;
+            using var writer = new StringWriter();
+            Console.SetOut(writer);
+
+            try
+            {
+                var procedureBody = new ExecutionBlock
+                {
+                    new Command
+                    {
+                        Opcode = Opcodes.Push,
+                        Operand1 = new PushOperand { Kind = "StringLiteral", Value = "before_local_label" }
+                    },
+                    new Command
+                    {
+                        Opcode = Opcodes.Call,
+                        Operand1 = new CallInfo { FunctionName = "print" }
+                    },
+                    new Command { Opcode = Opcodes.Label, Operand1 = "streamwait_loop_1_delta" },
+                    new Command
+                    {
+                        Opcode = Opcodes.Call,
+                        Operand1 = new CallInfo { FunctionName = "print" }
+                    }
+                };
+
+                var executableUnit = new ExecutableUnit
+                {
+                    EntryPoint = new ExecutionBlock(),
+                    Procedures = new Dictionary<string, Magic.Kernel.Processor.Procedure>
+                    {
+                        ["worker"] = new Magic.Kernel.Processor.Procedure
+                        {
+                            Name = "worker",
+                            Body = procedureBody
+                        }
+                    }
+                };
+
+                var callInfo = new CallInfo
+                {
+                    FunctionName = "streamwait_loop_1_delta",
+                    Parameters = new Dictionary<string, object>
+                    {
+                        ["0"] = "from_local_label"
+                    }
+                };
+
+                var result = await _interpreter.InterpreteFromEntryAsync(
+                    executableUnit,
+                    "streamwait_loop_1_delta",
+                    callInfo,
+                    procedureBody);
+
+                result.Success.Should().BeTrue();
+                var output = writer.ToString();
+                output.Should().Contain("from_local_label");
+                output.Should().NotContain("before_local_label");
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
+        }
+
+        #region Equals, Lambda, Table.any
+
+        [Fact]
+        public async Task InterpreteAsync_Equals_TwoEqualValues_PushesTrue()
+        {
+            var executableUnit = new ExecutableUnit
+            {
+                EntryPoint = new ExecutionBlock
+                {
+                    new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "IntLiteral", Value = 5L } },
+                    new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "IntLiteral", Value = 5L } },
+                    new Command { Opcode = Opcodes.Equals }
+                }
+            };
+            var result = await _interpreter.InterpreteAsync(executableUnit);
+            result.Success.Should().BeTrue();
+            _interpreter.Stack.Should().HaveCount(1);
+            _interpreter.Stack[0].Should().Be(true);
+        }
+
+        [Fact]
+        public async Task InterpreteAsync_Equals_TwoDifferentValues_PushesFalse()
+        {
+            var executableUnit = new ExecutableUnit
+            {
+                EntryPoint = new ExecutionBlock
+                {
+                    new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "IntLiteral", Value = 5L } },
+                    new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "IntLiteral", Value = 10L } },
+                    new Command { Opcode = Opcodes.Equals }
+                }
+            };
+            var result = await _interpreter.InterpreteAsync(executableUnit);
+            result.Success.Should().BeTrue();
+            _interpreter.Stack.Should().HaveCount(1);
+            _interpreter.Stack[0].Should().Be(false);
+        }
+
+        [Fact]
+        public async Task InterpreteAsync_Not_TruthyValue_PushesZero_AndFalseyValue_PushesOne()
+        {
+            var truthyUnit = new ExecutableUnit
+            {
+                EntryPoint = new ExecutionBlock
+                {
+                    new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "IntLiteral", Value = 5L } },
+                    new Command { Opcode = Opcodes.Not }
+                }
+            };
+
+            var truthyResult = await _interpreter.InterpreteAsync(truthyUnit);
+            truthyResult.Success.Should().BeTrue();
+            _interpreter.Stack.Should().HaveCount(1);
+            _interpreter.Stack[0].Should().Be(0L);
+
+            _interpreter.Stack.Clear();
+
+            var falseyUnit = new ExecutableUnit
+            {
+                EntryPoint = new ExecutionBlock
+                {
+                    new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "IntLiteral", Value = 0L } },
+                    new Command { Opcode = Opcodes.Not }
+                }
+            };
+
+            var falseyResult = await _interpreter.InterpreteAsync(falseyUnit);
+            falseyResult.Success.Should().BeTrue();
+            _interpreter.Stack.Should().HaveCount(1);
+            _interpreter.Stack[0].Should().Be(1L);
+        }
+
+        [Fact]
+        public async Task InvokeLambdaAsync_WithMemberEquals_PredicateReturnsTrueWhenMatch()
+        {
+            var body = new ExecutionBlock
+            {
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "LambdaArg", Value = 0 } },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "StringLiteral", Value = "Time" } },
+                new Command { Opcode = Opcodes.GetObj },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "IntLiteral", Value = 42L } },
+                new Command { Opcode = Opcodes.Equals }
+            };
+            var lambda = new LambdaValue(body);
+            var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["Time"] = 42L };
+            var interp = new Interpreter();
+            var result = await interp.InvokeLambdaAsync(lambda, new object?[] { row });
+            result.Should().Be(true);
+        }
+
+        [Fact]
+        public async Task InvokeLambdaAsync_WithMemberEquals_PredicateReturnsFalseWhenNoMatch()
+        {
+            var body = new ExecutionBlock
+            {
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "LambdaArg", Value = 0 } },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "StringLiteral", Value = "Time" } },
+                new Command { Opcode = Opcodes.GetObj },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "IntLiteral", Value = 42L } },
+                new Command { Opcode = Opcodes.Equals }
+            };
+            var lambda = new LambdaValue(body);
+            var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["Time"] = 99L };
+            var interp = new Interpreter();
+            var result = await interp.InvokeLambdaAsync(lambda, new object?[] { row });
+            result.Should().Be(false);
+        }
+
+        [Fact]
+        public async Task InvokeLambdaAsync_WithDuplicatedLambdaArg_DoesNotLeakStackValues()
+        {
+            var body = new ExecutionBlock
+            {
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "LambdaArg", Value = 0 } },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "LambdaArg", Value = 0 } },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "StringLiteral", Value = "Time" } },
+                new Command { Opcode = Opcodes.GetObj },
+                new Command { Opcode = Opcodes.Push, Operand1 = new MemoryAddress { Index = 50 } },
+                new Command { Opcode = Opcodes.Equals }
+            };
+            var lambda = new LambdaValue(body);
+            var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["Time"] = 42L };
+            var interp = new Interpreter();
+            interp.MemoryContext.Local[50] = 42L;
+
+            var result = await interp.InvokeLambdaAsync(lambda, new object?[] { row });
+
+            result.Should().Be(true);
+            interp.Stack.Should().BeEmpty();
+        }
+
+        [Fact]
+        public async Task Table_Any_WithMatchingRow_ReturnsTrue()
+        {
+            var table = new Magic.Kernel.Data.Table();
+            table.PendingRows.Add(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["Time"] = 100L });
+            var body = new ExecutionBlock
+            {
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "LambdaArg", Value = 0 } },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "StringLiteral", Value = "Time" } },
+                new Command { Opcode = Opcodes.GetObj },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "IntLiteral", Value = 100L } },
+                new Command { Opcode = Opcodes.Equals }
+            };
+            var lambda = new LambdaValue(body);
+            Magic.Kernel.Interpretation.ExecutionContext.CurrentInterpreter = _interpreter;
+            try
+            {
+                var result = await table.CallObjAsync("any", new object?[] { lambda });
+                result.Should().Be(true);
+            }
+            finally
+            {
+                Magic.Kernel.Interpretation.ExecutionContext.CurrentInterpreter = null;
+            }
+        }
+
+        [Fact]
+        public async Task Table_Any_WithNoMatchingRow_ReturnsFalse()
+        {
+            var table = new Magic.Kernel.Data.Table();
+            table.PendingRows.Add(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["Time"] = 1L });
+            table.PendingRows.Add(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["Time"] = 2L });
+            var body = new ExecutionBlock
+            {
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "LambdaArg", Value = 0 } },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "StringLiteral", Value = "Time" } },
+                new Command { Opcode = Opcodes.GetObj },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "IntLiteral", Value = 42L } },
+                new Command { Opcode = Opcodes.Equals }
+            };
+            var lambda = new LambdaValue(body);
+            Magic.Kernel.Interpretation.ExecutionContext.CurrentInterpreter = _interpreter;
+            try
+            {
+                var result = await table.CallObjAsync("any", new object?[] { lambda });
+                result.Should().Be(false);
+            }
+            finally
+            {
+                Magic.Kernel.Interpretation.ExecutionContext.CurrentInterpreter = null;
+            }
+        }
+
+        [Fact]
+        public async Task Table_Mul_AddsPendingRowWithUpsertMarker()
+        {
+            var table = new Magic.Kernel.Data.Table();
+
+            var result = await table.CallObjAsync("mul", new object?[]
+            {
+                new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Id"] = 7L,
+                    ["Time"] = 123L
+                }
+            });
+
+            result.Should().BeSameAs(table);
+            table.PendingRows.Should().HaveCount(1);
+            table.PendingRows[0]["Id"].Should().Be(7L);
+            table.PendingRows[0]["Time"].Should().Be(123L);
+            table.PendingRows[0][Magic.Kernel.Data.Table.PendingWriteModeKey].Should().Be(Magic.Kernel.Data.Table.PendingWriteModeUpsert);
+        }
+
+        [Fact]
+        public async Task Table_Find_WithMatchingRow_ReturnsRowDictionary()
+        {
+            var table = new Magic.Kernel.Data.Table();
+            table.PendingRows.Add(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Id"] = 15L,
+                ["Time"] = 100L,
+                [Magic.Kernel.Data.Table.PendingWriteModeKey] = Magic.Kernel.Data.Table.PendingWriteModeUpsert
+            });
+            table.PendingRows.Add(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Id"] = 16L,
+                ["Time"] = 200L
+            });
+
+            var lambda = new LambdaValue(new ExecutionBlock
+            {
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "LambdaArg", Value = 0 } },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "StringLiteral", Value = "Time" } },
+                new Command { Opcode = Opcodes.GetObj },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "IntLiteral", Value = 100L } },
+                new Command { Opcode = Opcodes.Equals }
+            });
+
+            Magic.Kernel.Interpretation.ExecutionContext.CurrentInterpreter = _interpreter;
+            try
+            {
+                var query = await table.CallObjAsync("find", new object?[] { lambda });
+                query.Should().BeOfType<QueryExpr>();
+                var result = await ((QueryExpr)query!).AwaitObjAsync();
+                result.Should().BeOfType<Dictionary<string, object?>>();
+                var row = (Dictionary<string, object?>)result!;
+                row["Id"].Should().Be(15L);
+                row["Time"].Should().Be(100L);
+                row.ContainsKey(Magic.Kernel.Data.Table.PendingWriteModeKey).Should().BeFalse();
+            }
+            finally
+            {
+                Magic.Kernel.Interpretation.ExecutionContext.CurrentInterpreter = null;
+            }
+        }
+
+        [Fact]
+        public async Task Table_Where_Then_Max_WithLambdas_ReturnsFilteredMaximum()
+        {
+            var table = new Magic.Kernel.Data.Table();
+            table.PendingRows.Add(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["ChatId"] = "main", ["MessageId"] = 10L });
+            table.PendingRows.Add(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["ChatId"] = "other", ["MessageId"] = 99L });
+            table.PendingRows.Add(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["ChatId"] = "main", ["MessageId"] = 42L });
+
+            var whereLambda = new LambdaValue(new ExecutionBlock
+            {
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "LambdaArg", Value = 0 } },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "StringLiteral", Value = "ChatId" } },
+                new Command { Opcode = Opcodes.GetObj },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "StringLiteral", Value = "main" } },
+                new Command { Opcode = Opcodes.Equals }
+            });
+
+            var maxLambda = new LambdaValue(new ExecutionBlock
+            {
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "LambdaArg", Value = 0 } },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "StringLiteral", Value = "MessageId" } },
+                new Command { Opcode = Opcodes.GetObj }
+            });
+
+            Magic.Kernel.Interpretation.ExecutionContext.CurrentInterpreter = _interpreter;
+            try
+            {
+                var filtered = await table.CallObjAsync("where", new object?[] { whereLambda });
+                filtered.Should().BeOfType<QueryExpr>();
+
+                var resultQuery = await ((QueryExpr)filtered!).CallObjAsync("max", new object?[] { maxLambda });
+                resultQuery.Should().BeOfType<QueryExpr>();
+
+                var result = await ((QueryExpr)resultQuery!).AwaitObjAsync();
+                result.Should().Be(42L);
+            }
+            finally
+            {
+                Magic.Kernel.Interpretation.ExecutionContext.CurrentInterpreter = null;
+            }
+        }
+
+        [Fact]
+        public async Task QueryExpr_WhereThenMax_AwaitExecutesUnifiedChain()
+        {
+            var table = new Magic.Kernel.Data.Table();
+            table.PendingRows.Add(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["ChatId"] = "main", ["MessageId"] = 10L });
+            table.PendingRows.Add(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["ChatId"] = "other", ["MessageId"] = 99L });
+            table.PendingRows.Add(new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase) { ["ChatId"] = "main", ["MessageId"] = 42L });
+
+            var whereLambda = new LambdaValue(new ExecutionBlock
+            {
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "LambdaArg", Value = 0 } },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "StringLiteral", Value = "ChatId" } },
+                new Command { Opcode = Opcodes.GetObj },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "StringLiteral", Value = "main" } },
+                new Command { Opcode = Opcodes.Equals }
+            });
+
+            var maxLambda = new LambdaValue(new ExecutionBlock
+            {
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "LambdaArg", Value = 0 } },
+                new Command { Opcode = Opcodes.Push, Operand1 = new PushOperand { Kind = "StringLiteral", Value = "MessageId" } },
+                new Command { Opcode = Opcodes.GetObj }
+            });
+
+            Magic.Kernel.Interpretation.ExecutionContext.CurrentInterpreter = _interpreter;
+            try
+            {
+                var query = await table.CallObjAsync("where", new object?[] { whereLambda, 1L });
+                query.Should().BeOfType<QueryExpr>();
+
+                var finalQuery = await ((QueryExpr)query!).CallObjAsync("max", new object?[] { maxLambda, 0L });
+                finalQuery.Should().BeOfType<QueryExpr>();
+
+                var result = await ((QueryExpr)finalQuery!).AwaitObjAsync();
+                result.Should().Be(42L);
+            }
+            finally
+            {
+                Magic.Kernel.Interpretation.ExecutionContext.CurrentInterpreter = null;
+            }
+        }
+
+        #endregion
     }
 }

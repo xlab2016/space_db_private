@@ -81,27 +81,14 @@ namespace Magic.Kernel.Runtime
             {
                 var unit = await CompileArtifactAsync(command).ConfigureAwait(false);
                 unit.InstanceIndex = instanceIndex;
-
-                _ = Task.Run(async () =>
+                var result = await _kernel.InterpreteRootAsync(unit).ConfigureAwait(false);
+                if (!result.Success)
                 {
-                    try
-                    {
-                        var result = await _kernel.InterpreteAsync(unit).ConfigureAwait(false);
-                        if (!result.Success)
-                        {
-                            var prefix = Magic.Kernel.Interpretation.ExecutionContext.GetPrefix(unit);
-                            Console.WriteLine($"[{DateTime.UtcNow:o}] {prefix}interpretation finished with Success = false.");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        var prefix = Magic.Kernel.Interpretation.ExecutionContext.GetPrefix(unit);
-                        Console.WriteLine($"[{DateTime.UtcNow:o}] {prefix}unhandled exception in interpreter thread: {ex}");
-                    }
-                });
+                    var prefix = Magic.Kernel.Interpretation.ExecutionContext.GetPrefix(unit);
+                    Console.WriteLine($"[{DateTime.UtcNow:o}] {prefix}interpretation finished with Success = false.");
+                }
 
-                // Fire-and-forget: we successfully scheduled the work.
-                return true;
+                return result.Success;
             }
             catch (Exception ex)
             {

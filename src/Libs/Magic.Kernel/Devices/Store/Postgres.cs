@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Threading.Tasks;
 using Magic.Kernel.Data;
 using Magic.Kernel.Devices.Store.Drivers;
@@ -12,26 +13,26 @@ namespace Magic.Kernel.Devices.Store
         private string _connectionString = "";
         private bool _isOpened;
 
-        public Database? Database { get; set; }
+        public DatabaseDevice? Database { get; set; }
 
-        public async Task OpenAsync(string connectionString, Database database)
+        public async Task OpenAsync(string connectionString, DatabaseDevice database)
         {
             await _driver.OpenAsync(connectionString, database).ConfigureAwait(false);
         }
 
-        public async Task EnsureDatabaseAndSchemaAsync(string connectionString, Database database)
+        public async Task EnsureDatabaseAndSchemaAsync(string connectionString, DatabaseDevice database)
         {
             await _driver.EnsureDatabaseAndSchemaAsync(connectionString, database).ConfigureAwait(false);
         }
 
-        public async Task FlushPendingRowsAsync(string connectionString, Database database)
+        public async Task FlushPendingRowsAsync(string connectionString, DatabaseDevice database)
         {
             await _driver.FlushPendingRowsAsync(connectionString, database).ConfigureAwait(false);
         }
 
         public PostgresDriver Driver => _driver;
 
-        Table? IDatabaseDevice.FindTable(Database runtimeDatabase, string tableName)
+        Table? IDatabaseDevice.FindTable(DatabaseDevice runtimeDatabase, string tableName)
         {
             if (runtimeDatabase == null || string.IsNullOrWhiteSpace(tableName))
                 return null;
@@ -41,7 +42,7 @@ namespace Magic.Kernel.Devices.Store
             return _driver.FindTable(runtimeDatabase, sanitizedName);
         }
 
-        void IDatabaseDevice.UpsertTable(Database runtimeDatabase, string tableName, Table table)
+        void IDatabaseDevice.UpsertTable(DatabaseDevice runtimeDatabase, string tableName, Table table)
         {
             if (runtimeDatabase == null || string.IsNullOrWhiteSpace(tableName) || table == null)
                 return;
@@ -81,6 +82,30 @@ namespace Magic.Kernel.Devices.Store
             }
 
             throw new CallUnknownMethodException(name, this);
+        }
+
+        /// <summary>Returns 1 if table has at least one row matching predicate (ExprTree as SQL WHERE), 0 otherwise. Used by Table.any(lambda).</summary>
+        public async Task<long> AnyAsync(Table table, ExprTree whereExpr)
+        {
+            EnsureOpened();
+            var database = Database ?? throw new InvalidOperationException("Postgres is not attached to runtime database.");
+            return await _driver.AnyAsync(_connectionString, database, table, whereExpr).ConfigureAwait(false);
+        }
+
+        /// <summary>Returns MAX(columnName) over rows matching predicate (ExprTree as SQL WHERE). 0 when no rows.</summary>
+        public async Task<long> MaxAsync(Table table, ExprTree? whereExpr, string columnName)
+        {
+            EnsureOpened();
+            var database = Database ?? throw new InvalidOperationException("Postgres is not attached to runtime database.");
+            return await _driver.MaxAsync(_connectionString, database, table, whereExpr, columnName).ConfigureAwait(false);
+        }
+
+        public async Task<object?> ExecuteQueryAsync(Table table, QueryExpr query)
+        {
+            EnsureOpened();
+            var database = Database ?? throw new InvalidOperationException("Postgres is not attached to runtime database.");
+            await FlushPendingRowsAsync(_connectionString, database).ConfigureAwait(false);
+            return await _driver.ExecuteQueryAsync(_connectionString, database, table, query).ConfigureAwait(false);
         }
 
         public override async Task<object?> AwaitObjAsync()

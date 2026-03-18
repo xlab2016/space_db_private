@@ -2,10 +2,12 @@ using Magic.Kernel.Compilation;
 using Magic.Kernel.Core;
 using Magic.Kernel.Core.OS;
 using Magic.Kernel.Processor;
+using Magic.Kernel.Types;
 using Magic.Kernel.Space;
 using Magic.Kernel.Devices;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -22,6 +24,9 @@ namespace Magic.Kernel.Interpretation
 
         private readonly Stack<CallFrame> _callStack = new Stack<CallFrame>();
         private Dictionary<string, int> _currentLabelOffsets = new Dictionary<string, int>(StringComparer.Ordinal);
+        private bool _skipToDefExpr;
+        private readonly Stack<(ExecutionBlock Block, long ReturnIp)> _lambdaCallStack = new Stack<(ExecutionBlock, long)>();
+        private readonly Stack<object?[]> _lambdaArgsStack = new Stack<object?[]>();
 
         private sealed class CallFrame
         {
@@ -32,8 +37,15 @@ namespace Magic.Kernel.Interpretation
 
         public List<object> Stack = new List<object>();
         public List<object> Registers = new List<object>();
-        public Dictionary<long, object> Memory = new Dictionary<long, object>();
-        public Dictionary<long, object> GlobalMemory = new Dictionary<long, object>();
+
+        /// <summary>Слои памяти текущего интерпретатора.</summary>
+        public MemoryContext MemoryContext { get; } = new MemoryContext();
+
+        /// <summary>
+        /// Глобальная память интерпретатора (обертка над <see cref="MemoryContext"/> для обратной совместимости).
+        /// Старые тесты и код обращались к <c>GlobalMemory</c> напрямую.
+        /// </summary>
+        public Dictionary<long, object> GlobalMemory => MemoryContext.Global;
 
         public KernelConfiguration? Configuration
         {
@@ -54,12 +66,32 @@ namespace Magic.Kernel.Interpretation
 
         public async Task<InterpretationResult> InterpreteAsync(ExecutableUnit executableUnit)
         {
+            if (executableUnit == null)
+                throw new ArgumentNullException(nameof(executableUnit));
+
+            // Если сконфигурирован Erlang-подобный runtime, интерпретатор не выполняет unit сам,
+            // а только делает spawn entrypoint в TaskQueue. Это fire-and-forget, как spawn/1.
+            if (_configuration?.Runtime != null)
+            {
+                await _configuration.Runtime.SpawnAsync(executableUnit).ConfigureAwait(false);
+                return new InterpretationResult
+                {
+                    Success = true,
+                };
+            }
+
+            // Fallback: однопоточное выполнение entrypoint (старое поведение без runtime).
             instructionPointer = 0;
-            _unit = executableUnit ?? throw new ArgumentNullException(nameof(executableUnit));
+            _unit = executableUnit;
             _currentBlock = executableUnit.EntryPoint ?? new ExecutionBlock();
             _currentLabelOffsets = BuildLabelOffsets(_currentBlock);
             _callStack.Clear();
-            GlobalMemory.Clear();
+            MemoryContext.ClearLocalScopes();
+
+            // Для корневого запуска нет наследуемой памяти, локальная/глобальная начинаются с нуля.
+            MemoryContext.Inherited.Clear();
+            MemoryContext.Local.Clear();
+            MemoryContext.Global.Clear();
 
             // SpaceName в ExecutableUnit: system|module|program для префикса ключей диска
             executableUnit.SpaceName = BuildSpaceName(executableUnit.System, executableUnit.Module, executableUnit.Name);
@@ -78,7 +110,7 @@ namespace Magic.Kernel.Interpretation
                     {
                         if (_callStack.Count == 0)
                             break;
-
+                        MemoryContext.PopLocalScopeAndClear();
                         var frame = _callStack.Pop();
                         _currentBlock = frame.Block;
                         instructionPointer = frame.ReturnIp;
@@ -87,6 +119,15 @@ namespace Magic.Kernel.Interpretation
 
                     var command = _currentBlock[(int)instructionPointer];
                     instructionPointer++; // advance first; Call/Ret may override instructionPointer
+                    if (_skipToDefExpr)
+                    {
+                        if (command.Opcode == Opcodes.DefExpr)
+                        {
+                            await ExecuteDefExprAsync(command).ConfigureAwait(false);
+                            _skipToDefExpr = false;
+                        }
+                        continue;
+                    }
                     await ExecuteAsync(command);
                 }
 
@@ -99,6 +140,122 @@ namespace Magic.Kernel.Interpretation
             {
                 ExecutionContext.CurrentUnit = previousUnit;
             }
+        }
+
+        /// <summary>
+        /// Run unit starting at entry point or at the given procedure/function/label (for runtime spawn).
+        /// When entryName and callInfo are set, parameters are pushed onto stack (arg0..argN, then arity) and execution starts at that body.
+        /// </summary>
+        public async Task<InterpretationResult> InterpreteFromEntryAsync(ExecutableUnit executableUnit, string? entryName = null, Processor.CallInfo? callInfo = null, ExecutionBlock? startBlock = null)
+        {
+            _unit = executableUnit ?? throw new ArgumentNullException(nameof(executableUnit));
+            _callStack.Clear();
+            MemoryContext.ClearLocalScopes();
+            // Global / Inherited уже проставлены рантаймом как наследованные слои.
+            MemoryContext.Local.Clear();
+            executableUnit.SpaceName = BuildSpaceName(executableUnit.System, executableUnit.Module, executableUnit.Name);
+
+            if (!string.IsNullOrEmpty(entryName) && _unit.Procedures != null && _unit.Procedures.TryGetValue(entryName, out var proc))
+            {
+                _currentBlock = proc.Body ?? new ExecutionBlock();
+                instructionPointer = 0;
+                PushCallArgs(callInfo);
+            }
+            else if (!string.IsNullOrEmpty(entryName) && _unit.Functions != null && _unit.Functions.TryGetValue(entryName, out var func))
+            {
+                _currentBlock = func.Body ?? new ExecutionBlock();
+                instructionPointer = 0;
+                PushCallArgs(callInfo);
+            }
+            else if (!string.IsNullOrEmpty(entryName))
+            {
+                _currentBlock = startBlock ?? executableUnit.EntryPoint ?? new ExecutionBlock();
+                _currentLabelOffsets = BuildLabelOffsets(_currentBlock);
+
+                if (_currentLabelOffsets.TryGetValue(entryName, out var labelOffset))
+                {
+                    instructionPointer = labelOffset;
+                    PushCallArgs(callInfo);
+                }
+                else
+                {
+                    _currentBlock = executableUnit.EntryPoint ?? new ExecutionBlock();
+                    _currentLabelOffsets = BuildLabelOffsets(_currentBlock);
+
+                    if (_currentLabelOffsets.TryGetValue(entryName, out labelOffset))
+                    {
+                        instructionPointer = labelOffset;
+                        PushCallArgs(callInfo);
+                    }
+                    else
+                    {
+                        instructionPointer = 0;
+                    }
+                }
+            }
+            else
+            {
+                _currentBlock = executableUnit.EntryPoint ?? new ExecutionBlock();
+                instructionPointer = 0;
+            }
+
+            _currentLabelOffsets = BuildLabelOffsets(_currentBlock!);
+
+            var previousUnit = ExecutionContext.CurrentUnit;
+            ExecutionContext.CurrentUnit = executableUnit;
+            try
+            {
+                while (true)
+                {
+                    if (_currentBlock == null)
+                        break;
+                    if (instructionPointer >= _currentBlock.Count)
+                    {
+                        if (_callStack.Count == 0)
+                            break;
+                        MemoryContext.PopLocalScopeAndClear();
+                        var frame = _callStack.Pop();
+                        _currentBlock = frame.Block;
+                        _currentLabelOffsets = BuildLabelOffsets(_currentBlock);
+                        instructionPointer = frame.ReturnIp;
+                        continue;
+                    }
+                    var command = _currentBlock[(int)instructionPointer];
+                    instructionPointer++;
+                    if (_skipToDefExpr)
+                    {
+                        if (command.Opcode == Opcodes.DefExpr)
+                        {
+                            await ExecuteDefExprAsync(command).ConfigureAwait(false);
+                            _skipToDefExpr = false;
+                        }
+                        continue;
+                    }
+                    await ExecuteAsync(command);
+                }
+                return new InterpretationResult { Success = true };
+            }
+            finally
+            {
+                ExecutionContext.CurrentUnit = previousUnit;
+            }
+        }
+
+        private void PushCallArgs(Processor.CallInfo? callInfo)
+        {
+            if (callInfo?.Parameters == null || callInfo.Parameters.Count == 0)
+            {
+                Stack.Add(0);
+                return;
+            }
+            var indexed = callInfo.Parameters.Keys
+                .Where(k => k.Length <= 2 && k.All(char.IsDigit))
+                .OrderBy(k => int.Parse(k))
+                .Select(k => callInfo.Parameters[k])
+                .ToArray();
+            foreach (var v in indexed)
+                Stack.Add(v!);
+            Stack.Add(indexed.Length);
         }
 
         private async Task ExecuteAsync(Command command)
@@ -122,6 +279,10 @@ namespace Magic.Kernel.Interpretation
 
                 case Opcodes.Call:
                     await ExecuteCallAsync(command);
+                    break;
+
+                case Opcodes.ACall:
+                    await ExecuteACallAsync(command);
                     break;
 
                 case Opcodes.Pop:
@@ -170,6 +331,24 @@ namespace Magic.Kernel.Interpretation
                     break;
                 case Opcodes.StreamWait:
                     await ExecuteStreamWaitAsync(command);
+                    break;
+
+                case Opcodes.Expr:
+                    await ExecuteExprAsync(command);
+                    break;
+                case Opcodes.DefExpr:
+                    await ExecuteDefExprAsync(command);
+                    break;
+                case Opcodes.Lambda:
+                    break; // no-op; lambda ref already on stack from Expr
+                case Opcodes.Equals:
+                    await ExecuteEqualsAsync(command);
+                    break;
+                case Opcodes.Lt:
+                    await ExecuteLtAsync(command);
+                    break;
+                case Opcodes.Not:
+                    await ExecuteNotAsync(command);
                     break;
 
                 case Opcodes.SysCall:
@@ -247,26 +426,114 @@ namespace Magic.Kernel.Interpretation
 
         private async Task ExecuteCallAsync(Command command)
         {
-            if (command.Operand1 is not CallInfo callInfo)
-            {
-                throw new InvalidOperationException($"Call command expects CallInfo as Operand1, but got {command.Operand1?.GetType().Name ?? "null"}");
-            }
+            // Важно: не мутируем CallInfo, лежащий внутри команды (Operand1),
+            // чтобы байткод оставался иммутабельным во время исполнения.
+            var callInfoTemplate = GetCallInfo(command, "Call");
+            var callInfo = CloneCallInfo(callInfoTemplate);
+            PopulateCallParametersFromStack(callInfo);
+            await ExecuteResolvedCallAsync(callInfo).ConfigureAwait(false);
+        }
 
+        private async Task ExecuteACallAsync(Command command)
+        {
+            // Аналогично Call: работаем только с копией CallInfo.
+            var callInfoTemplate = GetCallInfo(command, "ACall");
+            var callInfo = CloneCallInfo(callInfoTemplate);
+            PopulateCallParametersFromStack(callInfo);
+
+            if (await TrySpawnCallAsync(callInfo).ConfigureAwait(false))
+                return;
+
+            await ExecuteResolvedCallAsync(callInfo).ConfigureAwait(false);
+        }
+
+        private CallInfo GetCallInfo(Command command, string opcodeName)
+        {
+            if (command.Operand1 is not CallInfo callInfo)
+                throw new InvalidOperationException($"{opcodeName} command expects CallInfo as Operand1, but got {command.Operand1?.GetType().Name ?? "null"}");
+
+            return callInfo;
+        }
+
+        private static CallInfo CloneCallInfo(CallInfo source)
+        {
+            var clone = new CallInfo
+            {
+                FunctionName = source.FunctionName,
+                Parameters = source.Parameters != null
+                    ? new Dictionary<string, object>(source.Parameters, StringComparer.Ordinal)
+                    : new Dictionary<string, object>(StringComparer.Ordinal)
+            };
+            return clone;
+        }
+
+        private void PopulateCallParametersFromStack(CallInfo callInfo)
+        {
             // Аргументы на стеке: сверху arity, под ним arg1, arg2, ...
-            if (callInfo.Parameters == null || callInfo.Parameters.Count == 0)
+            if ((callInfo.Parameters == null || callInfo.Parameters.Count == 0) && Stack.Count > 0)
             {
                 var (n, args) = PopArityAndArgs(extraRequired: 0);
                 callInfo.Parameters ??= new Dictionary<string, object>();
                 for (var i = 0; i < n; i++)
                     callInfo.Parameters[$"{i}"] = args[i]!;
             }
+        }
 
-            // 1) User-defined procedure/function in current executable unit
+        private async Task<bool> TrySpawnCallAsync(CallInfo callInfo)
+        {
+            if (_configuration?.Runtime == null || _unit == null || string.IsNullOrEmpty(callInfo.FunctionName))
+                return false;
+
+            string? entryNameForSpawn = null;
+            ExecutionBlock? startBlockForSpawn = null;
+
+            if (_unit.Procedures != null && _unit.Procedures.TryGetValue(callInfo.FunctionName, out var proc))
+            {
+                entryNameForSpawn = proc.Name;
+            }
+            else if (_unit.Functions != null && _unit.Functions.TryGetValue(callInfo.FunctionName, out var func))
+            {
+                entryNameForSpawn = func.Name;
+            }
+            else if (_currentBlock != null && _currentLabelOffsets.TryGetValue(callInfo.FunctionName, out _))
+            {
+                entryNameForSpawn = callInfo.FunctionName;
+                startBlockForSpawn = _currentBlock;
+            }
+
+            if (string.IsNullOrEmpty(entryNameForSpawn))
+                return false;
+
+            Dictionary<long, object>? inheritedLocal = null;
+            if (MemoryContext.Local.Count > 0)
+                inheritedLocal = new Dictionary<long, object>(MemoryContext.Local);
+
+            Dictionary<long, object>? inheritedGlobal = null;
+            if (MemoryContext.Global.Count > 0)
+                inheritedGlobal = new Dictionary<long, object>(MemoryContext.Global);
+
+            await _configuration.Runtime.SpawnAsync(
+                _unit,
+                entryNameForSpawn,
+                callInfo,
+                tag: null,
+                inheritedLocalMemory: inheritedLocal,
+                inheritedGlobalMemory: inheritedGlobal,
+                startBlock: startBlockForSpawn
+            ).ConfigureAwait(false);
+
+            return true;
+        }
+
+        private async Task ExecuteResolvedCallAsync(CallInfo callInfo)
+        {
+            // 1) User-defined procedure/function in current executable unit.
             if (_unit != null)
             {
                 if (_unit.Procedures != null && _unit.Procedures.TryGetValue(callInfo.FunctionName, out var proc))
                 {
                     if (_currentBlock == null) throw new InvalidOperationException("Interpreter current block is not initialized.");
+                    MemoryContext.PushLocalScope();
                     _callStack.Push(new CallFrame { Block = _currentBlock, ReturnIp = instructionPointer, Name = proc.Name });
                     _currentBlock = proc.Body ?? new ExecutionBlock();
                     _currentLabelOffsets = BuildLabelOffsets(_currentBlock);
@@ -277,6 +544,7 @@ namespace Magic.Kernel.Interpretation
                 if (_unit.Functions != null && _unit.Functions.TryGetValue(callInfo.FunctionName, out var func))
                 {
                     if (_currentBlock == null) throw new InvalidOperationException("Interpreter current block is not initialized.");
+                    MemoryContext.PushLocalScope();
                     _callStack.Push(new CallFrame { Block = _currentBlock, ReturnIp = instructionPointer, Name = func.Name });
                     _currentBlock = func.Body ?? new ExecutionBlock();
                     _currentLabelOffsets = BuildLabelOffsets(_currentBlock);
@@ -285,19 +553,20 @@ namespace Magic.Kernel.Interpretation
                 }
             }
 
-            // 1.5) Локальная подпрограмма по label в текущем блоке (для streamwait-loop делегатов и прочих локальных "функций").
+            // 2) Локальная подпрограмма по label в текущем блоке (для streamwait-loop делегатов и прочих локальных "функций").
             if (_currentBlock != null && !string.IsNullOrEmpty(callInfo.FunctionName) &&
                 _currentLabelOffsets.TryGetValue(callInfo.FunctionName, out _))
             {
+                MemoryContext.PushLocalScope();
                 _callStack.Push(new CallFrame { Block = _currentBlock, ReturnIp = instructionPointer, Name = callInfo.FunctionName });
                 instructionPointer = ResolveLabelOffset(callInfo.FunctionName);
                 return;
             }
 
-            // 2) Fallback: system functions (backward compatible behavior)
+            // 3) Fallback: system functions (backward compatible behavior)
             var vaultReader = _configuration?.VaultReader ?? new EnvironmentVaultReader();
-            var systemFunctions = new SystemFunctions(_configuration, Stack, Memory, vaultReader);
-            var handled = await systemFunctions.ExecuteAsync(callInfo);
+            var systemFunctions = CreateSystemFunctions(vaultReader);
+            var handled = await systemFunctions.ExecuteAsync(callInfo).ConfigureAwait(false);
 
             if (!handled)
                 throw new NotImplementedException($"Function '{callInfo.FunctionName}' is not implemented (not found in Procedures/Functions and not a system function).");
@@ -310,7 +579,7 @@ namespace Magic.Kernel.Interpretation
             }
 
             var vaultReader = _configuration?.VaultReader ?? new EnvironmentVaultReader();
-            var systemFunctions = new SystemFunctions(_configuration, Stack, Memory, vaultReader);
+            var systemFunctions = CreateSystemFunctions(vaultReader);
             var handled = await systemFunctions.ExecuteAsync(callInfo);
 
             if (!handled)
@@ -327,6 +596,7 @@ namespace Magic.Kernel.Interpretation
                 return Task.CompletedTask;
             }
 
+            MemoryContext.PopLocalScopeAndClear();
             var frame = _callStack.Pop();
             _currentBlock = frame.Block;
             _currentLabelOffsets = BuildLabelOffsets(_currentBlock);
@@ -362,28 +632,39 @@ namespace Magic.Kernel.Interpretation
             Stack.RemoveAt(Stack.Count - 1);
 
             // Сохраняем в память: верхний executionUnit — по умолчанию GlobalMemory
-            var targetMemory = ResolveMemory(memoryAddress, forWrite: true);
-            targetMemory[memoryAddress.Index!.Value] = value;
+            MemoryContext.Write(memoryAddress, value, IsExecutingEntryPoint(), _configuration?.Runtime != null);
             return Task.CompletedTask;
         }
 
-        /// <summary>Верхний (корневой) executionUnit — push/pop по умолчанию в GlobalMemory; при вызове процедур — в Memory.</summary>
-        private Dictionary<long, object> ResolveMemory(MemoryAddress memoryAddress, bool forWrite)
+        private SystemFunctions CreateSystemFunctions(IVaultReader vaultReader)
         {
-            if (memoryAddress.IsGlobal) return GlobalMemory;
-            if (_callStack.Count == 0) return GlobalMemory; // topmost unit: default to global
-            return Memory;
+            return new SystemFunctions(
+                _configuration,
+                Stack,
+                memoryAddress =>
+                {
+                    var found = MemoryContext.TryRead(memoryAddress, IsExecutingEntryPoint(), out var value);
+                    return (found, value);
+                },
+                (memoryAddress, value) =>
+                {
+                    MemoryContext.Write(memoryAddress, value, IsExecutingEntryPoint(), _configuration?.Runtime != null);
+                },
+                vaultReader);
+        }
+
+        private bool IsExecutingEntryPoint()
+        {
+            return _unit?.EntryPoint != null
+                && _currentBlock != null
+                && ReferenceEquals(_currentBlock, _unit.EntryPoint);
         }
 
         private Task ExecutePushAsync(Command command)
         {
             if (command.Operand1 is MemoryAddress memoryAddress)
             {
-                if (memoryAddress.Index == null)
-                    throw new InvalidOperationException("Memory address index is not specified.");
-                var sourceMemory = ResolveMemory(memoryAddress, forWrite: false);
-                if (!sourceMemory.TryGetValue(memoryAddress.Index.Value, out var value))
-                    throw new InvalidOperationException($"Memory[{memoryAddress.Index.Value}] is not set. Cannot push.");
+                var value = MemoryContext.Read(memoryAddress, IsExecutingEntryPoint());
                 Stack.Add(value);
                 return Task.CompletedTask;
             }
@@ -394,6 +675,9 @@ namespace Magic.Kernel.Interpretation
                     "Type" => po.Value,
                     "IntLiteral" => po.Value,
                     "StringLiteral" => po.Value,
+                    "LambdaArg" => _lambdaArgsStack.Count > 0 && po.Value is int argIndex && argIndex >= 0 && argIndex < _lambdaArgsStack.Peek().Length
+                        ? _lambdaArgsStack.Peek()[argIndex]
+                        : null,
                     _ => null
                 };
                 Stack.Add(val!);
@@ -438,9 +722,18 @@ namespace Magic.Kernel.Interpretation
             (_, var args) = PopArityAndArgs(extraRequired: 1);
             var obj = Stack[Stack.Count - 1];
             Stack.RemoveAt(Stack.Count - 1);
-            var methodName = command.Operand1 as string ?? "";  
-            var result = await Hal.CallObjAsync(obj, methodName, args).ConfigureAwait(false);
-            Stack.Add(result!);
+            var methodName = command.Operand1 as string ?? "";
+            var previous = ExecutionContext.CurrentInterpreter;
+            ExecutionContext.CurrentInterpreter = this;
+            try
+            {
+                var result = await Hal.CallObjAsync(obj, methodName, args).ConfigureAwait(false);
+                Stack.Add(result!);
+            }
+            finally
+            {
+                ExecutionContext.CurrentInterpreter = previous;
+            }
         }
 
         private Task ExecuteGetObjAsync(Command command)
@@ -467,6 +760,203 @@ namespace Magic.Kernel.Interpretation
             var updated = Hal.SetObj(obj, memberNameObj?.ToString(), value);
             Stack.Add(updated!);
             return Task.CompletedTask;
+        }
+
+        private Task ExecuteExprAsync(Command command)
+        {
+            if (_currentBlock == null) throw new InvalidOperationException("Expr: no current block.");
+            // instructionPointer already points to first instruction after Expr (main loop incremented it before calling us)
+            var body = new ExecutionBlock();
+            long ip = instructionPointer;
+            while (ip < _currentBlock.Count)
+            {
+                var cmd = _currentBlock[(int)ip];
+                if (cmd.Opcode == Opcodes.DefExpr)
+                    break;
+                body.Add(cmd);
+                ip++;
+            }
+            // Leave instructionPointer at first body instruction; main loop will skip until DefExpr then run ExecuteDefExprAsync
+            Stack.Add(new LambdaValue(body));
+            _skipToDefExpr = true;
+            return Task.CompletedTask;
+        }
+
+        /// <summary>Build ExprTree from lambda body; resolves push [slot]/pop [slot] via MemoryContext.</summary>
+        private ExprTree? TryBuildExprTreeFromBody(IReadOnlyList<Command> body)
+        {
+            if (body == null || body.Count == 0)
+                return null;
+            var exprStack = new Stack<ExprTree>();
+            var exprMemory = new Dictionary<long, ExprTree>();
+            var isEntry = IsExecutingEntryPoint();
+            foreach (var cmd in body)
+            {
+                switch (cmd.Opcode)
+                {
+                    case Opcodes.Push:
+                        if (cmd.Operand1 is MemoryAddress ma && ma.Index.HasValue)
+                        {
+                            if (exprMemory.TryGetValue(ma.Index.Value, out var stored))
+                                exprStack.Push(stored);
+                            else
+                            {
+                                var value = MemoryContext.Read(ma, isEntry);
+                                exprStack.Push(new ExprConstant(value));
+                            }
+                            break;
+                        }
+                        if (cmd.Operand1 is PushOperand po)
+                        {
+                            if (po.Kind == "LambdaArg" && (po.Value is int iArg || (po.Value is long lArg && lArg >= 0 && lArg <= int.MaxValue)))
+                            {
+                                exprStack.Push(new ExprParameter(po.Value is int i ? i : (int)(long)po.Value));
+                                break;
+                            }
+                            if (po.Kind == "StringLiteral" && po.Value is string s)
+                            {
+                                exprStack.Push(new ExprConstant(s));
+                                break;
+                            }
+                            if (po.Kind == "IntLiteral" && po.Value != null)
+                            {
+                                exprStack.Push(new ExprConstant(po.Value));
+                                break;
+                            }
+                        }
+                        return null;
+                    case Opcodes.Pop:
+                        if (exprStack.Count == 0)
+                            return null;
+                        var top = exprStack.Pop();
+                        if (cmd.Operand1 is MemoryAddress popMa && popMa.Index.HasValue)
+                            exprMemory[popMa.Index.Value] = top;
+                        break;
+                    case Opcodes.GetObj:
+                        if (exprStack.Count < 2)
+                            return null;
+                        var memberNameNode = exprStack.Pop();
+                        var target = exprStack.Pop();
+                        if (memberNameNode is not ExprConstant nameConst || nameConst.Value is not string memberName)
+                            return null;
+                        exprStack.Push(new ExprMemberAccess(target, memberName));
+                        break;
+                    case Opcodes.Equals:
+                        if (exprStack.Count < 2)
+                            return null;
+                        var right = exprStack.Pop();
+                        var left = exprStack.Pop();
+                        exprStack.Push(new ExprEqual(left, right));
+                        break;
+                    case Opcodes.Lambda:
+                        if (exprStack.Count == 0)
+                            return null;
+                        var lambdaBody = exprStack.Pop();
+                        var args = new List<ExprTree>();
+                        while (exprStack.Count > 0)
+                        {
+                            // вставляем в начало, чтобы сохранить порядок push-ей как порядок аргументов
+                            args.Insert(0, exprStack.Pop());
+                        }
+                        exprStack.Push(new ExprLambda(args, lambdaBody));
+                        break;
+                    default:
+                        return null;
+                }
+            }
+            return exprStack.Count == 1 ? exprStack.Pop() : null;
+        }
+
+        private Task ExecuteDefExprAsync(Command command)
+        {
+            // If top of stack is LambdaValue without ExprTree: build tree from body (with memory resolution) and replace with LambdaValue(body, tree)
+            if (Stack.Count > 0 && Stack[Stack.Count - 1] is LambdaValue lv && lv.ExprTree == null)
+            {
+                Stack.RemoveAt(Stack.Count - 1);
+                var tree = TryBuildExprTreeFromBody(lv.Body);
+                Stack.Add(new LambdaValue(lv.Body, tree));
+                return Task.CompletedTask;
+            }
+            if (_lambdaCallStack.Count > 0)
+            {
+                var (block, returnIp) = _lambdaCallStack.Pop();
+                _lambdaArgsStack.Pop();
+                _currentBlock = block;
+                _currentLabelOffsets = BuildLabelOffsets(block);
+                instructionPointer = returnIp;
+            }
+            return Task.CompletedTask;
+        }
+
+        private Task ExecuteEqualsAsync(Command command)
+        {
+            if (Stack.Count < 2) throw new InvalidOperationException("Equals: stack underflow.");
+            var b = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            var a = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            var eq = a == null ? b == null : (b != null && a.Equals(b));
+            Stack.Add(eq);
+            return Task.CompletedTask;
+        }
+
+        private Task ExecuteNotAsync(Command command)
+        {
+            if (Stack.Count < 1) throw new InvalidOperationException("Not: stack underflow.");
+            var value = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            Stack.Add(IsTruthy(value) ? 0L : 1L);
+            return Task.CompletedTask;
+        }
+
+        private Task ExecuteLtAsync(Command command)
+        {
+            if (Stack.Count < 2) throw new InvalidOperationException("Lt: stack underflow.");
+            var b = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            var a = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            var lt = CompareForLt(a, b);
+            Stack.Add(lt ? 1L : 0L);
+            return Task.CompletedTask;
+        }
+
+        private static bool CompareForLt(object? a, object? b)
+        {
+            if (a is FloatDecimal leftFloatDecimal && b is FloatDecimal rightFloatDecimal)
+                return leftFloatDecimal < rightFloatDecimal;
+
+            if (TryConvertToDecimal(a, out var leftNum) && TryConvertToDecimal(b, out var rightNum))
+                return leftNum < rightNum;
+            var sa = a?.ToString() ?? "";
+            var sb = b?.ToString() ?? "";
+            return string.Compare(sa, sb, StringComparison.Ordinal) < 0;
+        }
+
+        /// <summary>Invoke a lambda with given arguments. Used by devices (e.g. Table.any(predicate)).</summary>
+        public async Task<object?> InvokeLambdaAsync(LambdaValue lambda, object?[] args)
+        {
+            if (lambda == null) throw new ArgumentNullException(nameof(lambda));
+            var stackBase = Stack.Count;
+            _lambdaArgsStack.Push(args ?? Array.Empty<object?>());
+            object? result = null;
+            try
+            {
+                foreach (var cmd in lambda.Body)
+                    await ExecuteAsync(cmd);
+                if (Stack.Count > stackBase)
+                {
+                    result = Stack[Stack.Count - 1];
+                    Stack.RemoveRange(stackBase, Stack.Count - stackBase);
+                }
+            }
+            finally
+            {
+                if (Stack.Count > stackBase)
+                    Stack.RemoveRange(stackBase, Stack.Count - stackBase);
+                _lambdaArgsStack.Pop();
+            }
+            return result;
         }
 
         private Task ExecuteStreamWaitAsync(Command command)
@@ -646,26 +1136,14 @@ namespace Magic.Kernel.Interpretation
 
         private bool TryResolveMemoryValue(MemoryAddress memoryAddress, out object? value)
         {
-            value = null;
-            if (!memoryAddress.Index.HasValue)
-                return false;
-
-            var index = memoryAddress.Index.Value;
-            var preferredMemory = ResolveMemory(memoryAddress, forWrite: false);
-            if (preferredMemory.TryGetValue(index, out value))
-                return true;
-
-            // Fallback: tolerate values that may be placed in the other scope.
-            if (!ReferenceEquals(preferredMemory, Memory) && Memory.TryGetValue(index, out value))
-                return true;
-            if (!ReferenceEquals(preferredMemory, GlobalMemory) && GlobalMemory.TryGetValue(index, out value))
-                return true;
-
-            return false;
+            return MemoryContext.TryRead(memoryAddress, IsExecutingEntryPoint(), out value);
         }
 
         private static bool AreCmpValuesEqual(object? left, object? right)
         {
+            if (left is FloatDecimal leftFloatDecimal && right is FloatDecimal rightFloatDecimal)
+                return leftFloatDecimal == rightFloatDecimal;
+
             if (TryConvertToDecimal(left, out var leftNumber) && TryConvertToDecimal(right, out var rightNumber))
                 return leftNumber == rightNumber;
 
@@ -692,6 +1170,7 @@ namespace Magic.Kernel.Interpretation
                 float f => f != 0f,
                 double d => d != 0d,
                 decimal dm => dm != 0m,
+                FloatDecimal fd => !fd.IsZero,
                 string str => !string.IsNullOrEmpty(str) &&
                               (str.Equals("true", StringComparison.OrdinalIgnoreCase) || str == "1"),
                 _ => true
@@ -738,14 +1217,16 @@ namespace Magic.Kernel.Interpretation
                 case decimal dm:
                     result = dm;
                     return true;
+                case FloatDecimal fd when fd.IsFinite &&
+                                          decimal.TryParse(fd.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed):
+                    result = parsed;
+                    return true;
                 case bool b:
                     result = b ? 1m : 0m;
                     return true;
                 case object o:
                     result = o != null ? 1m : 0m;
                     return true;
-                default:
-                    return false;
             }
         }
 

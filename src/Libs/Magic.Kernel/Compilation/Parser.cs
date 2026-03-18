@@ -22,7 +22,7 @@ namespace Magic.Kernel.Compilation
         private void AddRangeAsStatement(int start, int end, List<string> output)
         {
             if (start < 0 || end <= start) return;
-            var text = CurrentScanner.Slice(start, end).Trim();
+            var text = NormalizeInstructionText(CurrentScanner.Slice(start, end).Trim());
             if (!string.IsNullOrWhiteSpace(text))
                 output.Add(text);
         }
@@ -71,7 +71,7 @@ namespace Magic.Kernel.Compilation
                     continue;
                 }
 
-                if (pendingSpace && sb.Length > 0 && sb[sb.Length - 1] != ' ')
+                if (pendingSpace && sb.Length > 0 && sb[sb.Length - 1] != ' ' && sb[sb.Length - 1] != '.')
                     sb.Append(' ');
                 pendingSpace = false;
                 sb.Append(ch);
@@ -120,6 +120,19 @@ namespace Magic.Kernel.Compilation
 
                 if (depth == 1 && (tok.Kind == TokenKind.Semicolon || tok.Kind == TokenKind.Newline))
                 {
+                    // Разрешаем переносы строк в цепочках вызовов вида:
+                    // db.Table<>.
+                    //   where(...)
+                    //   .max(...);
+                    // Если текущий statement оканчивается на '.', не разрываем его по Newline.
+                    if (tok.Kind == TokenKind.Newline && currentStart >= 0 && currentEnd > currentStart)
+                    {
+                        var slice = CurrentScanner.Slice(currentStart, currentEnd).TrimEnd();
+                        if (slice.EndsWith(".", StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+                    }
                     AddRangeAsStatement(currentStart, currentEnd, result);
                     currentStart = -1;
                     currentEnd = -1;
@@ -568,6 +581,7 @@ namespace Magic.Kernel.Compilation
             "addrelation",
             "addshape",
             "call",
+            "acall",
             "pop",
             "push",
             "nop",
@@ -583,7 +597,8 @@ namespace Magic.Kernel.Compilation
             "jmp",
             "getobj",
             "setobj",
-            "streamwait"
+            "streamwait",
+            "not"
         };
 
         private bool NextAsmTokenStartsOpcode()

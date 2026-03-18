@@ -8,7 +8,7 @@ using Magic.Kernel.Data;
 namespace Magic.Kernel.Devices.Store
 {
     /// <summary>Runtime database def-type that delegates to driver generalizations.</summary>
-    public class Database : DefType, IDatabaseDevice
+    public class DatabaseDevice : DefType, IDatabaseDevice
     {
         public override async Task<object?> CallObjAsync(string methodName, object?[] args)
         {
@@ -54,7 +54,7 @@ namespace Magic.Kernel.Devices.Store
         private List<IDefType> GetDriverGeneralizations()
             => Generalizations.Where(g => g is not Data.Database).ToList();
 
-        Table? IDatabaseDevice.FindTable(Database runtimeDatabase, string tableName)
+        Table? IDatabaseDevice.FindTable(DatabaseDevice runtimeDatabase, string tableName)
         {
             if (runtimeDatabase == null || string.IsNullOrWhiteSpace(tableName))
                 return null;
@@ -63,7 +63,7 @@ namespace Magic.Kernel.Devices.Store
             return device?.FindTable(runtimeDatabase, tableName);
         }
 
-        void IDatabaseDevice.UpsertTable(Database runtimeDatabase, string tableName, Table table)
+        void IDatabaseDevice.UpsertTable(DatabaseDevice runtimeDatabase, string tableName, Table table)
         {
             if (runtimeDatabase == null || string.IsNullOrWhiteSpace(tableName) || table == null)
                 return;

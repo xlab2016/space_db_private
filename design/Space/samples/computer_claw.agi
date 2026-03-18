@@ -1,0 +1,11 @@
+@AGI 0.0.1;
+
+program computer_claw;
+system samples;
+module claw;
+
+use computer;
+
+export api {
+	computer;
+}

@@ -21,9 +21,8 @@ namespace Magic.Kernel.Tests.Interpretation
         }
 
         [Fact]
-        public async Task VaultRead_ShouldPushValueFromVaultReader()
+        public async Task VaultRead_ShouldNotBeHandledBySystemFunctions()
         {
-            // Arrange
             var stack = new List<object>();
             var memory = new Dictionary<long, object>();
             var cfg = new KernelConfiguration();
@@ -39,66 +38,11 @@ namespace Magic.Kernel.Tests.Interpretation
                 }
             };
 
-            // Act
             var handled = await sys.ExecuteAsync(callInfo);
 
-            // Assert
-            handled.Should().BeTrue();
-            fakeVault.LastKey.Should().Be("TOKEN_KEY");
-            stack.Should().HaveCount(1);
-            stack[0].Should().Be("secret-value");
-        }
-
-        [Fact]
-        public async Task VaultRead_WhenReaderReturnsNull_ShouldPushEmptyString()
-        {
-            // Arrange
-            var stack = new List<object>();
-            var memory = new Dictionary<long, object>();
-            var cfg = new KernelConfiguration();
-            var fakeVault = new FakeVaultReader { ValueToReturn = null };
-            var sys = new SystemFunctions(cfg, stack, memory, fakeVault);
-
-            var callInfo = new CallInfo
-            {
-                FunctionName = "vault_read",
-                Parameters = new Dictionary<string, object>
-                {
-                    ["0"] = "MISSING"
-                }
-            };
-
-            // Act
-            var handled = await sys.ExecuteAsync(callInfo);
-
-            // Assert
-            handled.Should().BeTrue();
-            stack.Should().HaveCount(1);
-            stack[0].Should().Be(string.Empty);
-        }
-
-        [Fact]
-        public async Task VaultRead_WithoutKeyParam_ShouldThrow()
-        {
-            // Arrange
-            var stack = new List<object>();
-            var memory = new Dictionary<long, object>();
-            var cfg = new KernelConfiguration();
-            var fakeVault = new FakeVaultReader();
-            var sys = new SystemFunctions(cfg, stack, memory, fakeVault);
-
-            var callInfo = new CallInfo
-            {
-                FunctionName = "vault_read",
-                Parameters = new Dictionary<string, object>()
-            };
-
-            // Act
-            var act = () => sys.ExecuteAsync(callInfo);
-
-            // Assert
-            await Assert.ThrowsAsync<InvalidOperationException>(act);
+            handled.Should().BeFalse();
             stack.Should().BeEmpty();
+            fakeVault.LastKey.Should().BeNull();
         }
     }
 }

@@ -27,6 +27,7 @@ namespace Magic.Kernel.Compilation
                     break;
 
                 case Opcodes.Call:
+                case Opcodes.ACall:
                     command.Operand1 = BuildCallInfo(parameters ?? new List<ParameterNode>());
                     break;
 
@@ -54,6 +55,10 @@ namespace Magic.Kernel.Compilation
                 case Opcodes.Push:
                     command.Operand1 = BuildPushOperand(parameters);
                     break;
+
+                case Opcodes.Lambda:
+                    command.Operand1 = BuildLambdaMetadata(parameters);
+                    break;
             }
 
             return command;
@@ -77,6 +82,11 @@ namespace Magic.Kernel.Compilation
         public Command EmitCall(List<ParameterNode> parameters)
         {
             return Emit(Opcodes.Call, parameters);
+        }
+
+        public Command EmitACall(List<ParameterNode> parameters)
+        {
+            return Emit(Opcodes.ACall, parameters);
         }
 
         public Command EmitCallObj(List<ParameterNode>? parameters)
@@ -318,6 +328,16 @@ namespace Magic.Kernel.Compilation
                         callParams[stringParamName] = stringParam.Value ?? string.Empty;
                         break;
 
+                    case TypeLiteralParameterNode typeLiteralParam:
+                        var typeParamName = !string.IsNullOrWhiteSpace(typeLiteralParam.Name) ? typeLiteralParam.Name : "0";
+                        callParams[typeParamName] = typeLiteralParam.TypeName ?? string.Empty;
+                        break;
+
+                    case IndexParameterNode indexParam when indexParam.Name != "int":
+                        var indexParamName = !string.IsNullOrWhiteSpace(indexParam.Name) ? indexParam.Name : "0";
+                        callParams[indexParamName] = indexParam.Value;
+                        break;
+
                     case ComplexValueParameterNode complexParam:
                         var complexParamName = !string.IsNullOrWhiteSpace(complexParam.ParameterName) ? complexParam.ParameterName : complexParam.Name;
                         // Поддержка inline entity literals в call, например:
@@ -478,7 +498,21 @@ namespace Magic.Kernel.Compilation
                 return new PushOperand { Kind = "IntLiteral", Value = idx.Value };
             if (p is StringParameterNode str && (p.Name == "string" || !string.IsNullOrEmpty(str.Value)))
                 return new PushOperand { Kind = "StringLiteral", Value = str.Value ?? "" };
+            if (p is LambdaArgParameterNode lambdaArg)
+                return new PushOperand { Kind = "LambdaArg", Value = lambdaArg.Index };
             return new MemoryAddress { Index = 0 };
+        }
+
+        private static object? BuildLambdaMetadata(List<ParameterNode>? parameters)
+        {
+            var lambdaParams = parameters?
+                .OfType<LambdaParametersParameterNode>()
+                .FirstOrDefault();
+
+            if (lambdaParams == null || lambdaParams.Parameters.Count == 0)
+                return null;
+
+            return lambdaParams.Parameters.Cast<object>().ToList();
         }
 
         private (MemoryAddress left, long right) BuildCmpOperands(List<ParameterNode>? parameters)

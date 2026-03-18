@@ -1,0 +1,32 @@
+@AGI 0.0.1;
+
+program use_computer_claw;
+system samples;
+module claw;
+
+procedure Main {
+	var vault1 := vault;
+	var userName := vault1.read("userName");
+	var password := vault1.read("password");
+	var fileName := vault1.read("fileName");
+	var claw1 := stream<claw, computer, user>;
+	stream1.open({
+		url: "127.0.0.1",
+		userName: userName,
+		password: password,
+		secure: true
+	});
+
+	var spacePath := #"space://{fileName}";
+	var file := await claw1.call("file.read", spacePath);
+	
+	var stream1 := stream<file>;
+	stream1.open({ 
+		fileName: spacePath
+	});
+	await stream1.write(file);
+}
+
+entrypoint {
+	Main;
+}

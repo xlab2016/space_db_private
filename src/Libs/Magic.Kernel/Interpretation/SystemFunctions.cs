@@ -4,6 +4,8 @@ using Magic.Kernel.Devices;
 using Magic.Kernel.Devices.SSC;
 using Magic.Kernel.Devices.Streams;
 using Magic.Kernel.Functions;
+using Magic.Kernel.Runtime;
+using Magic.Kernel.Types;
 using Magic.Kernel;
 using System;
 using System.Collections.Generic;
@@ -49,7 +51,8 @@ namespace Magic.Kernel.Interpretation
     {
         private readonly KernelConfiguration? _configuration;
         private readonly List<object> _stack;
-        private readonly Dictionary<long, object> _memory;
+        private readonly Func<MemoryAddress, (bool Found, object? Value)> _memoryReader;
+        private readonly Action<MemoryAddress, object?> _memoryWriter;
         private readonly PrintFunctions _printFunctions;
         private readonly IVaultReader _vaultReader;
 
@@ -59,12 +62,49 @@ namespace Magic.Kernel.Interpretation
         }
 
         public SystemFunctions(KernelConfiguration? configuration, List<object> stack, Dictionary<long, object> memory, IVaultReader vaultReader)
+            : this(
+                configuration,
+                stack,
+                memoryAddress =>
+                {
+                    if (memoryAddress.Index.HasValue && memory.TryGetValue(memoryAddress.Index.Value, out var memoryValue))
+                    {
+                        return (true, memoryValue);
+                    }
+
+                    return (false, null);
+                },
+                (memoryAddress, value) =>
+                {
+                    if (!memoryAddress.Index.HasValue)
+                        throw new InvalidOperationException("Memory address index is not specified.");
+
+                    memory[memoryAddress.Index.Value] = value!;
+                },
+                vaultReader)
+        {
+        }
+
+        internal SystemFunctions(
+            KernelConfiguration? configuration,
+            List<object> stack,
+            Func<MemoryAddress, (bool Found, object? Value)> memoryReader,
+            Action<MemoryAddress, object?> memoryWriter,
+            IVaultReader vaultReader)
         {
             _configuration = configuration;
             _stack = stack;
-            _memory = memory;
-            _printFunctions = new PrintFunctions(configuration, stack, memory);
+            _memoryReader = memoryReader ?? throw new ArgumentNullException(nameof(memoryReader));
+            _memoryWriter = memoryWriter ?? throw new ArgumentNullException(nameof(memoryWriter));
+            _printFunctions = new PrintFunctions(configuration, stack, memoryReader);
             _vaultReader = vaultReader ?? throw new ArgumentNullException(nameof(vaultReader));
+        }
+
+        private bool TryReadMemory(MemoryAddress memoryAddress, out object? value)
+        {
+            var result = _memoryReader(memoryAddress);
+            value = result.Value;
+            return result.Found;
         }
 
         public async Task<bool> ExecuteAsync(CallInfo callInfo)
@@ -104,9 +144,57 @@ namespace Magic.Kernel.Interpretation
                     await ExecuteConvertAsync(callInfo);
                     return true;
 
+                case "spawn":
+                    await ExecuteSpawnAsync(callInfo);
+                    return true;
+
+                case "unit":
+                    await ExecuteUnitAsync(callInfo);
+                    return true;
+
+                case "format":
+                    await ExecuteFormatAsync(callInfo);
+                    return true;
+
                 default:
                     return false;
             }
+        }
+
+        /// <summary>Erlang-like spawn: enqueue task (current unit + procedure/function) to runtime TaskQueue. Pushes 0 (ok) on stack.</summary>
+        private async Task ExecuteSpawnAsync(CallInfo callInfo)
+        {
+            var unit = ExecutionContext.CurrentUnit;
+            if (unit == null)
+                throw new InvalidOperationException("spawn requires current execution unit (ExecutionContext.CurrentUnit).");
+            var runtime = _configuration?.Runtime;
+            if (runtime == null)
+                throw new InvalidOperationException("spawn requires KernelConfiguration.Runtime (start kernel with StartKernel).");
+
+            string? entryName = null;
+            if (callInfo.Parameters.TryGetValue("0", out var nameObj))
+                entryName = nameObj?.ToString();
+            else if (callInfo.Parameters.TryGetValue("name", out var n))
+                entryName = n?.ToString();
+
+            CallInfo? spawnCallInfo = null;
+            if (callInfo.Parameters != null)
+            {
+                var args = callInfo.Parameters
+                    .Where(p => p.Key != "name" && p.Key != "0")
+                    .OrderBy(p => int.TryParse(p.Key, out var i) ? i : 999)
+                    .Select(p => p.Value)
+                    .ToList();
+                if (args.Count > 0)
+                {
+                    spawnCallInfo = new CallInfo { FunctionName = entryName ?? "" };
+                    for (var i = 0; i < args.Count; i++)
+                        spawnCallInfo.Parameters[$"{i}"] = args[i]!;
+                }
+            }
+
+            await runtime.SpawnAsync(unit, entryName, spawnCallInfo).ConfigureAwait(false);
+            _stack.Add(0); // ok
         }
 
         private async Task ExecuteOpJsonAsync(CallInfo callInfo)
@@ -123,14 +211,30 @@ namespace Magic.Kernel.Interpretation
             var path = callInfo.Parameters.TryGetValue("path", out var pathObj)
                 ? (await GetValueFromParameterAsync(pathObj).ConfigureAwait(false))?.ToString()
                 : null;
-            var data = callInfo.Parameters.TryGetValue("data", out var dataObj)
-                ? await GetValueFromParameterAsync(dataObj).ConfigureAwait(false)
-                : null;
-            var dataJson = callInfo.Parameters.TryGetValue("dataJson", out var dataJsonObj)
-                ? (await GetValueFromParameterAsync(dataJsonObj).ConfigureAwait(false))?.ToString()
-                : null;
 
-            object root = NormalizeJsonRoot(_memory.TryGetValue(sourceIndex, out var current) ? current : null);
+            // data: сначала именованный параметр "data", иначе позиционный "0"
+            object? data = null;
+            if (callInfo.Parameters.TryGetValue("data", out var dataObj))
+            {
+                data = await GetValueFromParameterAsync(dataObj).ConfigureAwait(false);
+            }
+            else if (callInfo.Parameters.TryGetValue("0", out var dataPositional))
+            {
+                data = await GetValueFromParameterAsync(dataPositional).ConfigureAwait(false);
+            }
+
+            // dataJson: сначала "dataJson", иначе позиционный "1"
+            string? dataJson = null;
+            if (callInfo.Parameters.TryGetValue("dataJson", out var dataJsonObj))
+            {
+                dataJson = (await GetValueFromParameterAsync(dataJsonObj).ConfigureAwait(false))?.ToString();
+            }
+            else if (callInfo.Parameters.TryGetValue("1", out var dataJsonPositional))
+            {
+                dataJson = (await GetValueFromParameterAsync(dataJsonPositional).ConfigureAwait(false))?.ToString();
+            }
+
+            object root = NormalizeJsonRoot(TryReadMemory(sourceAddr, out var current) ? current : null);
             var value = dataJson != null ? ParseDataJsonLiteral(dataJson) : data;
 
             switch ((operation ?? "").ToLowerInvariant())
@@ -151,7 +255,7 @@ namespace Magic.Kernel.Interpretation
                     throw new InvalidOperationException($"opjson operation '{operation}' is not supported.");
             }
 
-            _memory[sourceIndex] = root;
+            _memoryWriter(sourceAddr, root);
             _stack.Add(root);
         }
 
@@ -273,7 +377,7 @@ namespace Magic.Kernel.Interpretation
             if (segments.Count == 0)
                 return expectArray ? (root is List<object> ? root : new List<object>()) : (root is Dictionary<string, object> ? root : new Dictionary<string, object>(StringComparer.Ordinal));
 
-            root = EnsureContainer(root, segments, expectArray);
+            EnsureContainer(root, segments, expectArray);
             return root;
         }
 
@@ -411,12 +515,122 @@ namespace Magic.Kernel.Interpretation
             _stack.Add(converted!);
         }
 
+        /// <summary>Converts value by unit. E.g. unit(20, "mb") → 20971520, unit(20971520, "1/mb") → 20.</summary>
+        private async Task ExecuteUnitAsync(CallInfo callInfo)
+        {
+            object? valueParam = null;
+            if (callInfo.Parameters.TryGetValue("0", out var v0))
+                valueParam = v0;
+            else if (callInfo.Parameters.TryGetValue("value", out var v))
+                valueParam = v;
+
+            object? unitParam = null;
+            if (callInfo.Parameters.TryGetValue("1", out var u1))
+                unitParam = u1;
+            else if (callInfo.Parameters.TryGetValue("unit", out var u))
+                unitParam = u;
+
+            object? typeParam = null;
+            if (callInfo.Parameters.TryGetValue("2", out var t2))
+                typeParam = t2;
+            else if (callInfo.Parameters.TryGetValue("type", out var t))
+                typeParam = t;
+
+            if (valueParam == null)
+                throw new InvalidOperationException("unit requires numeric value (first argument or 'value').");
+
+            var valueObj = await GetValueFromParameterAsync(valueParam).ConfigureAwait(false);
+            var unitString = unitParam != null
+                ? (await GetValueFromParameterAsync(unitParam).ConfigureAwait(false))?.ToString()?.Trim().ToLowerInvariant()
+                : "b";
+            var typeString = typeParam != null
+                ? (await GetValueFromParameterAsync(typeParam).ConfigureAwait(false))?.ToString()
+                : null;
+
+            var num = ToNumber(valueObj);
+            var converted = ApplyUnit(num, unitString);
+            if (!string.IsNullOrWhiteSpace(typeString))
+                converted = ConvertValue(converted, typeString);
+            _stack.Add(converted);
+        }
+
+        private static long ToNumber(object? value)
+        {
+            if (value == null) return 0;
+            if (value is long l) return l;
+            if (value is int i) return i;
+            if (value is double d) return (long)d;
+            if (value is float f) return (long)f;
+            if (value is decimal dec) return (long)dec;
+            if (long.TryParse(value.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed))
+                return parsed;
+            if (double.TryParse(value.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var dparsed))
+                return (long)dparsed;
+            return 0;
+        }
+
+        private static object ApplyUnit(long value, string? unit)
+        {
+            if (string.IsNullOrEmpty(unit)) return value;
+            var normalizedUnit = unit.Trim().ToLowerInvariant();
+            var inverse = false;
+            if (normalizedUnit.StartsWith("1/", StringComparison.Ordinal))
+            {
+                inverse = true;
+                normalizedUnit = normalizedUnit.Substring(2);
+            }
+
+            var factor = normalizedUnit switch
+            {
+                "b" => 1L,
+                "kb" => 1024L,
+                "mb" => 1024L * 1024L,
+                "gb" => 1024L * 1024L * 1024L,
+                "tb" => 1024L * 1024L * 1024L * 1024L,
+                _ => throw new InvalidOperationException($"unit: unknown unit '{unit}'. Use b, kb, mb, gb, tb or inverse form 1/mb.")
+            };
+
+            if (!inverse)
+                return value * factor;
+
+            if (factor == 1L)
+                return value;
+
+            return value % factor == 0
+                ? value / factor
+                : (decimal)value / factor;
+        }
+
+        /// <summary>format("{0} {1}", v0, v1, ...) — substitutes {0}, {1}, ... with argument values. Pushes result string.</summary>
+        private async Task ExecuteFormatAsync(CallInfo callInfo)
+        {
+            if (!callInfo.Parameters.TryGetValue("0", out var fmtObj))
+                throw new InvalidOperationException("format requires format string as first argument (0).");
+            var formatString = (await GetValueFromParameterAsync(fmtObj).ConfigureAwait(false))?.ToString() ?? string.Empty;
+            var args = new List<object?>();
+            var idx = 1;
+            while (callInfo.Parameters.TryGetValue(idx.ToString(), out var argObj))
+            {
+                args.Add(await GetValueFromParameterAsync(argObj).ConfigureAwait(false));
+                idx++;
+            }
+            try
+            {
+                var result = string.Format(CultureInfo.InvariantCulture, formatString, args.ToArray());
+                _stack.Add(result);
+            }
+            catch (FormatException ex)
+            {
+                throw new InvalidOperationException($"format: invalid format string or argument count. {ex.Message}", ex);
+            }
+        }
+
         private static object? ConvertValue(object? value, string? type)
         {
             if (string.IsNullOrWhiteSpace(type))
                 return value;
 
-            var kind = type.Trim().ToLowerInvariant();
+            var kind = NormalizeTypeName(type);
             switch (kind)
             {
                 case "base64":
@@ -458,6 +672,14 @@ namespace Magic.Kernel.Interpretation
                 case "str":
                     return value?.ToString() ?? string.Empty;
 
+                case "decimal":
+                    return ConvertToDecimal(value);
+
+                case "float<decimal>":
+                case "floatdecimal":
+                case "types/floatdecimal":
+                    return ConvertToFloatDecimal(value);
+
                 case "identity":
                 case "none":
                     return value;
@@ -465,6 +687,48 @@ namespace Magic.Kernel.Interpretation
                 default:
                     return value;
             }
+        }
+
+        private static string NormalizeTypeName(string type) =>
+            string.Concat(type.Where(c => !char.IsWhiteSpace(c))).ToLowerInvariant();
+
+        private static decimal ConvertToDecimal(object? value)
+        {
+            if (value == null)
+                return 0m;
+
+            return value switch
+            {
+                decimal dm => dm,
+                FloatDecimal fd when fd.IsFinite && decimal.TryParse(fd.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed) => parsed,
+                bool b => b ? 1m : 0m,
+                _ => Convert.ToDecimal(value, CultureInfo.InvariantCulture)
+            };
+        }
+
+        private static FloatDecimal ConvertToFloatDecimal(object? value)
+        {
+            if (value == null)
+                return FloatDecimal.Zero34;
+
+            return value switch
+            {
+                FloatDecimal fd => fd,
+                byte b => FloatDecimal.FromInt64(b),
+                sbyte sb => FloatDecimal.FromInt64(sb),
+                short s => FloatDecimal.FromInt64(s),
+                ushort us => FloatDecimal.FromInt64(us),
+                int i => FloatDecimal.FromInt64(i),
+                uint ui => FloatDecimal.FromBigInteger(ui),
+                long l => FloatDecimal.FromInt64(l),
+                ulong ul => FloatDecimal.FromBigInteger(ul),
+                decimal dm => FloatDecimal.FromDecimal(dm),
+                float f => FloatDecimal.FromDouble(f),
+                double d => FloatDecimal.FromDouble(d),
+                bool b => b ? FloatDecimal.One34 : FloatDecimal.Zero34,
+                string s when FloatDecimal.TryParse(s, FloatDecimalFormat.Decfloat34, out var parsed) => parsed,
+                _ => FloatDecimal.Parse(value.ToString() ?? string.Empty, FloatDecimalFormat.Decfloat34)
+            };
         }
 
         private async Task ExecuteCompileAsync(CallInfo callInfo)
@@ -477,7 +741,7 @@ namespace Magic.Kernel.Interpretation
             }
             else if (callInfo.Parameters?.TryGetValue("0", out var p) == true)
             {
-                dataObj = p is MemoryAddress memAddr && memAddr.Index.HasValue && _memory.TryGetValue(memAddr.Index.Value, out var memVal) ? memVal : p;
+                dataObj = p is MemoryAddress memAddr && TryReadMemory(memAddr, out var memVal) ? memVal : p;
             }
             if (dataObj == null)
                 dataObj = new Dictionary<string, object> { ["content"] = "" };
@@ -533,7 +797,7 @@ namespace Magic.Kernel.Interpretation
                 else if (param is MemoryAddress memoryAddress && memoryAddress.Index.HasValue)
                 {
                     // Параметр из памяти
-                    if (_memory.TryGetValue(memoryAddress.Index.Value, out var memoryValue) && memoryValue is Shape memShape)
+                    if (TryReadMemory(memoryAddress, out var memoryValue) && memoryValue is Shape memShape)
                     {
                         shape = memShape;
                     }
@@ -669,7 +933,7 @@ namespace Magic.Kernel.Interpretation
             else if (param is MemoryAddress memoryAddress && memoryAddress.Index.HasValue)
             {
                 // Параметр из памяти
-                if (_memory.TryGetValue(memoryAddress.Index.Value, out var memoryValue))
+                if (TryReadMemory(memoryAddress, out var memoryValue))
                 {
                     return memoryValue;
                 }

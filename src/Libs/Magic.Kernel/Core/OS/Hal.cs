@@ -13,6 +13,7 @@ using Magic.Kernel.Devices;
 using Magic.Kernel.Devices.Store;
 using Magic.Kernel.Devices.Streams;
 using Magic.Kernel.Interpretation;
+using Magic.Kernel;
 
 namespace Magic.Kernel.Core.OS
 {
@@ -52,7 +53,7 @@ namespace Magic.Kernel.Core.OS
             }
             if (string.Equals(typeObj as string, "database", StringComparison.OrdinalIgnoreCase))
             {
-                return new Devices.Store.Database();
+                return new Devices.Store.DatabaseDevice();
             }
             throw new DefTypeUnknownException(typeObj);
         }
@@ -101,6 +102,7 @@ namespace Magic.Kernel.Core.OS
                 args[0] is Data.Database db &&
                 args[1] is Table tableRef)
             {
+                tableRef.Database = db;
                 db.AddTable(tableRef);
                 return db;
             }
@@ -132,8 +134,19 @@ namespace Magic.Kernel.Core.OS
                 if (g is string s)
                     genSet.Add(s);
             }
+            if (streamDevice != null && genSet.Contains("messenger") && genSet.Contains("telegram") && genSet.Contains("client"))
+            {
+                defType.Generalizations.Add(new Devices.Streams.WTelegramStreamDevice());
+                return defObj;
+            }
             if (streamDevice != null && genSet.Contains("network") && genSet.Contains("file") && genSet.Contains("telegram"))
             {
+                if (genSet.Contains("client"))
+                {
+                    defType.Generalizations.Add(new Devices.Streams.WTelegramNetworkFileStreamDevice());
+                    return defObj;
+                }
+
                 defType.Generalizations.Add(new Devices.Streams.TelegramNetworkFileStreamDevice());
                 return defObj;
             }
@@ -148,6 +161,8 @@ namespace Magic.Kernel.Core.OS
                     ;
                 else if (string.Equals(g as string, "telegram", StringComparison.OrdinalIgnoreCase))
                     defType.Generalizations.Add(new Devices.Streams.Telegram());
+                else if (string.Equals(g as string, "client", StringComparison.OrdinalIgnoreCase))
+                    ;
                 else if (string.Equals(g as string, "postgres", StringComparison.OrdinalIgnoreCase))
                     defType.Generalizations.Add(new Devices.Store.Postgres());
                 else if (g is Data.Database database)
@@ -220,7 +235,10 @@ namespace Magic.Kernel.Core.OS
             if (obj == null || string.IsNullOrWhiteSpace(memberName))
                 return null;
 
-            if (obj is Devices.Store.Database runtimeDb)
+            if (obj is DeltaWeakDisposable weakDelta)
+                return GetObj(weakDelta.Value, memberName);
+
+            if (obj is Devices.Store.DatabaseDevice runtimeDb)
             {
                 var databaseDevice = TryGetDatabaseDevice(runtimeDb);
                 return databaseDevice?.FindTable(runtimeDb, memberName);
@@ -334,7 +352,10 @@ namespace Magic.Kernel.Core.OS
             if (obj == null || string.IsNullOrWhiteSpace(memberName))
                 return obj;
 
-            if (obj is Devices.Store.Database runtimeDb && value is Data.Table runtimeTable)
+            if (obj is DeltaWeakDisposable weakDelta)
+                return SetObj(weakDelta.Value, memberName, value);
+
+            if (obj is Devices.Store.DatabaseDevice runtimeDb && value is Data.Table runtimeTable)
             {
                 var databaseDevice = TryGetDatabaseDevice(runtimeDb);
                 databaseDevice?.UpsertTable(runtimeDb, memberName, runtimeTable);
@@ -416,7 +437,7 @@ namespace Magic.Kernel.Core.OS
             }
         }
 
-        private static Devices.Store.IDatabaseDevice? TryGetDatabaseDevice(Devices.Store.Database database)
+        private static Devices.Store.IDatabaseDevice? TryGetDatabaseDevice(Devices.Store.DatabaseDevice database)
         {
             if (database is Devices.Store.IDatabaseDevice selfDevice)
                 return selfDevice;

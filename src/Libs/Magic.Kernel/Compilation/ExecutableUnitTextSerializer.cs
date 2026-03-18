@@ -160,6 +160,18 @@ namespace Magic.Kernel.Compilation
                     if (cmd.Operand1 is Tuple<long, long> cmp)
                         return $"cmp [{cmp.Item1}], {cmp.Item2}";
                     return "cmp [0], 0";
+                case Opcodes.Expr:
+                    return "expr";
+                case Opcodes.DefExpr:
+                    return "defexpr";
+                case Opcodes.Lambda:
+                    return FormatLambda(cmd.Operand1);
+                case Opcodes.Equals:
+                    return "equals";
+                case Opcodes.Not:
+                    return "not";
+                case Opcodes.Lt:
+                    return "lt";
                 case Opcodes.CallObj:
                     return FormatCallObj(cmd.Operand1 as string);
                 case Opcodes.AddVertex:
@@ -169,8 +181,11 @@ namespace Magic.Kernel.Compilation
                 case Opcodes.AddShape:
                     return FormatAddShape(cmd.Operand1 as Shape);
                 case Opcodes.Call:
+                    return FormatCall("call", cmd.Operand1 as CallInfo);
+                case Opcodes.ACall:
+                    return FormatCall("acall", cmd.Operand1 as CallInfo);
                 case Opcodes.SysCall:
-                    return FormatCall(cmd.Operand1 as CallInfo);
+                    return FormatCall("call", cmd.Operand1 as CallInfo);
                 case Opcodes.Pop:
                     return FormatPop(cmd.Operand1 as MemoryAddress);
                 case Opcodes.Push:
@@ -184,6 +199,21 @@ namespace Magic.Kernel.Compilation
         {
             if (string.IsNullOrEmpty(methodName)) return "callobj \"\"";
             return "callobj \"" + EscapeString(methodName) + "\"";
+        }
+
+        private static string FormatLambda(object? operand)
+        {
+            if (operand is List<object> parameters && parameters.Count > 0)
+            {
+                var names = parameters
+                    .Select(p => p?.ToString())
+                    .Where(p => !string.IsNullOrWhiteSpace(p));
+                var joined = string.Join(", ", names!);
+                if (!string.IsNullOrWhiteSpace(joined))
+                    return "lambda " + joined;
+            }
+
+            return "lambda";
         }
 
         private static string FormatAddVertex(Vertex? v)
@@ -231,7 +261,7 @@ namespace Magic.Kernel.Compilation
             return "addshape " + string.Join(", ", parts);
         }
 
-        private static string FormatCall(CallInfo? c)
+        private static string FormatCall(string opcode, CallInfo? c)
         {
             if (c == null) return "nop";
             var name = c.FunctionName.Contains(' ') ? $"\"{c.FunctionName}\"" : c.FunctionName;
@@ -254,7 +284,7 @@ namespace Magic.Kernel.Compilation
                     paramParts.Add($"{kv.Key}: {kv.Value}");
             }
             var paramStr = paramParts.Count > 0 ? ", " + string.Join(", ", paramParts) : "";
-            return "call " + name + paramStr;
+            return opcode + " " + name + paramStr;
         }
 
         private static string FormatPop(MemoryAddress? ma)
@@ -279,6 +309,7 @@ namespace Magic.Kernel.Compilation
                     "Type" => "push " + (po.Value as string ?? ""),
                     "IntLiteral" => "push " + (po.Value is long l ? l.ToString() : po.Value?.ToString() ?? "0"),
                     "StringLiteral" => "push string: \"" + EscapeString(po.Value as string ?? "") + "\"",
+                    "LambdaArg" => "push lambda: arg" + (po.Value is int i ? i.ToString() : "0"),
                     _ => "push [0]"
                 };
             }

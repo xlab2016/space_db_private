@@ -159,8 +159,7 @@ pop [13]
 pop [14]
 cmp [12], 1
 je streamwait_loop_1_end
-push 0
-call streamwait_loop_1_delta
+acall streamwait_loop_1_delta
 jmp streamwait_loop_1
 label streamwait_loop_1_delta
 push [13]
@@ -232,8 +231,6 @@ push [25]
 push 1
 callobj "open"
 pop [0]
-push 0
-call debug
 push [5]
 push string: "data"
 streamwaitobj

@@ -1,0 +1,44 @@
+@AGI 0.0.1;
+
+program simple_inference;
+system samples;
+module streams/inference;
+
+procedure Main {
+	var vault1 := vault;
+	var token = vault1.get("token");
+	var gpt1 := stream<inference, openai>;
+	var history := [];
+	gpt1.open({
+		token: token,
+		history: history
+	});
+	var response := gpt1.write({
+		data: [{
+			currentTime: :time,
+			weather: [
+				{
+					location: "Astana",
+					time: :time,
+					temperature: "-15C"
+				}
+			]
+		}],
+		system: "Ты профессиональный чат бот по ИТ, отвечай в деловом тоне.",
+		instruction: "Какая щас погода в Астане?"
+	});
+
+	println("Ответ: ");
+
+	for sync streamwait by delta (response, delta, aggregate) {
+		var text := delta.text;
+
+		print(text);
+
+		streamwait print(text);
+	}
+}
+
+entrypoint {
+	Main;
+}

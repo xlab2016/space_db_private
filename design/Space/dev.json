@@ -2,7 +2,7 @@
 	"debug": "/samples/telegram_to_db.agi",
 	"executionUnits": [
 		{
-			"path": "/samples/telegram_to_db.agi",
+			"path": "/samples/telegram_history_to_db.agi",
 			"instanceCount": 1
 		}
 	]

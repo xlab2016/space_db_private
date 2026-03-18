@@ -1,0 +1,119 @@
+@AGI 0.0.1;
+
+program telegram_history_to_db;
+system samples;
+module telegram;
+
+Message<> : table {
+	Id: bigint primary key identity;
+	Time: datetime;
+	TokenHash: nvarchar(250)?;
+	ChatId: nvarchar(250)?;
+	ChatName: nvarchar(250)?;
+	Username: nvarchar(250)?;
+	Message: json?;
+	Photo: json?;
+	Document: json?;
+	Error: nvarchar(250)?;
+	MessageId: int?;
+}
+
+Db> : database {
+	Message<>;
+}
+
+procedure Main {
+	var stream1 := stream<messenger, telegram, client>;
+	var stream2 := stream<network, file, telegram, client>;
+	var vault1 := vault;
+	var api_id := vault1.read("api_id");
+	var api_hash := vault1.read("api_hash");
+	var phoneNumber := vault1.read("phoneNumber");
+	var channelTitle := vault1.read("channelTitle");
+	stream1.open({
+		api_id: api_id,
+		api_hash: api_hash,
+		phoneNumber: phoneNumber
+	});
+	var connectionString := vault1.read("connectionString");
+	var db1 := database<postgres, Db>>;
+	db1.open(connectionString);
+
+	var offsetId := await db1.Message<>.
+		where(_ => _.ChatId = channelTitle).
+		max(_ => _.MessageId);
+
+	var history = stream1.history({
+		filter: {
+			channelTitle: channelTitle
+		},
+		paging: {
+			skip: offsetId,
+			take: 100
+		}
+	});
+
+	for sync streamwait by delta (history, delta) {
+		var data := delta.data;
+
+		var id := data!.id;
+		var chatId := data!.chatId;
+		var text := data!.text;
+		var user := data!.username;
+		var photo := data!.photo;
+		var document := data!.document;
+		var time = data!.time;
+
+		var message = {
+			MessageId: id,
+			Time: time,
+			ChatId: channelTitle,
+			ChatName: channelTitle,
+			Username: user,
+			Message: text
+		};
+
+		print(chatId, text, photo, document, user, time);
+
+		if (photo) {
+			stream2.open({
+				file: photo
+			});
+			var photoData := streamwait stream2;
+			message.Photo = {
+				data: photoData
+			}
+		}
+
+		if (document) {
+			var size = document.size;
+			if (size < unit(20, "mb")) {
+				stream2.open({
+					file: document
+				});
+				var documentData := streamwait stream2;
+				message.Document = {
+					data: documentData
+				}
+			} else {
+				message.Error = #"Size {unit(size, "1/mb", float<decimal>)} exceeded 20mb";
+			}
+		}
+
+		var original = await db1.Message<>.find(_ => _.Time = time);
+
+		if (original) {
+			message.Id = original.Id;
+		}
+
+		db1.Message<> *= message;
+		await db1;
+		
+		// pipeline message to external code
+		streamwait print(data);
+	}
+}
+
+entrypoint {
+	Main;
+}

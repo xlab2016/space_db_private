@@ -160,6 +160,7 @@ namespace Magic.Kernel.Compilation
                 "addrelation" => Opcodes.AddRelation,
                 "addshape" => Opcodes.AddShape,
                 "call" => Opcodes.Call,
+                "acall" => Opcodes.ACall,
                 "push" => Opcodes.Push,
                 "pop" => Opcodes.Pop,
                 "syscall" => Opcodes.SysCall,
@@ -179,6 +180,12 @@ namespace Magic.Kernel.Compilation
                 "getobj" => Opcodes.GetObj,
                 "setobj" => Opcodes.SetObj,
                 "streamwait" => Opcodes.StreamWait,
+                "expr" => Opcodes.Expr,
+                "defexpr" => Opcodes.DefExpr,
+                "lambda" => Opcodes.Lambda,
+                "equals" => Opcodes.Equals,
+                "not" => Opcodes.Not,
+                "lt" => Opcodes.Lt,
                 _ => Opcodes.Nop
             };
         }

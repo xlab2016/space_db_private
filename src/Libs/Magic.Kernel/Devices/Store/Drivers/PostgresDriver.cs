@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Magic.Kernel.Interpretation;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -13,7 +14,7 @@ namespace Magic.Kernel.Devices.Store.Drivers
     /// <summary>Low-level PostgreSQL driver operations for runtime database.</summary>
     public class PostgresDriver
     {
-        public Data.Database? ResolveSchema(Database database)
+        public Data.Database? ResolveSchema(DatabaseDevice database)
         {
             if (database == null)
                 throw new ArgumentNullException(nameof(database));
@@ -27,7 +28,7 @@ namespace Magic.Kernel.Devices.Store.Drivers
             return null;
         }
 
-        public Data.Table? FindTable(Database database, string tableName)
+        public Data.Table? FindTable(DatabaseDevice database, string tableName)
         {
             if (string.IsNullOrWhiteSpace(tableName))
                 return null;
@@ -45,7 +46,7 @@ namespace Magic.Kernel.Devices.Store.Drivers
             return null;
         }
 
-        public void UpsertTable(Database database, string tableName, Data.Table table)
+        public void UpsertTable(DatabaseDevice database, string tableName, Data.Table table)
         {
             if (string.IsNullOrWhiteSpace(tableName) || table == null)
                 return;
@@ -67,12 +68,12 @@ namespace Magic.Kernel.Devices.Store.Drivers
             schema.AddTable(table);
         }
 
-        public async Task OpenAsync(string connectionString, Database database)
+        public async Task OpenAsync(string connectionString, DatabaseDevice database)
         {
             await EnsureDatabaseAndSchemaAsync(connectionString, database).ConfigureAwait(false);
         }
 
-        public async Task EnsureDatabaseAndSchemaAsync(string connectionString, Database database)
+        public async Task EnsureDatabaseAndSchemaAsync(string connectionString, DatabaseDevice database)
         {
             if (database == null)
                 throw new ArgumentNullException(nameof(database));
@@ -90,7 +91,109 @@ namespace Magic.Kernel.Devices.Store.Drivers
             await ApplySchemaAsync(normalizedConnectionString, schema).ConfigureAwait(false);
         }
 
-        public async Task FlushPendingRowsAsync(string connectionString, Database database)
+        /// <summary>Returns 1 if at least one row in table matches the predicate (ExprTree translated to PostgreSQL WHERE by driver visitor), 0 otherwise.</summary>
+        public async Task<long> AnyAsync(string connectionString, DatabaseDevice database, Data.Table table, ExprTree whereExpr)
+        {
+            if (database == null || table == null || whereExpr == null)
+                throw new ArgumentNullException(database == null ? nameof(database) : table == null ? nameof(table) : nameof(whereExpr));
+            var schema = ResolveSchema(database);
+            if (schema == null)
+                return 0;
+            var normalizedTableName = NormalizeTableName(table.Name);
+            if (string.IsNullOrWhiteSpace(normalizedTableName))
+                return 0;
+            var targetBuilder = new NpgsqlConnectionStringBuilder(connectionString);
+            targetBuilder.Database = ResolveDatabaseName(targetBuilder, schema, database.Name);
+            await using var conn = new NpgsqlConnection(targetBuilder.ConnectionString);
+            await conn.OpenAsync().ConfigureAwait(false);
+            var (whereClause, parameters) = PostgresWhereVisitor.BuildWhere(whereExpr);
+            var sql = string.IsNullOrEmpty(whereClause)
+                ? $"SELECT 1 FROM {QuoteIdent(normalizedTableName)} LIMIT 1;"
+                : $"SELECT 1 FROM {QuoteIdent(normalizedTableName)} WHERE {whereClause} LIMIT 1;";
+            await using var cmd = new NpgsqlCommand(sql, conn);
+            foreach (var (name, value) in parameters)
+                cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+            var scalar = await cmd.ExecuteScalarAsync().ConfigureAwait(false);
+            return scalar != null && scalar != DBNull.Value ? 1L : 0L;
+        }
+
+        /// <summary>Returns MAX(columnName) for rows matching predicate; 0 when table is empty or no matching rows.</summary>
+        public async Task<long> MaxAsync(string connectionString, DatabaseDevice database, Data.Table table, ExprTree? whereExpr, string columnName)
+        {
+            if (database == null || table == null)
+                throw new ArgumentNullException(database == null ? nameof(database) : nameof(table));
+            if (string.IsNullOrWhiteSpace(columnName))
+                throw new ArgumentException("Column name is empty.", nameof(columnName));
+
+            var schema = ResolveSchema(database);
+            if (schema == null)
+                return 0;
+
+            var normalizedTableName = NormalizeTableName(table.Name);
+            if (string.IsNullOrWhiteSpace(normalizedTableName))
+                return 0;
+
+            var targetBuilder = new NpgsqlConnectionStringBuilder(connectionString);
+            targetBuilder.Database = ResolveDatabaseName(targetBuilder, schema, database.Name);
+            await using var conn = new NpgsqlConnection(targetBuilder.ConnectionString);
+            await conn.OpenAsync().ConfigureAwait(false);
+
+            var (whereClause, parameters) = PostgresWhereVisitor.BuildWhere(whereExpr);
+            var quotedColumn = QuoteIdent(columnName);
+            var sql = string.IsNullOrEmpty(whereClause)
+                ? $"SELECT MAX({quotedColumn}) FROM {QuoteIdent(normalizedTableName)};"
+                : $"SELECT MAX({quotedColumn}) FROM {QuoteIdent(normalizedTableName)} WHERE {whereClause};";
+
+            await using var cmd = new NpgsqlCommand(sql, conn);
+            foreach (var (name, value) in parameters)
+                cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+
+            var scalar = await cmd.ExecuteScalarAsync().ConfigureAwait(false);
+            if (scalar == null || scalar == DBNull.Value)
+                return 0L;
+
+            return scalar switch
+            {
+                long l => l,
+                int i => i,
+                short s => s,
+                _ => Convert.ToInt64(scalar, CultureInfo.InvariantCulture)
+            };
+        }
+
+        public async Task<object?> ExecuteQueryAsync(string connectionString, DatabaseDevice database, Data.Table table, QueryExpr query)
+        {
+            if (database == null || table == null || query == null)
+                throw new ArgumentNullException(database == null ? nameof(database) : table == null ? nameof(table) : nameof(query));
+
+            var schema = ResolveSchema(database);
+            if (schema == null)
+                return table;
+
+            var sourceTable = query.SourceTable;
+            var calls = QueryExpr.Decompose(query.Root);
+
+            var plan = BuildQueryPlan(sourceTable, calls);
+            var normalizedTableName = NormalizeTableName(sourceTable.Name);
+            if (string.IsNullOrWhiteSpace(normalizedTableName))
+                return sourceTable;
+
+            var targetBuilder = new NpgsqlConnectionStringBuilder(connectionString);
+            targetBuilder.Database = ResolveDatabaseName(targetBuilder, schema, database.Name);
+            await using var conn = new NpgsqlConnection(targetBuilder.ConnectionString);
+            await conn.OpenAsync().ConfigureAwait(false);
+
+            return plan.Kind switch
+            {
+                QueryResultKind.Table => await QueryTableAsync(conn, sourceTable, normalizedTableName, plan.FilterExpr).ConfigureAwait(false),
+                QueryResultKind.Any => await QueryAnyAsync(conn, normalizedTableName, plan.FilterExpr).ConfigureAwait(false),
+                QueryResultKind.Find => await QueryFindAsync(conn, normalizedTableName, plan.FilterExpr).ConfigureAwait(false),
+                QueryResultKind.Max => await QueryMaxAsync(conn, normalizedTableName, plan.FilterExpr, plan.ScalarColumnName!).ConfigureAwait(false),
+                _ => throw new InvalidOperationException($"Unsupported query result kind: {plan.Kind}.")
+            };
+        }
+
+        public async Task FlushPendingRowsAsync(string connectionString, DatabaseDevice database)
         {
             if (database == null)
                 throw new ArgumentNullException(nameof(database));
@@ -111,7 +214,12 @@ namespace Magic.Kernel.Devices.Store.Drivers
                 {
                     var rows = table.ConsumePendingRows();
                     foreach (var row in rows)
-                        await InsertRowAsync(conn, tx, table, row).ConfigureAwait(false);
+                    {
+                        if (IsUpsertRow(row))
+                            await UpsertRowAsync(conn, tx, table, row).ConfigureAwait(false);
+                        else
+                            await InsertRowAsync(conn, tx, table, row).ConfigureAwait(false);
+                    }
                 }
 
                 await tx.CommitAsync().ConfigureAwait(false);
@@ -439,6 +547,56 @@ SELECT EXISTS (
             await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
 
+        private static async Task UpsertRowAsync(NpgsqlConnection conn, NpgsqlTransaction tx, Data.Table table, Dictionary<string, object?> row)
+        {
+            if (!TryGetUpsertKey(table, row, out var keyColumn, out var keyValue))
+            {
+                await InsertRowAsync(conn, tx, table, row).ConfigureAwait(false);
+                return;
+            }
+
+            var normalizedTableName = NormalizeTableName(table.Name);
+            if (string.IsNullOrWhiteSpace(normalizedTableName))
+                return;
+
+            var selectedColumns = new List<Data.Column>();
+            var values = new List<object?>();
+            foreach (var column in table.Columns)
+            {
+                if (string.IsNullOrWhiteSpace(column.Name) ||
+                    string.Equals(column.Name, keyColumn, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                if (!TryGetCaseInsensitive(row, column.Name, out var value))
+                    continue;
+                selectedColumns.Add(column);
+                values.Add(NormalizeDbValue(value, column.Type));
+            }
+
+            if (selectedColumns.Count == 0)
+                return;
+
+            var setClause = new StringBuilder();
+            for (var i = 0; i < selectedColumns.Count; i++)
+            {
+                if (i > 0)
+                    setClause.Append(", ");
+                setClause.Append(QuoteIdent(selectedColumns[i].Name)).Append(" = @p").Append(i);
+            }
+
+            var sql = $"UPDATE {QuoteIdent(normalizedTableName)} SET {setClause} WHERE {QuoteIdent(keyColumn)} = @key;";
+            await using var cmd = new NpgsqlCommand(sql, conn, tx);
+            for (var i = 0; i < values.Count; i++)
+            {
+                var colType = (selectedColumns[i].Type ?? "").Trim().ToLowerInvariant();
+                var param = cmd.Parameters.AddWithValue($"p{i}", values[i] ?? DBNull.Value);
+                if (colType is "json" or "jsonb")
+                    param.NpgsqlDbType = NpgsqlDbType.Jsonb;
+            }
+
+            cmd.Parameters.AddWithValue("key", keyValue);
+            await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+
         private static string BuildCreateTableSql(Data.Table table)
         {
             var normalizedTableName = NormalizeTableName(table.Name);
@@ -579,6 +737,66 @@ SELECT EXISTS (
             return value;
         }
 
+        private static bool IsUpsertRow(Dictionary<string, object?> row)
+        {
+            return TryGetCaseInsensitive(row, Data.Table.PendingWriteModeKey, out var mode) &&
+                   string.Equals(mode?.ToString(), Data.Table.PendingWriteModeUpsert, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TryGetUpsertKey(Data.Table table, IDictionary<string, object?> row, out string columnName, out long keyValue)
+        {
+            columnName = string.Empty;
+            keyValue = 0L;
+
+            var idColumn = table.Columns.Find(c => string.Equals(c.Name, "Id", StringComparison.OrdinalIgnoreCase));
+            if (idColumn != null &&
+                TryGetCaseInsensitive(row, idColumn.Name, out var idValue) &&
+                TryConvertToPositiveInt64(idValue, out keyValue))
+            {
+                columnName = idColumn.Name;
+                return true;
+            }
+
+            var primaryKeyColumn = table.Columns.Find(IsPrimaryKey);
+            if (primaryKeyColumn != null &&
+                TryGetCaseInsensitive(row, primaryKeyColumn.Name, out var pkValue) &&
+                TryConvertToPositiveInt64(pkValue, out keyValue))
+            {
+                columnName = primaryKeyColumn.Name;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryConvertToPositiveInt64(object? value, out long result)
+        {
+            result = 0L;
+            if (value == null || value == DBNull.Value)
+                return false;
+
+            switch (value)
+            {
+                case long l when l > 0:
+                    result = l;
+                    return true;
+                case int i when i > 0:
+                    result = i;
+                    return true;
+                case short s when s > 0:
+                    result = s;
+                    return true;
+                case byte b when b > 0:
+                    result = b;
+                    return true;
+                case string text when long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) && parsed > 0:
+                    result = parsed;
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         private static bool TryGetCaseInsensitive(IDictionary<string, object?> source, string key, out object? value)
         {
             if (source.TryGetValue(key, out value))
@@ -593,6 +811,177 @@ SELECT EXISTS (
             }
             value = null;
             return false;
+        }
+
+        private static QueryExecutionPlan BuildQueryPlan(Data.Table sourceTable, IReadOnlyList<QueryCallExpr> calls)
+        {
+            var filterExpr = sourceTable.FilterExpr;
+            var resultKind = QueryResultKind.Table;
+            string? scalarColumnName = null;
+
+            for (var i = 0; i < calls.Count; i++)
+            {
+                var call = calls[i];
+                var methodName = call.MethodName?.Trim() ?? string.Empty;
+                var isLast = i == calls.Count - 1;
+
+                if (string.Equals(methodName, "where", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (call.Args.Count == 0 || call.Args[0] is not LambdaValue whereLambda || whereLambda.ExprTree == null)
+                        throw new InvalidOperationException("QueryExpr.where requires lambda argument with ExprTree for SQL execution.");
+                    filterExpr = CombineFilterExpr(filterExpr, whereLambda.ExprTree);
+                    resultKind = QueryResultKind.Table;
+                    continue;
+                }
+
+                if (string.Equals(methodName, "any", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!isLast)
+                        throw new InvalidOperationException("QueryExpr.any must be the last operation in SQL execution.");
+                    if (call.Args.Count == 0 || call.Args[0] is not LambdaValue anyLambda || anyLambda.ExprTree == null)
+                        throw new InvalidOperationException("QueryExpr.any requires lambda argument with ExprTree for SQL execution.");
+                    filterExpr = CombineFilterExpr(filterExpr, anyLambda.ExprTree);
+                    resultKind = QueryResultKind.Any;
+                    continue;
+                }
+
+                if (string.Equals(methodName, "find", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!isLast)
+                        throw new InvalidOperationException("QueryExpr.find must be the last operation in SQL execution.");
+                    if (call.Args.Count == 0 || call.Args[0] is not LambdaValue findLambda || findLambda.ExprTree == null)
+                        throw new InvalidOperationException("QueryExpr.find requires lambda argument with ExprTree for SQL execution.");
+                    filterExpr = CombineFilterExpr(filterExpr, findLambda.ExprTree);
+                    resultKind = QueryResultKind.Find;
+                    continue;
+                }
+
+                if (string.Equals(methodName, "max", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!isLast)
+                        throw new InvalidOperationException("QueryExpr.max must be the last operation in SQL execution.");
+                    if (call.Args.Count == 0 || call.Args[0] is not LambdaValue maxLambda || !TryGetSelectorMemberName(maxLambda.ExprTree, out scalarColumnName))
+                        throw new InvalidOperationException("QueryExpr.max requires selector lambda with member access ExprTree for SQL execution.");
+                    resultKind = QueryResultKind.Max;
+                    continue;
+                }
+
+                throw new InvalidOperationException($"Unsupported QueryExpr method '{methodName}' for SQL execution.");
+            }
+
+            return new QueryExecutionPlan(resultKind, filterExpr, scalarColumnName);
+        }
+
+        private static async Task<Data.Table> QueryTableAsync(NpgsqlConnection conn, Data.Table sourceTable, string normalizedTableName, ExprTree? whereExpr)
+        {
+            var (whereClause, parameters) = PostgresWhereVisitor.BuildWhere(whereExpr);
+            var sql = string.IsNullOrEmpty(whereClause)
+                ? $"SELECT * FROM {QuoteIdent(normalizedTableName)};"
+                : $"SELECT * FROM {QuoteIdent(normalizedTableName)} WHERE {whereClause};";
+
+            await using var cmd = new NpgsqlCommand(sql, conn);
+            foreach (var (name, value) in parameters)
+                cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+
+            var rows = new List<Dictionary<string, object?>>();
+            await using var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false);
+            while (await reader.ReadAsync().ConfigureAwait(false))
+            {
+                var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                for (var i = 0; i < reader.FieldCount; i++)
+                    row[reader.GetName(i)] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                rows.Add(row);
+            }
+
+            return sourceTable.CloneForQuery(rows, whereExpr);
+        }
+
+        private static async Task<bool> QueryAnyAsync(NpgsqlConnection conn, string normalizedTableName, ExprTree? whereExpr)
+        {
+            var (whereClause, parameters) = PostgresWhereVisitor.BuildWhere(whereExpr);
+            var sql = string.IsNullOrEmpty(whereClause)
+                ? $"SELECT 1 FROM {QuoteIdent(normalizedTableName)} LIMIT 1;"
+                : $"SELECT 1 FROM {QuoteIdent(normalizedTableName)} WHERE {whereClause} LIMIT 1;";
+
+            await using var cmd = new NpgsqlCommand(sql, conn);
+            foreach (var (name, value) in parameters)
+                cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+
+            var scalar = await cmd.ExecuteScalarAsync().ConfigureAwait(false);
+            return scalar != null && scalar != DBNull.Value;
+        }
+
+        private static async Task<Dictionary<string, object?>?> QueryFindAsync(NpgsqlConnection conn, string normalizedTableName, ExprTree? whereExpr)
+        {
+            var (whereClause, parameters) = PostgresWhereVisitor.BuildWhere(whereExpr);
+            var sql = string.IsNullOrEmpty(whereClause)
+                ? $"SELECT * FROM {QuoteIdent(normalizedTableName)} LIMIT 1;"
+                : $"SELECT * FROM {QuoteIdent(normalizedTableName)} WHERE {whereClause} LIMIT 1;";
+
+            await using var cmd = new NpgsqlCommand(sql, conn);
+            foreach (var (name, value) in parameters)
+                cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+
+            await using var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false);
+            if (!await reader.ReadAsync().ConfigureAwait(false))
+                return null;
+
+            var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < reader.FieldCount; i++)
+                row[reader.GetName(i)] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+            return row;
+        }
+
+        private static async Task<long> QueryMaxAsync(NpgsqlConnection conn, string normalizedTableName, ExprTree? whereExpr, string columnName)
+        {
+            var (whereClause, parameters) = PostgresWhereVisitor.BuildWhere(whereExpr);
+            var quotedColumn = QuoteIdent(columnName);
+            var sql = string.IsNullOrEmpty(whereClause)
+                ? $"SELECT MAX({quotedColumn}) FROM {QuoteIdent(normalizedTableName)};"
+                : $"SELECT MAX({quotedColumn}) FROM {QuoteIdent(normalizedTableName)} WHERE {whereClause};";
+
+            await using var cmd = new NpgsqlCommand(sql, conn);
+            foreach (var (name, value) in parameters)
+                cmd.Parameters.AddWithValue(name, value ?? DBNull.Value);
+
+            var scalar = await cmd.ExecuteScalarAsync().ConfigureAwait(false);
+            if (scalar == null || scalar == DBNull.Value)
+                return 0L;
+
+            return scalar switch
+            {
+                long l => l,
+                int i => i,
+                short s => s,
+                _ => Convert.ToInt64(scalar, CultureInfo.InvariantCulture)
+            };
+        }
+
+        private static ExprTree? CombineFilterExpr(ExprTree? existing, ExprTree? next)
+        {
+            if (existing == null)
+                return next;
+            if (next == null)
+                return existing;
+            return new ExprAnd(UnwrapLambda(existing), UnwrapLambda(next));
+        }
+
+        private static ExprTree UnwrapLambda(ExprTree expr)
+            => expr is ExprLambda lambda ? lambda.Body : expr;
+
+        private static bool TryGetSelectorMemberName(ExprTree? exprTree, out string memberName)
+        {
+            memberName = string.Empty;
+            if (exprTree == null)
+                return false;
+
+            var node = UnwrapLambda(exprTree);
+            if (node is not ExprMemberAccess access)
+                return false;
+            if (access.Target is not ExprParameter)
+                return false;
+            memberName = access.MemberName ?? string.Empty;
+            return !string.IsNullOrWhiteSpace(memberName);
         }
 
         private static string ResolveDatabaseName(NpgsqlConnectionStringBuilder targetBuilder, Data.Database schema, string runtimeName)
@@ -614,5 +1003,77 @@ SELECT EXISTS (
 
         private static string QuoteIdent(string identifier)
             => "\"" + (identifier ?? "").Replace("\"", "\"\"") + "\"";
+
+        private sealed class QueryExecutionPlan
+        {
+            public QueryExecutionPlan(QueryResultKind kind, ExprTree? filterExpr, string? scalarColumnName)
+            {
+                Kind = kind;
+                FilterExpr = filterExpr;
+                ScalarColumnName = scalarColumnName;
+            }
+
+            public QueryResultKind Kind { get; }
+            public ExprTree? FilterExpr { get; }
+            public string? ScalarColumnName { get; }
+        }
+
+        private enum QueryResultKind
+        {
+            Table,
+            Any,
+            Find,
+            Max
+        }
+    }
+
+    /// <summary>PostgreSQL-specific visitor: translates ExprTree to WHERE clause and Npgsql parameters.</summary>
+    internal static class PostgresWhereVisitor
+    {
+        public static (string WhereClause, List<(string Name, object? Value)> Parameters) BuildWhere(ExprTree? whereExpr)
+        {
+            if (whereExpr == null)
+                return (string.Empty, new List<(string Name, object? Value)>());
+            var sb = new StringBuilder();
+            var parameters = new List<(string Name, object? Value)>();
+            var paramIndex = 0;
+            var root = whereExpr is ExprLambda lambda ? lambda.Body : whereExpr;
+            Visit(root, sb, parameters, ref paramIndex);
+            return (sb.ToString(), parameters);
+        }
+
+        private static void Visit(ExprTree node, StringBuilder sb, List<(string Name, object? Value)> parameters, ref int paramIndex)
+        {
+            switch (node)
+            {
+                case ExprParameter:
+                    break;
+                case ExprConstant c:
+                    var name = "p" + paramIndex++;
+                    parameters.Add((name, c.Value));
+                    sb.Append("@").Append(name);
+                    break;
+                case ExprMemberAccess ma:
+                    sb.Append("\"").Append(ma.MemberName?.Replace("\"", "\"\"") ?? "").Append("\"");
+                    break;
+                case ExprEqual eq:
+                    Visit(eq.Left, sb, parameters, ref paramIndex);
+                    sb.Append(" = ");
+                    Visit(eq.Right, sb, parameters, ref paramIndex);
+                    break;
+                case ExprAnd and:
+                    sb.Append("(");
+                    Visit(and.Left, sb, parameters, ref paramIndex);
+                    sb.Append(") AND (");
+                    Visit(and.Right, sb, parameters, ref paramIndex);
+                    sb.Append(")");
+                    break;
+                case ExprLambda l:
+                    Visit(l.Body, sb, parameters, ref paramIndex);
+                    break;
+                default:
+                    break;
+            }
+        }
     }
 }

@@ -11,15 +11,40 @@ namespace Magic.Kernel.Functions
 {
     public class PrintFunctions
     {
+        private const int MaxPrintedStringLength = 24;
+        private const int PrintedStringPrefixLength = 5;
+        private const int PrintedStringSuffixLength = 3;
+
         private readonly KernelConfiguration? _configuration;
         private readonly List<object> _stack;
-        private readonly Dictionary<long, object>? _memory;
+        private readonly Func<MemoryAddress, (bool Found, object? Value)> _memoryReader;
 
         public PrintFunctions(KernelConfiguration? configuration, List<object> stack, Dictionary<long, object>? memory = null)
+            : this(
+                configuration,
+                stack,
+                memoryAddress =>
+                {
+                    if (memory != null &&
+                        memoryAddress.Index.HasValue &&
+                        memory.TryGetValue(memoryAddress.Index.Value, out var memoryValue))
+                    {
+                        return (true, memoryValue);
+                    }
+
+                    return (false, null);
+                })
+        {
+        }
+
+        public PrintFunctions(
+            KernelConfiguration? configuration,
+            List<object> stack,
+            Func<MemoryAddress, (bool Found, object? Value)> memoryReader)
         {
             _configuration = configuration;
             _stack = stack;
-            _memory = memory;
+            _memoryReader = memoryReader ?? throw new ArgumentNullException(nameof(memoryReader));
         }
 
         public async Task ExecutePrintAsync(CallInfo callInfo)
@@ -106,6 +131,7 @@ namespace Magic.Kernel.Functions
         {
             return value switch
             {
+                string str => FormatString(str),
                 Position pos => FormatPosition(pos),
                 Shape shape => FormatShape(shape),
                 Vertex vertex => FormatVertex(vertex),
@@ -116,6 +142,19 @@ namespace Magic.Kernel.Functions
                 null => "None",
                 _ => value.ToString() ?? "null"
             };
+        }
+
+        private static string FormatString(string value)
+        {
+            if (value.Length <= MaxPrintedStringLength)
+                return value;
+
+            var prefixLength = Math.Min(PrintedStringPrefixLength, value.Length);
+            var suffixLength = Math.Min(PrintedStringSuffixLength, Math.Max(0, value.Length - prefixLength));
+            var prefix = value[..prefixLength];
+            var suffix = suffixLength > 0 ? value[^suffixLength..] : string.Empty;
+
+            return $"{prefix}...{suffix}...[truncated]";
         }
 
         private string FormatPosition(Position pos)
@@ -284,10 +323,12 @@ namespace Magic.Kernel.Functions
             else if (param is MemoryAddress memoryAddress && memoryAddress.Index.HasValue)
             {
                 // Параметр из памяти
-                if (_memory != null && _memory.TryGetValue(memoryAddress.Index.Value, out var memoryValue))
+                var memoryResult = _memoryReader(memoryAddress);
+                if (memoryResult.Found)
                 {
-                    return memoryValue;
+                    return memoryResult.Value;
                 }
+
                 return param;
             }
 

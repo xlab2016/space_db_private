@@ -59,16 +59,16 @@ entrypoint {
             roundtripped.Name.Should().Be("L0");
             roundtripped.Module.Should().Be("L/L0");
 
-            // entrypoint: call Main;
-            roundtripped.EntryPoint.Should().HaveCount(1);
-            roundtripped.EntryPoint[0].Opcode.Should().Be(Opcodes.Call);
-            var entryCall = roundtripped.EntryPoint[0].Operand1.Should().BeOfType<CallInfo>().Subject;
+            // entrypoint: push 0-arity, call Main;
+            roundtripped.EntryPoint.Should().HaveCount(2);
+            roundtripped.EntryPoint[1].Opcode.Should().Be(Opcodes.Call);
+            var entryCall = roundtripped.EntryPoint[1].Operand1.Should().BeOfType<CallInfo>().Subject;
             entryCall.FunctionName.Should().Be("Main");
 
-            // procedure Main: intersect call should have shapeA (ref dict) and shapeB (Shape)
+            // procedure Main: intersect call should have shapeA (ref dict) and shapeB (Shape) + trailing Ret
             roundtripped.Procedures.Should().ContainKey("Main");
             var main = roundtripped.Procedures["Main"];
-            main.Body.Should().HaveCount(4);
+            main.Body.Should().HaveCount(5);
 
             var intersectCmd = main.Body[1];
             intersectCmd.Opcode.Should().Be(Opcodes.Call);
@@ -116,6 +116,39 @@ entrypoint { asm { call Main; } }
                 var loaded = await ExecutableUnit.LoadAsync(path);
                 loaded.Name.Should().Be("Test");
                 loaded.Module.Should().Be("Test/Test");
+            }
+            finally
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
+        }
+
+        [Fact]
+        public async Task SaveAsync_WithOutputFormatAgiasm_ShouldRoundtripACall()
+        {
+            var compiler = new Compiler();
+            var source = @"@AGI 0.0.1
+program Test;
+module Test/Test;
+procedure Worker { asm { nop; } }
+entrypoint { asm { acall Worker; } }
+";
+            var result = await compiler.CompileAsync(source);
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            result.Result!.OutputFormat = "agiasm";
+
+            var path = Path.Combine(Path.GetTempPath(), $"agiasm_acall_test_{Guid.NewGuid():N}.agiasm");
+            try
+            {
+                await result.Result.SaveAsync(path);
+                var text = await File.ReadAllTextAsync(path);
+                text.Should().Contain("acall Worker");
+
+                var loaded = await ExecutableUnit.LoadAsync(path);
+                loaded.EntryPoint.Should().HaveCount(1);
+                loaded.EntryPoint[0].Opcode.Should().Be(Opcodes.ACall);
+                var callInfo = loaded.EntryPoint[0].Operand1.Should().BeOfType<CallInfo>().Subject;
+                callInfo.FunctionName.Should().Be("Worker");
             }
             finally
             {

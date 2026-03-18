@@ -1,6 +1,8 @@
+using System.Linq;
 using System.Threading.Tasks;
 using FluentAssertions;
 using Magic.Kernel.Compilation;
+using Magic.Kernel.Processor;
 using Xunit;
 
 namespace Magic.Kernel.Tests.Compilation
@@ -81,6 +83,54 @@ entrypoint {
             result.Success.Should().BeFalse();
             result.ErrorMessage.Should().NotBeNullOrEmpty();
             result.ErrorMessage!.Should().Contain("JSON literal").And.Contain("';'");
+        }
+
+        [Fact]
+        public async Task CompileAsync_WithElseBranchAfterIf_ShouldEmitElseInstructions()
+        {
+            var source = @"@AGI 0.0.1;
+
+program Test;
+module Test/IfElse;
+
+procedure Main {
+    var
+        stream2 := stream<messenger, telegram>;
+    var message := stream2;
+    var document := stream2;
+
+    if (document) {
+        var size = document.size;
+        if (size < unit(20, ""mb"")) {
+            stream2.open({
+                file: document
+            });
+            var documentData := streamwait stream2;
+            message.Document = {
+                data: documentData
+            }
+        } else {
+            message.Error = #""Size {size} exceeded 20mb"";
+        }
+    }
+}
+
+entrypoint {
+    Main;
+}";
+
+            var result = await _compiler.CompileAsync(source);
+
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            result.Result.Should().NotBeNull();
+
+            var commands = result.Result!.Procedures["Main"].Body;
+            commands.Should().Contain(c => c.Opcode == Opcodes.Jmp, "if/else lowering must jump over the else branch");
+            commands.Should().Contain(c => c.Opcode == Opcodes.SetObj, "the else branch assigns message.Error");
+            commands
+                .Any(c => c.Opcode == Opcodes.Call && c.Operand1 is CallInfo callInfo && callInfo.FunctionName == "format")
+                .Should()
+                .BeTrue("the else branch formats the interpolated error string");
         }
     }
 }

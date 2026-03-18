@@ -37,7 +37,7 @@ namespace Magic.Kernel.Devices.Streams
                     list.Add(r);
                 }
             }
-            return list;
+            return list.Count == 1 ? list[0] : list;
         }
 
         public override Task<DeviceOperationResult> OpenAsync() => Task.FromResult(DeviceOperationResult.Success);

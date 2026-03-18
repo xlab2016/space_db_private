@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Magic.Kernel.Core;
 using Magic.Kernel.Devices;
 using Magic.Kernel.Interpretation;
+using Magic.Kernel;
 
 namespace Magic.Kernel.Devices.Streams
 {
@@ -76,12 +77,12 @@ namespace Magic.Kernel.Devices.Streams
                     var read = await ReadChunkAsync().ConfigureAwait(false);
                     if (!read.Result.IsSuccess || read.Chunk == null)
                         return (true, null, null);
-                    return (false, read.Chunk, null);
+                    return (false, new DeltaWeakDisposable(read.Chunk), null);
                 case "data":
                     var read2 = await ReadAsync().ConfigureAwait(false);
                     if (!read2.Result.IsSuccess || read2.Bytes == null)
                         return (true, null, null);
-                    return (true, read2.Bytes, null);
+                    return (true, new DeltaWeakDisposable(read2.Bytes), null);
             }
             return (true, null, null);
         }

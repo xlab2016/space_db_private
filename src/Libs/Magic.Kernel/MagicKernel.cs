@@ -2,6 +2,7 @@ using Magic.Kernel.Compilation;
 using Magic.Kernel.Core.OS;
 using Magic.Kernel.Devices;
 using Magic.Kernel.Interpretation;
+using Magic.Kernel.Runtime;
 
 namespace Magic.Kernel
 {
@@ -14,7 +15,15 @@ namespace Magic.Kernel
 
         public List<IDevice> Devices { get; } = new List<IDevice>();
 
-        private Interpreter CreateInterpreter()
+        /// <summary>Erlang-like runtime: TaskQueue → Scheduler → ThreadPool. Started in StartKernel.</summary>
+        public KernelRuntime Runtime { get; }
+
+        public MagicKernel()
+        {
+            Runtime = new KernelRuntime(this);
+        }
+
+        internal Interpreter CreateInterpreter()
         {
             return new Interpreter
             {
@@ -58,7 +67,8 @@ namespace Magic.Kernel
                 }
             }
 
-            // Конфигурация передаётся при создании интерпретатора
+            Configuration.Runtime = Runtime;
+            Runtime.Start();
         }
 
         public async Task<List<CompilationResult>> CompileDirectoryAsync(string directoryPath)
@@ -75,6 +85,12 @@ namespace Magic.Kernel
         {
             var executableUnit = await ExecutableUnit.LoadAsync(compiledPath);
             return await InterpreteAsync(executableUnit);
+        }
+
+        public async Task<InterpretationResult> InterpreteCompiledRootFileAsync(string compiledPath)
+        {
+            var executableUnit = await ExecutableUnit.LoadAsync(compiledPath);
+            return await InterpreteRootAsync(executableUnit);
         }
 
         public async Task<List<InterpretationResult>> InterpreteCompiledDirectoryAsync(string directoryPath)
@@ -109,6 +125,17 @@ namespace Magic.Kernel
 
             var interpreter = CreateInterpreter();
             return await interpreter.InterpreteAsync(executableUnit);
+        }
+
+        public async Task<InterpretationResult> InterpreteRootAsync(ExecutableUnit executableUnit)
+        {
+            if (executableUnit == null)
+                throw new ArgumentNullException(nameof(executableUnit));
+
+            if (Configuration.Runtime != null)
+                return await Runtime.SpawnAndWaitAsync(executableUnit).ConfigureAwait(false);
+
+            return await InterpreteAsync(executableUnit).ConfigureAwait(false);
         }
     }
 }
