@@ -1,43 +1,41 @@
 using System;
 using System.Collections.Generic;
-using System.Net.Http;
-using System.Text;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using Magic.Kernel.Devices;
-using Magic.Kernel.Devices.Streams.Drivers;
-using Magic.Kernel.Devices.Streams.Inference;
 
 namespace Magic.Drivers.Inference.OpenAI
 {
-    /// <summary>Extension helpers for integrating the full OpenAI streaming driver with <see cref="OpenAIInference"/>.</summary>
+    /// <summary>Extension helpers for creating and using the standalone <see cref="OpenAIHttpClient"/>.</summary>
     public static class OpenAIInferenceExtensions
     {
-        /// <summary>Creates a fully-connected <see cref="OpenAIInference"/> instance wired to the real <see cref="OpenAIDriver"/>.</summary>
-        public static OpenAIInference CreateOpenAIInference(string apiToken, string apiBase = "https://api.openai.com", string model = "gpt-4o")
+        /// <summary>Creates a new <see cref="OpenAIHttpClient"/> configured with the given credentials.</summary>
+        public static OpenAIHttpClient CreateClient(string apiToken, string apiBase = "https://api.openai.com", string model = "gpt-4o")
         {
-            return new OpenAIInference
-            {
-                Token = apiToken,
-                ApiBase = apiBase,
-                Model = model
-            };
+            return new OpenAIHttpClient(apiToken, apiBase, model);
         }
 
-        /// <summary>Sends a streaming request via <see cref="OpenAIDriver"/> and streams deltas into <paramref name="responseDevice"/>.</summary>
-        public static Task StreamAsync(
+        /// <summary>Sends a streaming request and collects all deltas into a single response string.</summary>
+        public static async Task<string> SendAsync(
             string apiToken,
             string apiBase,
             string model,
             object? payload,
-            List<object?> history,
+            IReadOnlyList<object?> history,
             string? systemPrompt,
-            OpenAIStreamingResponse responseDevice,
             CancellationToken cancellationToken = default)
         {
-            var driver = new OpenAIDriver(apiToken, apiBase, model);
-            return driver.SendStreamingRequestAsync(payload, history, systemPrompt, responseDevice, cancellationToken);
+            var client = new OpenAIHttpClient(apiToken, apiBase, model);
+            var result = new System.Text.StringBuilder();
+
+            await client.SendStreamingAsync(
+                payload,
+                history,
+                systemPrompt,
+                delta => result.Append(delta),
+                () => { },
+                cancellationToken).ConfigureAwait(false);
+
+            return result.ToString();
         }
     }
 }

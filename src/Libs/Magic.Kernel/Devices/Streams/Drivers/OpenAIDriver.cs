@@ -1,10 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Runtime.CompilerServices;
-using System.Text;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Magic.Kernel.Devices;
@@ -13,6 +8,7 @@ using Magic.Kernel.Devices.Streams.Inference;
 namespace Magic.Kernel.Devices.Streams.Drivers
 {
     /// <summary>Driver for OpenAI Chat Completions API with streaming support.
+    /// Delegates HTTP communication to <see cref="Magic.Drivers.Inference.OpenAI.OpenAIHttpClient"/>.
     /// Used by <see cref="OpenAIInference"/> to send requests and stream back deltas.</summary>
     public class OpenAIDriver : IStreamDevice
     {
@@ -40,130 +36,37 @@ namespace Magic.Kernel.Devices.Streams.Drivers
             return Task.FromResult(DeviceOperationResult.Success);
         }
 
-        /// <summary>Sends a streaming chat completion request.
-        /// <paramref name="bytes"/> should be UTF-8 JSON of the request payload.</summary>
-        public async Task<DeviceOperationResult> WriteAsync(byte[] bytes)
+        /// <summary>Accepts UTF-8 JSON request payload bytes. Streaming responses are retrieved via <see cref="SendStreamingRequestAsync"/>.</summary>
+        public Task<DeviceOperationResult> WriteAsync(byte[] bytes)
         {
             if (!_opened)
-                return DeviceOperationResult.Fail(DeviceOperationState.InvalidState, "Driver not opened");
-
-            // Streaming responses are handled via ReadChunkAsync after writing.
-            return DeviceOperationResult.Success;
+                return Task.FromResult(DeviceOperationResult.Fail(DeviceOperationState.InvalidState, "Driver not opened"));
+            return Task.FromResult(DeviceOperationResult.Success);
         }
 
-        /// <summary>Sends a chat completion request and streams back a single response chunk.</summary>
-        public async Task<(DeviceOperationResult Result, IStreamChunk? Chunk)> ReadChunkAsync()
+        /// <summary>Returns end-of-stream immediately. Full streaming is handled via <see cref="SendStreamingRequestAsync"/>.</summary>
+        public Task<(DeviceOperationResult Result, IStreamChunk? Chunk)> ReadChunkAsync()
         {
-            // Full streaming implementation is in Magic.Drivers.Inference.OpenAI.
-            // This stub returns end-of-stream immediately.
-            return (DeviceOperationResult.Success, null);
+            return Task.FromResult((DeviceOperationResult.Success, (IStreamChunk?)null));
         }
 
-        /// <summary>Sends a streaming inference request and enqueues deltas into the response device.</summary>
-        public async Task SendStreamingRequestAsync(
+        /// <summary>Sends a streaming inference request via <see cref="Magic.Drivers.Inference.OpenAI.OpenAIHttpClient"/>
+        /// and enqueues deltas into <paramref name="responseDevice"/>.</summary>
+        public Task SendStreamingRequestAsync(
             object? payload,
             List<object?> history,
             string? systemPrompt,
             OpenAIStreamingResponse responseDevice,
             CancellationToken cancellationToken = default)
         {
-            try
-            {
-                using var httpClient = new HttpClient();
-                httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _apiToken);
-
-                var messages = new List<object>();
-
-                if (!string.IsNullOrEmpty(systemPrompt))
-                    messages.Add(new { role = "system", content = systemPrompt });
-
-                // Add history items
-                foreach (var item in history)
-                {
-                    if (item is IDictionary<string, object?> historyEntry)
-                    {
-                        var role = historyEntry.TryGetValue("role", out var r) ? r?.ToString() ?? "user" : "user";
-                        var content = historyEntry.TryGetValue("content", out var c) ? c?.ToString() ?? "" : "";
-                        messages.Add(new { role, content });
-                    }
-                }
-
-                // Build user message from payload
-                string? instruction = null;
-                if (payload is IDictionary<string, object?> payloadDict)
-                {
-                    payloadDict.TryGetValue("instruction", out var instrObj);
-                    instruction = instrObj?.ToString();
-                    if (!string.IsNullOrEmpty(payloadDict.TryGetValue("system", out var sysObj) ? sysObj?.ToString() : null))
-                        if (messages.Count == 0 || !(messages[0] is { } m && m.GetType().GetProperty("role")?.GetValue(m)?.ToString() == "system"))
-                            messages.Insert(0, new { role = "system", content = sysObj!.ToString() });
-                }
-                else if (payload is string payloadStr)
-                {
-                    instruction = payloadStr;
-                }
-
-                if (!string.IsNullOrEmpty(instruction))
-                    messages.Add(new { role = "user", content = instruction });
-
-                var requestBody = new
-                {
-                    model = _model,
-                    messages,
-                    stream = true
-                };
-
-                var json = JsonSerializer.Serialize(requestBody);
-                var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-                var url = $"{_apiBase}/v1/chat/completions";
-                var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
-
-                using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    responseDevice.FinishStream();
-                    return;
-                }
-
-                using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                using var reader = new System.IO.StreamReader(stream);
-
-                while (!reader.EndOfStream && !cancellationToken.IsCancellationRequested)
-                {
-                    var line = await reader.ReadLineAsync().ConfigureAwait(false);
-                    if (line == null) break;
-                    if (!line.StartsWith("data: ")) continue;
-
-                    var data = line.Substring(6).Trim();
-                    if (data == "[DONE]") break;
-
-                    try
-                    {
-                        using var doc = JsonDocument.Parse(data);
-                        var root = doc.RootElement;
-                        if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
-                        {
-                            var choice = choices[0];
-                            if (choice.TryGetProperty("delta", out var delta) && delta.TryGetProperty("content", out var contentProp))
-                            {
-                                var text = contentProp.GetString();
-                                if (!string.IsNullOrEmpty(text))
-                                    responseDevice.EnqueueDelta(text);
-                            }
-                        }
-                    }
-                    catch (JsonException)
-                    {
-                        // Malformed SSE line — skip.
-                    }
-                }
-            }
-            finally
-            {
-                responseDevice.FinishStream();
-            }
+            var client = new Magic.Drivers.Inference.OpenAI.OpenAIHttpClient(_apiToken, _apiBase, _model);
+            return client.SendStreamingAsync(
+                payload,
+                history,
+                systemPrompt,
+                delta => responseDevice.EnqueueDelta(delta),
+                () => responseDevice.FinishStream(),
+                cancellationToken);
         }
 
         public Task<(DeviceOperationResult Result, byte[] Bytes)> ReadAsync() => Task.FromResult((DeviceOperationResult.Success, Array.Empty<byte>()));
