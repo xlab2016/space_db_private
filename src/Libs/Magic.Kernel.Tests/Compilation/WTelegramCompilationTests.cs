@@ -134,7 +134,7 @@ entrypoint {
             var asm = result.Result!.Procedures["Main"].Body!;
             asm.Should().Contain(c => c.Opcode == Opcodes.CallObj && (c.Operand1 as string) == "history");
             asm.Should().Contain(c => c.Opcode == Opcodes.StreamWaitObj);
-            asm.Should().Contain(c => c.Opcode == Opcodes.CallObj && (c.Operand1 as string) == "any");
+            asm.Should().Contain(c => c.Opcode == Opcodes.CallObj && (c.Operand1 as string) == "find");
             asm.Should().Contain(c => c.Opcode == Opcodes.AwaitObj);
             asm.Any(c => (c.Opcode == Opcodes.Call || c.Opcode == Opcodes.ACall) && c.Operand1 is CallInfo ci && ci.FunctionName.StartsWith("streamwait_loop_", StringComparison.Ordinal))
                 .Should().BeTrue();

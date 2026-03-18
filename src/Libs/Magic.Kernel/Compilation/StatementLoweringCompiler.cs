@@ -2085,7 +2085,6 @@ namespace Magic.Kernel.Compilation
             else
                 instructions.Add(CreatePushStringInstruction(argText));
             instructions.Add(CreatePushIntInstruction(1));
-            instructions.Add(CreatePushIntInstruction(2));
             instructions.Add(new InstructionNode
             {
                 Opcode = "callobj",
@@ -2321,8 +2320,7 @@ namespace Magic.Kernel.Compilation
             else
                 instructions.Add(CreatePushStringInstruction(argText));
 
-            instructions.Add(CreatePushIntInstruction(0));
-            instructions.Add(CreatePushIntInstruction(2));
+            instructions.Add(CreatePushIntInstruction(1));
             instructions.Add(new InstructionNode
             {
                 Opcode = "callobj",

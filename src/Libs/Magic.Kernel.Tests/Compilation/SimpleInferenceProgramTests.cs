@@ -101,7 +101,7 @@ entrypoint {
             // Should contain a Call to println
             var callInstr = body.FirstOrDefault(c => c.Opcode == Opcodes.Call);
             callInstr.Should().NotBeNull("println should produce a call instruction");
-            (callInstr!.Operand1 as string)!.ToLowerInvariant().Should().BeOneOf("print", "println",
+            (callInstr!.Operand1 as CallInfo)!.FunctionName.ToLowerInvariant().Should().BeOneOf("print", "println",
                 "println should call the print/println system function");
         }
 
