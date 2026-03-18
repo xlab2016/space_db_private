@@ -1099,10 +1099,20 @@ namespace Magic.Kernel.Compilation
                     {
                         var targetSlot = memorySlotCounter++;
                         vars[targetName] = ("memory", targetSlot);
+                        // Empty array literal: compile as DefList — push json:[]; push "list"; push 2; def; pop slot
+                        if (jsonArg is JsonArrayNode emptyArr && emptyArr.Items.Count == 0)
+                        {
+                            instructions.Add(CreatePushStringInstruction("[]"));
+                            instructions.Add(CreatePushTypeInstruction("list"));
+                            instructions.Add(CreatePushIntInstruction(2));
+                            instructions.Add(new InstructionNode { Opcode = "def" });
+                            instructions.Add(CreatePopMemoryInstruction(targetSlot));
+                            return true;
+                        }
                         var initJson = jsonArg is JsonArrayNode ? "[]" : "{}";
                         instructions.Add(CreatePushStringInstruction(initJson));
                         instructions.Add(CreatePopMemoryInstruction(targetSlot));
-                        EmitBuildJsonNode(jsonArg, targetSlot, "", vars, instructions);
+                        EmitBuildJsonNode(jsonArg, targetSlot, "", vars, instructions, ref memorySlotCounter);
                         return true;
                     }
                 }
@@ -1495,7 +1505,7 @@ namespace Magic.Kernel.Compilation
                     var initJson = jsonArg is JsonArrayNode ? "[]" : "{}";
                     instructions.Add(CreatePushStringInstruction(initJson));
                     instructions.Add(CreatePopMemoryInstruction(targetSlot));
-                    EmitBuildJsonNode(jsonArg, targetSlot, "", vars, instructions);
+                    EmitBuildJsonNode(jsonArg, targetSlot, "", vars, instructions, ref memorySlotCounter);
                     instructions.Add(CreatePushMemoryInstruction(targetSlot));
                     return true;
                 }
@@ -1784,7 +1794,8 @@ namespace Magic.Kernel.Compilation
                 return false;
             scanner.Scan();
 
-            if (!string.Equals(functionName, "print", StringComparison.OrdinalIgnoreCase))
+            var isPrintln = string.Equals(functionName, "println", StringComparison.OrdinalIgnoreCase);
+            if (!string.Equals(functionName, "print", StringComparison.OrdinalIgnoreCase) && !isPrintln)
             {
                 if (scanner.Current.Kind != TokenKind.Identifier)
                     return false;
@@ -1883,8 +1894,8 @@ namespace Magic.Kernel.Compilation
             foreach (var emit in printArgs)
                 emit();
             instructions.Add(CreatePushIntInstruction(printArgs.Count));
-            instructions.Add(CreateCallInstruction("print"));
-            // Результат print в виде statement не используется — очищаем стек.
+            instructions.Add(CreateCallInstruction(isPrintln ? "println" : "print"));
+            // Результат print/println в виде statement не используется — очищаем стек.
             instructions.Add(CreatePopInstruction());
             return true;
         }
@@ -1940,6 +1951,12 @@ namespace Magic.Kernel.Compilation
         private sealed class JsonPrimitiveNode : JsonArgumentNode
         {
             public object? Value { get; set; }
+        }
+
+        /// <summary>Represents a symbolic variable reference in a JSON literal, e.g. <c>:time</c>.</summary>
+        private sealed class JsonSymbolicNode : JsonArgumentNode
+        {
+            public string SymbolicName { get; set; } = "";
         }
 
         private bool TryCompileMethodCall(string line, Dictionary<string, (string Kind, int Index)> vars, ref int memorySlotCounter, List<InstructionNode> instructions)
@@ -2039,7 +2056,7 @@ namespace Magic.Kernel.Compilation
                     instructions.Add(CreatePushStringInstruction(init));
                     instructions.Add(CreatePopMemoryInstruction(objectSlot));
 
-                    EmitBuildJsonNode(jsonArg, objectSlot, "", vars, instructions);
+                    EmitBuildJsonNode(jsonArg, objectSlot, "", vars, instructions, ref memorySlotCounter);
 
                     instructions.Add(CreatePushMemoryInstruction(objVar.Index));
                     instructions.Add(CreatePushMemoryInstruction(objectSlot));
@@ -2281,7 +2298,7 @@ namespace Magic.Kernel.Compilation
                     var init = jsonArg is JsonArrayNode ? "[]" : "{}";
                     instructions.Add(CreatePushStringInstruction(init));
                     instructions.Add(CreatePopMemoryInstruction(objectSlot));
-                    EmitBuildJsonNode(jsonArg, objectSlot, "", vars, instructions);
+                    EmitBuildJsonNode(jsonArg, objectSlot, "", vars, instructions, ref memorySlotCounter);
                     instructions.Add(CreatePushMemoryInstruction(objectSlot));
                     instructions.Add(CreatePushIntInstruction(1));
                     instructions.Add(new InstructionNode
@@ -2759,6 +2776,12 @@ namespace Magic.Kernel.Compilation
 
         private static void EmitBuildJsonNode(JsonArgumentNode node, long sourceIndex, string path, Dictionary<string, (string Kind, int Index)> vars, List<InstructionNode> instructions)
         {
+            var unused = 0;
+            EmitBuildJsonNode(node, sourceIndex, path, vars, instructions, ref unused);
+        }
+
+        private static void EmitBuildJsonNode(JsonArgumentNode node, long sourceIndex, string path, Dictionary<string, (string Kind, int Index)> vars, List<InstructionNode> instructions, ref int memorySlotCounter)
+        {
             if (node is JsonObjectNode objNode)
             {
                 if (!string.IsNullOrEmpty(path))
@@ -2767,7 +2790,7 @@ namespace Magic.Kernel.Compilation
                 foreach (var (key, value) in objNode.Properties)
                 {
                     var childPath = AppendPath(path, key);
-                    EmitBuildJsonNode(value, sourceIndex, childPath, vars, instructions);
+                    EmitBuildJsonNode(value, sourceIndex, childPath, vars, instructions, ref memorySlotCounter);
                 }
                 return;
             }
@@ -2785,12 +2808,12 @@ namespace Magic.Kernel.Compilation
                     if (item is JsonObjectNode)
                     {
                         EmitOpJsonCall(sourceIndex, "append", path, instructions, dataJson: "{}");
-                        EmitBuildJsonNode(item, sourceIndex, indexPath, vars, instructions);
+                        EmitBuildJsonNode(item, sourceIndex, indexPath, vars, instructions, ref memorySlotCounter);
                     }
                     else if (item is JsonArrayNode)
                     {
                         EmitOpJsonCall(sourceIndex, "append", path, instructions, dataJson: "[]");
-                        EmitBuildJsonNode(item, sourceIndex, indexPath, vars, instructions);
+                        EmitBuildJsonNode(item, sourceIndex, indexPath, vars, instructions, ref memorySlotCounter);
                     }
                     else if (item is JsonIdentifierNode idNode && vars.TryGetValue(idNode.Name, out var valueVar))
                     {
@@ -2800,6 +2823,20 @@ namespace Magic.Kernel.Compilation
                             path,
                             instructions,
                             dataRef: new FunctionParameterNode { Name = "data", ParameterName = "data", EntityType = "memory", Index = valueVar.Index });
+                    }
+                    else if (item is JsonSymbolicNode symbolicItem)
+                    {
+                        var tmpSlot = memorySlotCounter++;
+                        instructions.Add(CreatePushStringInstruction(":" + symbolicItem.SymbolicName));
+                        instructions.Add(CreatePushIntInstruction(1));
+                        instructions.Add(CreateCallInstruction("get"));
+                        instructions.Add(CreatePopMemoryInstruction(tmpSlot));
+                        EmitOpJsonCall(
+                            sourceIndex,
+                            "append",
+                            path,
+                            instructions,
+                            dataRef: new FunctionParameterNode { Name = "data", ParameterName = "data", EntityType = "memory", Index = tmpSlot });
                     }
                     else if (item is JsonPrimitiveNode primitiveItem)
                     {
@@ -2817,6 +2854,22 @@ namespace Magic.Kernel.Compilation
                     path,
                     instructions,
                     dataRef: new FunctionParameterNode { Name = "data", ParameterName = "data", EntityType = "memory", Index = dataVar.Index });
+                return;
+            }
+
+            if (node is JsonSymbolicNode symbolic)
+            {
+                var tmpSlot = memorySlotCounter++;
+                instructions.Add(CreatePushStringInstruction(":" + symbolic.SymbolicName));
+                instructions.Add(CreatePushIntInstruction(1));
+                instructions.Add(CreateCallInstruction("get"));
+                instructions.Add(CreatePopMemoryInstruction(tmpSlot));
+                EmitOpJsonCall(
+                    sourceIndex,
+                    "set",
+                    path,
+                    instructions,
+                    dataRef: new FunctionParameterNode { Name = "data", ParameterName = "data", EntityType = "memory", Index = tmpSlot });
                 return;
             }
 
@@ -2861,6 +2914,16 @@ namespace Magic.Kernel.Compilation
                 if (!TryParseNumber(text, ref i, out var num))
                     return false;
                 node = new JsonPrimitiveNode { Value = num };
+                return true;
+            }
+
+            // Symbolic variable reference: :identifier (e.g. :time)
+            if (ch == ':')
+            {
+                i++;
+                if (!TryParseIdentifier(text, ref i, out var symbolicIdent))
+                    return false;
+                node = new JsonSymbolicNode { SymbolicName = symbolicIdent };
                 return true;
             }
 
@@ -4258,7 +4321,7 @@ namespace Magic.Kernel.Compilation
                 var init = jsonArg is JsonArrayNode ? "[]" : "{}";
                 instructions.Add(CreatePushStringInstruction(init));
                 instructions.Add(CreatePopMemoryInstruction(objectSlot));
-                EmitBuildJsonNode(jsonArg, objectSlot, "", vars, instructions);
+                EmitBuildJsonNode(jsonArg, objectSlot, "", vars, instructions, ref memorySlotCounter);
             }
 
             instructions.Add(CreatePushMemoryInstruction(rootVar.Index));
@@ -4335,7 +4398,7 @@ namespace Magic.Kernel.Compilation
                 var init = jsonArg is JsonArrayNode ? "[]" : "{}";
                 instructions.Add(CreatePushStringInstruction(init));
                 instructions.Add(CreatePopMemoryInstruction(objectSlot));
-                EmitBuildJsonNode(jsonArg, objectSlot, "", vars, instructions);
+                EmitBuildJsonNode(jsonArg, objectSlot, "", vars, instructions, ref memorySlotCounter);
             }
 
             instructions.Add(CreatePushMemoryInstruction(rootVar.Index));

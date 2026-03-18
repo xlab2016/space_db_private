@@ -12,7 +12,9 @@ using Magic.Kernel.Data;
 using Magic.Kernel.Devices;
 using Magic.Kernel.Devices.Store;
 using Magic.Kernel.Devices.Streams;
+using Magic.Kernel.Devices.Streams.Inference;
 using Magic.Kernel.Interpretation;
+using Magic.Kernel.Types;
 using Magic.Kernel;
 
 namespace Magic.Kernel.Core.OS
@@ -55,6 +57,10 @@ namespace Magic.Kernel.Core.OS
             {
                 return new Devices.Store.DatabaseDevice();
             }
+            if (string.Equals(typeObj as string, "list", StringComparison.OrdinalIgnoreCase))
+            {
+                return new DefList();
+            }
             throw new DefTypeUnknownException(typeObj);
         }
 
@@ -65,6 +71,25 @@ namespace Magic.Kernel.Core.OS
                 return null;
             if (args.Count == 1)
                 return Def(args[0], executableUnit);
+
+            // List def: args = [initialData, "list"] — creates a DefList pre-populated with items.
+            if (args.Count == 2 &&
+                args[1] is string listKind &&
+                string.Equals(listKind, "list", StringComparison.OrdinalIgnoreCase))
+            {
+                var defList = new DefList();
+                if (args[0] is System.Collections.Generic.IEnumerable<object?> typedItems)
+                {
+                    foreach (var item in typedItems)
+                        defList.Items.Add(item);
+                }
+                else if (args[0] is System.Collections.IEnumerable nonGeneric && args[0] is not string)
+                {
+                    foreach (var item in nonGeneric)
+                        defList.Items.Add(item);
+                }
+                return defList;
+            }
 
             if (args.Count == 2 && args[0] is string name && args[1] is string kind)
             {
@@ -134,6 +159,11 @@ namespace Magic.Kernel.Core.OS
                 if (g is string s)
                     genSet.Add(s);
             }
+            if (streamDevice != null && genSet.Contains("inference") && genSet.Contains("openai"))
+            {
+                defType.Generalizations.Add(new OpenAIInference());
+                return defObj;
+            }
             if (streamDevice != null && genSet.Contains("messenger") && genSet.Contains("telegram") && genSet.Contains("client"))
             {
                 defType.Generalizations.Add(new Devices.Streams.WTelegramStreamDevice());
@@ -163,6 +193,10 @@ namespace Magic.Kernel.Core.OS
                     defType.Generalizations.Add(new Devices.Streams.Telegram());
                 else if (string.Equals(g as string, "client", StringComparison.OrdinalIgnoreCase))
                     ;
+                else if (string.Equals(g as string, "inference", StringComparison.OrdinalIgnoreCase))
+                    ; // handled by combined genSet checks above
+                else if (string.Equals(g as string, "openai", StringComparison.OrdinalIgnoreCase))
+                    ; // handled by combined genSet checks above
                 else if (string.Equals(g as string, "postgres", StringComparison.OrdinalIgnoreCase))
                     defType.Generalizations.Add(new Devices.Store.Postgres());
                 else if (g is Data.Database database)

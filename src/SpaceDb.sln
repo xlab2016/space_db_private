@@ -47,6 +47,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Space.OS.Simulator.Console"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Magic.Drivers.WTelegram", "Libs\Magic.Drivers.WTelegram\Magic.Drivers.WTelegram.csproj", "{CD98A14F-BE25-4F41-97F8-AE525A462BFC}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Magic.Drivers.Inference.OpenAI", "Libs\Magic.Drivers.Inference.OpenAI\Magic.Drivers.Inference.OpenAI.csproj", "{D1E2F3A4-B5C6-7890-ABCD-EF0123456789}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
