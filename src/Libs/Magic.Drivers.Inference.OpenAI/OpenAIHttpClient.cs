@@ -24,7 +24,56 @@ namespace Magic.Drivers.Inference.OpenAI
             _model = model;
         }
 
+        /// <summary>Builds a structured XML prompt from individual sections to prevent prompt injection.
+        /// Sections with null or empty values are omitted. Non-string values are serialised as JSON.</summary>
+        public static string BuildStructuredPrompt(
+            object? data,
+            string? system,
+            string? instruction,
+            IReadOnlyList<object?>? history,
+            object? mcp,
+            object? skills)
+        {
+            var sb = new StringBuilder();
+
+            AppendSection(sb, "system", system);
+            AppendSection(sb, "instruction", instruction);
+
+            if (data != null)
+                AppendSection(sb, "data", Serialize(data));
+
+            if (history != null && history.Count > 0)
+                AppendSection(sb, "history", Serialize(history));
+
+            if (mcp != null)
+                AppendSection(sb, "mcp", Serialize(mcp));
+
+            if (skills != null)
+                AppendSection(sb, "skills", Serialize(skills));
+
+            return sb.ToString().Trim();
+        }
+
+        private static void AppendSection(StringBuilder sb, string tag, string? value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return;
+            sb.Append('<').Append(tag).AppendLine(">")
+              .AppendLine(value.Trim())
+              .Append("</").Append(tag).AppendLine(">");
+        }
+
+        private static string Serialize(object? value)
+        {
+            if (value is string s)
+                return s;
+            return JsonSerializer.Serialize(value, new JsonSerializerOptions { WriteIndented = false });
+        }
+
         /// <summary>Sends a streaming chat completion request to the OpenAI API.
+        /// The <paramref name="payload"/> dictionary may contain keys: <c>data</c>, <c>system</c>,
+        /// <c>instruction</c>, <c>mcp</c>, <c>skills</c>. These are composed into a structured XML
+        /// prompt to clearly separate instructions from data and prevent prompt injection.
         /// Calls <paramref name="onDelta"/> for each text delta and <paramref name="onFinish"/> when the stream ends.</summary>
         public async Task SendStreamingAsync(
             object? payload,
@@ -41,9 +90,11 @@ namespace Magic.Drivers.Inference.OpenAI
 
                 var messages = new List<object>();
 
+                // Add top-level system prompt as a dedicated system role message.
                 if (!string.IsNullOrEmpty(systemPrompt))
                     messages.Add(new { role = "system", content = systemPrompt });
 
+                // Replay conversation history.
                 foreach (var item in history)
                 {
                     if (item is IDictionary<string, object?> historyEntry)
@@ -54,27 +105,44 @@ namespace Magic.Drivers.Inference.OpenAI
                     }
                 }
 
-                string? instruction = null;
+                // Extract structured fields from payload and build XML prompt.
+                string? userMessage = null;
+
                 if (payload is IDictionary<string, object?> payloadDict)
                 {
+                    payloadDict.TryGetValue("data", out var dataObj);
+                    payloadDict.TryGetValue("system", out var sysObj);
                     payloadDict.TryGetValue("instruction", out var instrObj);
-                    instruction = instrObj?.ToString();
+                    payloadDict.TryGetValue("mcp", out var mcpObj);
+                    payloadDict.TryGetValue("skills", out var skillsObj);
 
-                    if (payloadDict.TryGetValue("system", out var sysObj) && !string.IsNullOrEmpty(sysObj?.ToString()))
+                    var payloadSystem = sysObj?.ToString();
+
+                    // If a system value is provided inside the payload and no top-level system prompt
+                    // was given, promote it to a system role message so it is handled correctly by the API.
+                    if (!string.IsNullOrEmpty(payloadSystem) && string.IsNullOrEmpty(systemPrompt))
                     {
                         var hasSystem = messages.Count > 0 &&
                             messages[0].GetType().GetProperty("role")?.GetValue(messages[0])?.ToString() == "system";
                         if (!hasSystem)
-                            messages.Insert(0, new { role = "system", content = sysObj!.ToString() });
+                            messages.Insert(0, new { role = "system", content = payloadSystem });
                     }
+
+                    userMessage = BuildStructuredPrompt(
+                        dataObj,
+                        payloadSystem,
+                        instrObj?.ToString(),
+                        null,   // history already added above as chat messages
+                        mcpObj,
+                        skillsObj);
                 }
                 else if (payload is string payloadStr)
                 {
-                    instruction = payloadStr;
+                    userMessage = payloadStr;
                 }
 
-                if (!string.IsNullOrEmpty(instruction))
-                    messages.Add(new { role = "user", content = instruction });
+                if (!string.IsNullOrEmpty(userMessage))
+                    messages.Add(new { role = "user", content = userMessage });
 
                 var requestBody = new
                 {

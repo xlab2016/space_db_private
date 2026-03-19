@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Magic.Kernel\Magic.Kernel.csproj" />
+    <ProjectReference Include="..\Magic.Drivers.Inference.OpenAI\Magic.Drivers.Inference.OpenAI.csproj" />
   </ItemGroup>
 
   <ItemGroup>
