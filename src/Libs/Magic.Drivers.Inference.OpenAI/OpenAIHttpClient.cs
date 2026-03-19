@@ -49,8 +49,8 @@ namespace Magic.Drivers.Inference.OpenAI
                     if (item is IDictionary<string, object?> historyEntry)
                     {
                         var role = historyEntry.TryGetValue("role", out var r) ? r?.ToString() ?? "user" : "user";
-                        var content = historyEntry.TryGetValue("content", out var c) ? c?.ToString() ?? "" : "";
-                        messages.Add(new { role, content });
+                        var entryContent = historyEntry.TryGetValue("content", out var c) ? c?.ToString() ?? "" : "";
+                        messages.Add(new { role, content = entryContent });
                     }
                 }
 

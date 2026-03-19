@@ -447,7 +447,7 @@ entrypoint {
             asm.Should().Contain(c => c.Opcode == Opcodes.Je);
             asm.Should().Contain(c => c.Opcode == Opcodes.Jmp);
             asm.Any(c => c.Opcode == Opcodes.ACall && c.Operand1 is CallInfo ci && ci.FunctionName.StartsWith("streamwait_loop_", StringComparison.Ordinal)).Should().BeTrue();
-            asm.Should().Contain(c => c.Opcode == Opcodes.Await);
+            asm.Should().Contain(c => c.Opcode == Opcodes.AwaitObj);
             asm.Any(c => c.Opcode == Opcodes.Call && c.Operand1 is CallInfo ci && ci.FunctionName == "compile").Should().BeTrue();
             asm.Any(c => c.Opcode == Opcodes.Call && c.Operand1 is CallInfo ci && ci.FunctionName == "print").Should().BeTrue();
         }
