@@ -73,61 +73,76 @@ namespace Magic.Drivers.Inference.OpenAI
         /// <summary>Sends a streaming chat completion request to the OpenAI API using a typed <see cref="OpenAIInferenceRequest"/>.
         /// Fields are composed into a structured XML prompt to clearly separate instructions from data
         /// and prevent prompt injection.
+        /// The HTTP request is sent immediately; the SSE stream is read in a background task via <see cref="RunStreamLoopAsync"/>.
         /// Calls <paramref name="onDelta"/> for each text delta and <paramref name="onFinish"/> when the stream ends.</summary>
-        public async Task SendStreamingAsync(
+        public Task SendStreamingAsync(
             OpenAIInferenceRequest request,
             Action<string> onDelta,
             Action onFinish,
             CancellationToken cancellationToken = default)
         {
+            var httpClient = new HttpClient();
+            httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _apiToken);
+
+            var messages = new List<object>();
+
+            // Promote system to a dedicated system role message.
+            if (!string.IsNullOrEmpty(request.System))
+                messages.Add(new { role = "system", content = request.System });
+
+            // Replay conversation history.
+            foreach (var item in request.History)
+            {
+                if (item is IDictionary<string, object?> historyEntry)
+                {
+                    var role = historyEntry.TryGetValue("role", out var r) ? r?.ToString() ?? "user" : "user";
+                    var entryContent = historyEntry.TryGetValue("content", out var c) ? c?.ToString() ?? "" : "";
+                    messages.Add(new { role, content = entryContent });
+                }
+            }
+
+            // Build structured XML user message from typed fields.
+            var userMessage = BuildStructuredPrompt(
+                request.Data,
+                request.System,
+                request.Instruction,
+                null,           // history already added above as chat messages
+                null,           // tools (reserved for future use)
+                request.Skills);
+
+            if (!string.IsNullOrEmpty(userMessage))
+                messages.Add(new { role = "user", content = userMessage });
+
+            var requestBody = new
+            {
+                model = _model,
+                messages,
+                stream = true
+            };
+
+            var json = JsonSerializer.Serialize(requestBody);
+            var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+            var url = $"{_apiBase}/v1/chat/completions";
+            var httpRequest = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
+
+            // Send the HTTP request immediately (write phase); pipe the response stream into the delta queue in parallel.
+            var responseTask = httpClient.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            return RunStreamLoopAsync(httpClient, responseTask, onDelta, onFinish, cancellationToken);
+        }
+
+        /// <summary>Awaits the HTTP response and reads the SSE stream, enqueuing text deltas via <paramref name="onDelta"/>.
+        /// Calls <paramref name="onFinish"/> when the stream ends or an error occurs.</summary>
+        private static async Task RunStreamLoopAsync(
+            HttpClient httpClient,
+            Task<HttpResponseMessage> responseTask,
+            Action<string> onDelta,
+            Action onFinish,
+            CancellationToken cancellationToken)
+        {
             try
             {
-                using var httpClient = new HttpClient();
-                httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _apiToken);
-
-                var messages = new List<object>();
-
-                // Promote system to a dedicated system role message.
-                if (!string.IsNullOrEmpty(request.System))
-                    messages.Add(new { role = "system", content = request.System });
-
-                // Replay conversation history.
-                foreach (var item in request.History)
-                {
-                    if (item is IDictionary<string, object?> historyEntry)
-                    {
-                        var role = historyEntry.TryGetValue("role", out var r) ? r?.ToString() ?? "user" : "user";
-                        var entryContent = historyEntry.TryGetValue("content", out var c) ? c?.ToString() ?? "" : "";
-                        messages.Add(new { role, content = entryContent });
-                    }
-                }
-
-                // Build structured XML user message from typed fields.
-                var userMessage = BuildStructuredPrompt(
-                    request.Data,
-                    request.System,
-                    request.Instruction,
-                    null,           // history already added above as chat messages
-                    null,           // tools (reserved for future use)
-                    request.Skills);
-
-                if (!string.IsNullOrEmpty(userMessage))
-                    messages.Add(new { role = "user", content = userMessage });
-
-                var requestBody = new
-                {
-                    model = _model,
-                    messages,
-                    stream = true
-                };
-
-                var json = JsonSerializer.Serialize(requestBody);
-                var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-                var url = $"{_apiBase}/v1/chat/completions";
-                var httpRequest = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
-
-                using var response = await httpClient.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                using var response = await responseTask.ConfigureAwait(false);
 
                 if (!response.IsSuccessStatusCode)
                     return;
@@ -168,6 +183,7 @@ namespace Magic.Drivers.Inference.OpenAI
             finally
             {
                 onFinish();
+                httpClient.Dispose();
             }
         }
     }
