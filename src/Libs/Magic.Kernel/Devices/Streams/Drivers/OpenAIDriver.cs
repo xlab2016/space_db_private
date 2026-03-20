@@ -52,19 +52,18 @@ namespace Magic.Kernel.Devices.Streams.Drivers
 
         /// <summary>Starts a streaming inference request via <see cref="Magic.Drivers.Inference.OpenAI.OpenAIHttpClient"/>
         /// and enqueues deltas into <paramref name="responseDevice"/>.
-        /// The HTTP request fires immediately; the SSE stream is read in parallel while this method returns.</summary>
+        /// Returns the streaming <see cref="Task"/> so callers can observe completion or exceptions.</summary>
         public Task SendStreamingRequestAsync(
             Magic.Drivers.Inference.OpenAI.OpenAIInferenceRequest request,
             OpenAIStreamingResponse responseDevice,
             CancellationToken cancellationToken = default)
         {
             var client = new Magic.Drivers.Inference.OpenAI.OpenAIHttpClient(_apiToken, _apiBase, _model);
-            _ = client.SendStreamingAsync(
+            return client.SendStreamingAsync(
                 request,
                 delta => responseDevice.EnqueueDelta(delta),
                 () => responseDevice.FinishStream(),
                 cancellationToken);
-            return Task.CompletedTask;
         }
 
         public Task<(DeviceOperationResult Result, byte[] Bytes)> ReadAsync() => Task.FromResult((DeviceOperationResult.Success, Array.Empty<byte>()));
