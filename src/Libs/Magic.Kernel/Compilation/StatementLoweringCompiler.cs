@@ -2778,68 +2778,52 @@ namespace Magic.Kernel.Compilation
             EmitBuildJsonNode(node, sourceIndex, path, vars, instructions, ref unused);
         }
 
+        /// <summary>
+        /// Bottom-up (RPN-style) JSON compilation: innermost nodes are built first into their own
+        /// memory slots, then assembled upward into parent containers. This mirrors Reverse Polish
+        /// Notation evaluation — operands (children) are fully constructed before the operator
+        /// (parent insertion) runs.
+        /// </summary>
         private static void EmitBuildJsonNode(JsonArgumentNode node, long sourceIndex, string path, Dictionary<string, (string Kind, int Index)> vars, List<InstructionNode> instructions, ref int memorySlotCounter)
         {
             if (node is JsonObjectNode objNode)
             {
+                // For a nested object (path non-empty), allocate its own slot, build it bottom-up,
+                // then insert the fully-built object into the parent slot at the given path.
                 if (!string.IsNullOrEmpty(path))
-                    EmitOpJsonCall(sourceIndex, "ensureObject", path, instructions);
-
-                foreach (var (key, value) in objNode.Properties)
                 {
-                    var childPath = AppendPath(path, key);
-                    EmitBuildJsonNode(value, sourceIndex, childPath, vars, instructions, ref memorySlotCounter);
+                    var objSlot = memorySlotCounter++;
+                    instructions.Add(CreatePushStringInstruction("{}"));
+                    instructions.Add(CreatePopMemoryInstruction(objSlot));
+                    EmitBuildObjectProperties(objNode, objSlot, vars, instructions, ref memorySlotCounter);
+                    EmitOpJsonCall(sourceIndex, "set", path, instructions,
+                        dataRef: new FunctionParameterNode { Name = "data", ParameterName = "data", EntityType = "memory", Index = objSlot });
+                }
+                else
+                {
+                    // Root object: sourceIndex is already initialised by the call site.
+                    EmitBuildObjectProperties(objNode, sourceIndex, vars, instructions, ref memorySlotCounter);
                 }
                 return;
             }
 
             if (node is JsonArrayNode arrNode)
             {
+                // For a nested array (path non-empty), allocate its own slot, build bottom-up,
+                // then insert into the parent.
                 if (!string.IsNullOrEmpty(path))
-                    EmitOpJsonCall(sourceIndex, "ensureArray", path, instructions);
-
-                for (var i = 0; i < arrNode.Items.Count; i++)
                 {
-                    var item = arrNode.Items[i];
-                    var indexPath = AppendPath(path, $"[{i}]");
-
-                    if (item is JsonObjectNode)
-                    {
-                        EmitOpJsonCall(sourceIndex, "append", path, instructions, dataJson: "{}");
-                        EmitBuildJsonNode(item, sourceIndex, indexPath, vars, instructions, ref memorySlotCounter);
-                    }
-                    else if (item is JsonArrayNode)
-                    {
-                        EmitOpJsonCall(sourceIndex, "append", path, instructions, dataJson: "[]");
-                        EmitBuildJsonNode(item, sourceIndex, indexPath, vars, instructions, ref memorySlotCounter);
-                    }
-                    else if (item is JsonIdentifierNode idNode && vars.TryGetValue(idNode.Name, out var valueVar))
-                    {
-                        EmitOpJsonCall(
-                            sourceIndex,
-                            "append",
-                            path,
-                            instructions,
-                            dataRef: new FunctionParameterNode { Name = "data", ParameterName = "data", EntityType = "memory", Index = valueVar.Index });
-                    }
-                    else if (item is JsonSymbolicNode symbolicItem)
-                    {
-                        var tmpSlot = memorySlotCounter++;
-                        instructions.Add(CreatePushStringInstruction(":" + symbolicItem.SymbolicName));
-                        instructions.Add(CreatePushIntInstruction(1));
-                        instructions.Add(CreateCallInstruction("get"));
-                        instructions.Add(CreatePopMemoryInstruction(tmpSlot));
-                        EmitOpJsonCall(
-                            sourceIndex,
-                            "append",
-                            path,
-                            instructions,
-                            dataRef: new FunctionParameterNode { Name = "data", ParameterName = "data", EntityType = "memory", Index = tmpSlot });
-                    }
-                    else if (item is JsonPrimitiveNode primitiveItem)
-                    {
-                        EmitOpJsonCall(sourceIndex, "append", path, instructions, dataJson: JsonLiteralToRaw(primitiveItem.Value));
-                    }
+                    var arrSlot = memorySlotCounter++;
+                    instructions.Add(CreatePushStringInstruction("[]"));
+                    instructions.Add(CreatePopMemoryInstruction(arrSlot));
+                    EmitBuildArrayItems(arrNode, arrSlot, vars, instructions, ref memorySlotCounter);
+                    EmitOpJsonCall(sourceIndex, "set", path, instructions,
+                        dataRef: new FunctionParameterNode { Name = "data", ParameterName = "data", EntityType = "memory", Index = arrSlot });
+                }
+                else
+                {
+                    // Root array: sourceIndex is already initialised by the call site.
+                    EmitBuildArrayItems(arrNode, sourceIndex, vars, instructions, ref memorySlotCounter);
                 }
                 return;
             }
@@ -2874,6 +2858,74 @@ namespace Magic.Kernel.Compilation
             if (node is JsonPrimitiveNode primitive)
             {
                 EmitOpJsonCall(sourceIndex, "set", path, instructions, dataJson: JsonLiteralToRaw(primitive.Value));
+            }
+        }
+
+        /// <summary>
+        /// Builds all properties of a JSON object into <paramref name="objSlot"/> bottom-up:
+        /// nested objects/arrays are fully constructed in their own slots before being inserted.
+        /// </summary>
+        private static void EmitBuildObjectProperties(JsonObjectNode objNode, long objSlot, Dictionary<string, (string Kind, int Index)> vars, List<InstructionNode> instructions, ref int memorySlotCounter)
+        {
+            foreach (var (key, value) in objNode.Properties)
+            {
+                EmitBuildJsonNode(value, objSlot, key, vars, instructions, ref memorySlotCounter);
+            }
+        }
+
+        /// <summary>
+        /// Appends all items of a JSON array into <paramref name="arrSlot"/> bottom-up:
+        /// nested objects/arrays are fully constructed in their own slots before being appended.
+        /// </summary>
+        private static void EmitBuildArrayItems(JsonArrayNode arrNode, long arrSlot, Dictionary<string, (string Kind, int Index)> vars, List<InstructionNode> instructions, ref int memorySlotCounter)
+        {
+            foreach (var item in arrNode.Items)
+            {
+                if (item is JsonObjectNode nestedObj)
+                {
+                    var childSlot = memorySlotCounter++;
+                    instructions.Add(CreatePushStringInstruction("{}"));
+                    instructions.Add(CreatePopMemoryInstruction(childSlot));
+                    EmitBuildObjectProperties(nestedObj, childSlot, vars, instructions, ref memorySlotCounter);
+                    EmitOpJsonCall(arrSlot, "append", "", instructions,
+                        dataRef: new FunctionParameterNode { Name = "data", ParameterName = "data", EntityType = "memory", Index = childSlot });
+                }
+                else if (item is JsonArrayNode nestedArr)
+                {
+                    var childSlot = memorySlotCounter++;
+                    instructions.Add(CreatePushStringInstruction("[]"));
+                    instructions.Add(CreatePopMemoryInstruction(childSlot));
+                    EmitBuildArrayItems(nestedArr, childSlot, vars, instructions, ref memorySlotCounter);
+                    EmitOpJsonCall(arrSlot, "append", "", instructions,
+                        dataRef: new FunctionParameterNode { Name = "data", ParameterName = "data", EntityType = "memory", Index = childSlot });
+                }
+                else if (item is JsonIdentifierNode idNode && vars.TryGetValue(idNode.Name, out var valueVar))
+                {
+                    EmitOpJsonCall(
+                        arrSlot,
+                        "append",
+                        "",
+                        instructions,
+                        dataRef: new FunctionParameterNode { Name = "data", ParameterName = "data", EntityType = "memory", Index = valueVar.Index });
+                }
+                else if (item is JsonSymbolicNode symbolicItem)
+                {
+                    var tmpSlot = memorySlotCounter++;
+                    instructions.Add(CreatePushStringInstruction(":" + symbolicItem.SymbolicName));
+                    instructions.Add(CreatePushIntInstruction(1));
+                    instructions.Add(CreateCallInstruction("get"));
+                    instructions.Add(CreatePopMemoryInstruction(tmpSlot));
+                    EmitOpJsonCall(
+                        arrSlot,
+                        "append",
+                        "",
+                        instructions,
+                        dataRef: new FunctionParameterNode { Name = "data", ParameterName = "data", EntityType = "memory", Index = tmpSlot });
+                }
+                else if (item is JsonPrimitiveNode primitiveItem)
+                {
+                    EmitOpJsonCall(arrSlot, "append", "", instructions, dataJson: JsonLiteralToRaw(primitiveItem.Value));
+                }
             }
         }
 

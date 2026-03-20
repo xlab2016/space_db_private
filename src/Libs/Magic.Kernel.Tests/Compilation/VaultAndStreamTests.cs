@@ -217,11 +217,16 @@ entrypoint {
                 .Select(c => (CallInfo)c.Operand1!)
                 .ToList();
 
+            // Bottom-up compilation: nested objects/arrays are built in their own slots first,
+            // then inserted into the parent via "set". Arrays use "append" to add items.
+            // "ensureObject" and "ensureArray" are no longer needed as each node owns its slot.
             opjsonCalls.Should().NotBeEmpty();
             opjsonCalls.Select(c => c.Parameters["operation"]?.ToString()).Should().Contain("set");
-            opjsonCalls.Select(c => c.Parameters["operation"]?.ToString()).Should().Contain("ensureObject");
-            opjsonCalls.Select(c => c.Parameters["operation"]?.ToString()).Should().Contain("ensureArray");
             opjsonCalls.Select(c => c.Parameters["operation"]?.ToString()).Should().Contain("append");
+            opjsonCalls.Select(c => c.Parameters["operation"]?.ToString()).Should().NotContain("ensureObject",
+                because: "bottom-up compilation initialises each object in its own slot via push/pop, not ensureObject");
+            opjsonCalls.Select(c => c.Parameters["operation"]?.ToString()).Should().NotContain("ensureArray",
+                because: "bottom-up compilation initialises each array in its own slot via push/pop, not ensureArray");
         }
 
         [Fact]
@@ -597,6 +602,108 @@ entrypoint {
             entryAsm.Should().Contain(c => c.Opcode == Opcodes.Def);
             entryAsm.Should().Contain(c => c.Opcode == Opcodes.Pop);
             entryAsm.Any(c => c.Opcode == Opcodes.Call && c.Operand1 is CallInfo ci && ci.FunctionName == "Main").Should().BeTrue();
+        }
+
+        [Fact]
+        public void ParseProgram_WithComplexNestedJson_ShouldBuildBottomUp_NoIndexPaths()
+        {
+            // Issue #9: complex nested JSON should be compiled bottom-up (RPN-style) so that
+            // innermost nodes are constructed first and assembled upward into parents.
+            // The compiled instructions must NOT use index-based paths like "data[0].weather[0]"
+            // because each nested object/array is built in its own memory slot before being inserted.
+            var source = @"@AGI 0.0.1;
+
+program test;
+module test;
+
+procedure Main {
+    var vault1 := vault;
+    var time := vault1.read(""time"");
+    var req = {
+        data: [{
+            currentTime: :time,
+            weather: [{ location: ""Astana"", temperature: ""-15C"" }]
+        }],
+        system: ""Professional chatbot"",
+        instruction: ""What is the weather in Astana?""
+    };
+}
+
+entrypoint {
+    Main;
+}";
+
+            var parser = new Parser();
+            var semanticAnalyzer = new SemanticAnalyzer();
+            var structure = parser.ParseProgram(source);
+            var analyzed = semanticAnalyzer.AnalyzeProgram(structure, parser, source);
+            var asm = analyzed.Procedures["Main"].Body;
+
+            var opjsonCalls = asm
+                .Where(c => c.Opcode == Opcodes.Call && c.Operand1 is CallInfo ci && ci.FunctionName == "opjson")
+                .Select(c => (CallInfo)c.Operand1!)
+                .ToList();
+
+            opjsonCalls.Should().NotBeEmpty();
+
+            // Bottom-up: no instruction should use index paths like "data[0]" or "data[0].weather[0]"
+            var pathsWithIndex = opjsonCalls
+                .Select(c => c.Parameters.TryGetValue("path", out var p) ? p?.ToString() : null)
+                .Where(p => p != null && System.Text.RegularExpressions.Regex.IsMatch(p, @"\[\d+\]"))
+                .ToList();
+
+            pathsWithIndex.Should().BeEmpty("bottom-up compilation must not produce index-based paths like data[0].weather[0]; each nested structure should be built in its own slot");
+        }
+
+        [Fact]
+        public void ParseProgram_WithNestedObjectInArray_ShouldSetPropertiesBeforeAppend()
+        {
+            // Issue #9: in bottom-up compilation, a nested object's properties must be set
+            // (innermost first) before the object is appended to its parent array.
+            var source = @"@AGI 0.0.1;
+
+program test;
+module test;
+
+procedure Main {
+    var items = [{
+        name: ""Alice"",
+        score: 42
+    }];
+}
+
+entrypoint {
+    Main;
+}";
+
+            var parser = new Parser();
+            var semanticAnalyzer = new SemanticAnalyzer();
+            var structure = parser.ParseProgram(source);
+            var analyzed = semanticAnalyzer.AnalyzeProgram(structure, parser, source);
+            var asm = analyzed.Procedures["Main"].Body;
+
+            var opjsonCalls = asm
+                .Where(c => c.Opcode == Opcodes.Call && c.Operand1 is CallInfo ci && ci.FunctionName == "opjson")
+                .Select(c => (CallInfo)c.Operand1!)
+                .ToList();
+
+            opjsonCalls.Should().NotBeEmpty();
+
+            // Must contain "set" operations for "name" and "score" (building the inner object)
+            var setPaths = opjsonCalls
+                .Where(c => c.Parameters.TryGetValue("operation", out var op) && op?.ToString() == "set")
+                .Select(c => c.Parameters.TryGetValue("path", out var p) ? p?.ToString() : null)
+                .ToList();
+
+            setPaths.Should().Contain("name");
+            setPaths.Should().Contain("score");
+
+            // Must contain an "append" operation (inserting the built object into the root array)
+            var appendOps = opjsonCalls
+                .Where(c => c.Parameters.TryGetValue("operation", out var op) && op?.ToString() == "append")
+                .ToList();
+
+            appendOps.Should().NotBeEmpty("the inner object must be appended to the array after it is built");
         }
 
         [Fact]
