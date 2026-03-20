@@ -26,9 +26,13 @@ namespace Magic.Kernel.Devices.Streams.Inference
             var request = BuildRequest(payload);
             var responseDevice = new OpenAIStreamingResponse(Token, ApiBase, Model, request);
             // Start streaming in the background via the OpenAI driver.
+            // The task is intentionally not awaited so the response device can be returned immediately for polling.
+            // On fault, FinishStream is called so StreamWaitAsync does not hang indefinitely.
             var driver = new OpenAIDriver(Token, ApiBase, Model);
             await driver.OpenAsync().ConfigureAwait(false);
-            _ = driver.SendStreamingRequestAsync(request, responseDevice);
+            _ = driver.SendStreamingRequestAsync(request, responseDevice)
+                      .ContinueWith(_ => responseDevice.FinishStream(),
+                                    System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted);
             return responseDevice;
         }
 
