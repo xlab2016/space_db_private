@@ -12,8 +12,7 @@ def
 pop [0]
 push [0]
 push string: "token"
-push 0
-push 2
+push 1
 callobj "get"
 pop [1]
 push stream
@@ -27,6 +26,9 @@ push 2
 defgen
 pop [3]
 push string: "[]"
+push list
+push 2
+def
 pop [4]
 push string: "{}"
 pop [5]
@@ -40,34 +42,75 @@ push 1
 callobj "open"
 pop [0]
 push [3]
-push string: "{ data: [{ currentTime: :time, weather: [ { location: \"Astana\", time: :time, temperature: \"-15C\" } ] }], system: \"Ты профессиональный чат бот по ИТ, отвечай в деловом тоне.\", instruction: \"Какая щас погода в Астане?\" }"
-push 0
-push 2
+push string: "{}"
+pop [7]
+push string: "[]"
+pop [8]
+push string: "{}"
+pop [9]
+push string: ":time"
+push 1
+call get
+pop [10]
+call opjson, [9], operation: "set", path: "currentTime", [10]
+pop [0]
+push string: "[]"
+pop [11]
+push string: "{}"
+pop [12]
+call opjson, [12], operation: "set", path: "location", dataJson: "\"Astana\""
+pop [0]
+push string: ":time"
+push 1
+call get
+pop [13]
+call opjson, [12], operation: "set", path: "time", [13]
+pop [0]
+call opjson, [12], operation: "set", path: "temperature", dataJson: "\"-15C\""
+pop [0]
+call opjson, [11], operation: "append", path: "", [12]
+pop [0]
+call opjson, [9], operation: "set", path: "weather", [11]
+pop [0]
+call opjson, [8], operation: "append", path: "", [9]
+pop [0]
+call opjson, [7], operation: "set", path: "data", [8]
+pop [0]
+call opjson, [7], operation: "set", path: "system", dataJson: "\"Ты профессиональный чат бот по ИТ, отвечай в деловом тоне.\""
+pop [0]
+call opjson, [7], operation: "set", path: "instruction", dataJson: "\"Какая щас погода в Астане?\""
+pop [0]
+push [7]
+push 1
 callobj "write"
 pop [6]
+push string: "Ответ: "
+push 1
+call println
+pop [0]
 label streamwait_loop_1
 push [6]
 push string: "delta"
 streamwaitobj
-pop [7]
-pop [8]
-pop [9]
-cmp [7], 1
+pop [14]
+pop [15]
+pop [16]
+cmp [14], 1
 je streamwait_loop_1_end
 push 0
 call streamwait_loop_1_delta
 jmp streamwait_loop_1
 label streamwait_loop_1_delta
-push [8]
+push [15]
 push string: "text"
 getobj
-pop [10]
-push [10]
+pop [17]
+push [17]
 push 1
 call print
 pop [0]
 push string: "print"
-push [10]
+push [17]
 push 1
 streamwait
 ret

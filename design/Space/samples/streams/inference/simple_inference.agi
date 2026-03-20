@@ -6,7 +6,7 @@ module streams/inference;
 
 procedure Main {
 	var vault1 := vault;
-	var token = vault1.get("token");
+	var token = vault1.read("token");
 	var gpt1 := stream<inference, openai>;
 	var history := [];
 	gpt1.open({
@@ -27,6 +27,7 @@ procedure Main {
 		system: "Ты профессиональный чат бот по ИТ, отвечай в деловом тоне.",
 		instruction: "Какая щас погода в Астане?"
 	});
+	debugger;
 
 	println("Ответ: ");
 

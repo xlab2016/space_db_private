@@ -20,9 +20,18 @@
 		"api_id": "27436564",
 		"api_hash": "a9036bda19a736171fdfadf492e2bf2c",
 		"phoneNumber": "77761114812",
-		//"channelTitle": "НЦЭ ЛИС CRM Поддержка",
 		"channelTitle": "ДПО, ДИТ, ОПОП, Госзаказ",
 		"connectionString": "Server=localhost;Port=5432;Database=telegram_to_db;User Id=pguser;Password=pguserpass"
+	}
+},
+{
+	"program": "simple_inference",
+	"system": "samples",
+	"module": "streams/inference",
+	"protected": false,
+	"instanceIndex": 0,
+	"store": {
+		"token": ""
 	}
 }
 ]

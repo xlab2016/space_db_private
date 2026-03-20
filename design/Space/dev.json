@@ -1,8 +1,8 @@
 {
-	"debug": "/samples/telegram_to_db.agi",
+	"debug": "",
 	"executionUnits": [
 		{
-			"path": "/samples/telegram_history_to_db.agi",
+			"path": "samples/streams/inference/simple_inference.agi",
 			"instanceCount": 1
 		}
 	]
