@@ -73,9 +73,9 @@ namespace Magic.Drivers.Inference.OpenAI
         /// <summary>Sends a streaming chat completion request to the OpenAI API using a typed <see cref="OpenAIInferenceRequest"/>.
         /// Fields are composed into a structured XML prompt to clearly separate instructions from data
         /// and prevent prompt injection.
-        /// The HTTP request is sent immediately; the SSE stream is read in a background task via <see cref="RunStreamLoopAsync"/>.
+        /// The HTTP request is awaited immediately so the response headers are received before reading the SSE stream.
         /// Calls <paramref name="onDelta"/> for each text delta and <paramref name="onFinish"/> when the stream ends.</summary>
-        public Task SendStreamingAsync(
+        public async Task SendStreamingAsync(
             OpenAIInferenceRequest request,
             Action<string> onDelta,
             Action onFinish,
@@ -126,23 +126,23 @@ namespace Magic.Drivers.Inference.OpenAI
             var url = $"{_apiBase}/v1/chat/completions";
             var httpRequest = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
 
-            // Send the HTTP request immediately (write phase); pipe the response stream into the delta queue in parallel.
-            var responseTask = httpClient.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            return RunStreamLoopAsync(httpClient, responseTask, onDelta, onFinish, cancellationToken);
+            // Await the HTTP request immediately so the response headers are received before delegating to the stream loop.
+            var response = await httpClient.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            await RunStreamLoopAsync(httpClient, response, onDelta, onFinish, cancellationToken).ConfigureAwait(false);
         }
 
-        /// <summary>Awaits the HTTP response and reads the SSE stream, enqueuing text deltas via <paramref name="onDelta"/>.
+        /// <summary>Reads the SSE stream from the HTTP response, enqueuing text deltas via <paramref name="onDelta"/>.
         /// Calls <paramref name="onFinish"/> when the stream ends or an error occurs.</summary>
         private static async Task RunStreamLoopAsync(
             HttpClient httpClient,
-            Task<HttpResponseMessage> responseTask,
+            HttpResponseMessage response,
             Action<string> onDelta,
             Action onFinish,
             CancellationToken cancellationToken)
         {
             try
             {
-                using var response = await responseTask.ConfigureAwait(false);
+                using var _ = response;
 
                 if (!response.IsSuccessStatusCode)
                     return;
