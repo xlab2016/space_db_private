@@ -89,8 +89,40 @@ namespace Magic.Kernel.Compilation
             foreach (var proc in programStructure.Procedures)
             {
                 var procedure = new Processor.Procedure { Name = proc.Key };
-                foreach (var instructionNode in LowerToInstructions(proc.Value))
-                    AddAnalyzedCommand(procedure.Body, instructionNode);
+
+                // If the procedure has named parameters, prepend parameter-binding instructions.
+                // Calling convention: stack has [arg0, arg1, ..., argN-1, N] before procedure body.
+                // We allocate memory slots for each parameter and emit Pop instructions to bind them.
+                // We use a fresh StatementLoweringCompiler pass that prepends synthetic var declarations.
+                if (programStructure.ProcedureParameters.TryGetValue(proc.Key, out var paramNames) && paramNames.Count > 0)
+                {
+                    // Calling convention: stack has [arg0, arg1, ..., argN-1, N] before procedure body.
+                    // 1. Pop arity (N) and discard it.
+                    // 2. Pop each argument in reverse order (argN-1 first) into a dedicated memory slot.
+                    // 3. Register those slots as globals so the body can reference params by name.
+
+                    // Discard arity (top of stack)
+                    procedure.Body.Add(_assembler.Emit(Opcodes.Pop, null));
+
+                    // Allocate slots and pop args (last param is nearest to arity on stack)
+                    var paramSlots = new int[paramNames.Count];
+                    for (var pi = paramNames.Count - 1; pi >= 0; pi--)
+                    {
+                        var slot = _statementLoweringCompiler.AllocateGlobalSlot(paramNames[pi]);
+                        paramSlots[pi] = slot;
+                        procedure.Body.Add(_assembler.Emit(Opcodes.Pop,
+                            new List<ParameterNode> { new Ast.MemoryParameterNode { Name = "index", Index = slot } }));
+                    }
+
+                    // Compile body with the same compiler (it has the parameter slots registered as globals)
+                    foreach (var instructionNode in LowerToInstructions(proc.Value))
+                        AddAnalyzedCommand(procedure.Body, instructionNode);
+                }
+                else
+                {
+                    foreach (var instructionNode in LowerToInstructions(proc.Value))
+                        AddAnalyzedCommand(procedure.Body, instructionNode);
+                }
                 // Явный ret в конце процедуры (для корректного asm-дампа и локальных подпрограмм).
                 if (procedure.Body.Count == 0 || procedure.Body[procedure.Body.Count - 1].Opcode != Opcodes.Ret)
                     procedure.Body.Add(_assembler.Emit(Opcodes.Ret, null));

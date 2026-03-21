@@ -159,6 +159,11 @@ namespace Magic.Kernel.Core.OS
                 if (g is string s)
                     genSet.Add(s);
             }
+            if (streamDevice != null && genSet.Contains("claw"))
+            {
+                defType.Generalizations.Add(new ClawStreamDevice());
+                return defObj;
+            }
             if (streamDevice != null && genSet.Contains("inference") && genSet.Contains("openai"))
             {
                 defType.Generalizations.Add(new OpenAIInference());
@@ -198,6 +203,8 @@ namespace Magic.Kernel.Core.OS
                     defType.Generalizations.Add(new Devices.Streams.Telegram());
                 else if (string.Equals(g as string, "client", StringComparison.OrdinalIgnoreCase))
                     ;
+                else if (string.Equals(g as string, "claw", StringComparison.OrdinalIgnoreCase))
+                    ; // handled by combined genSet check above
                 else if (string.Equals(g as string, "inference", StringComparison.OrdinalIgnoreCase))
                     ; // handled by combined genSet checks above
                 else if (string.Equals(g as string, "openai", StringComparison.OrdinalIgnoreCase))

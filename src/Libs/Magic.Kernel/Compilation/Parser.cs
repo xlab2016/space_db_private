@@ -369,10 +369,31 @@ namespace Magic.Kernel.Compilation
             if (CurrentScanner.Current.Kind != TokenKind.Identifier || !string.Equals(CurrentScanner.Current.Value, "procedure", StringComparison.OrdinalIgnoreCase)) return false;
             ExpectToken(TokenKind.Identifier, "procedure");
             var name = ExpectToken(TokenKind.Identifier).Value ?? "";
+
+            // Optional parameter list: procedure name(param1, param2, ...)
+            var parameters = new List<string>();
+            if (CurrentScanner.Current.Kind == TokenKind.LParen)
+            {
+                CurrentScanner.Scan(); // consume '('
+                while (CurrentScanner.Current.Kind != TokenKind.RParen && !CurrentScanner.Current.IsEndOfInput)
+                {
+                    if (CurrentScanner.Current.Kind == TokenKind.Identifier)
+                        parameters.Add(CurrentScanner.Scan().Value);
+                    else if (CurrentScanner.Current.Kind == TokenKind.Comma)
+                        CurrentScanner.Scan();
+                    else
+                        break;
+                }
+                if (CurrentScanner.Current.Kind == TokenKind.RParen)
+                    CurrentScanner.Scan(); // consume ')'
+            }
+
             SkipNewlines();
             if (!TryParseBodyBlock(out var body))
                 throw new CompilationException($"Expected body block for procedure '{name}' at position {CurrentScanner.Current.Start}.", CurrentScanner.Current.Start);
             structure.Procedures[name] = body;
+            if (parameters.Count > 0)
+                structure.ProcedureParameters[name] = parameters;
             structure.IsProgramStructure = true;
             return true;
         }
