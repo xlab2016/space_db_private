@@ -279,6 +279,13 @@ namespace Magic.Kernel.Interpretation
                 return Task.CompletedTask;
             }
 
+            if (string.Equals(symbolic, ":socket", StringComparison.OrdinalIgnoreCase))
+            {
+                var socketCtx = Magic.Kernel.Devices.Streams.ClawExecutionContext.CurrentSocket;
+                _stack.Add((object?)socketCtx ?? (object)"");
+                return Task.CompletedTask;
+            }
+
             _stack.Add(symbolic);
             return Task.CompletedTask;
         }

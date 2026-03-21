@@ -20,6 +20,14 @@ namespace Magic.Kernel.Compilation
         private Scanner CurrentScanner =>
             _scanner ?? throw new InvalidOperationException("Scanner is not initialized.");
 
+        /// <summary>Allocates a new global memory slot for the given name and returns its index.</summary>
+        public int AllocateGlobalSlot(string name)
+        {
+            var slot = _nextGlobalSlot++;
+            _globalSlots[name] = slot;
+            return slot;
+        }
+
         public List<InstructionNode> Lower(IEnumerable<string> sourceLines, bool registerGlobals = false)
         {
             var vars = new Dictionary<string, (string Kind, int Index)>(StringComparer.OrdinalIgnoreCase);
@@ -103,7 +111,13 @@ namespace Magic.Kernel.Compilation
                     continue;
                 }
 
+                if (TryCompileReturnStatement(line, instructions))
+                    continue;
+
                 if (TryCompileIfStatement(line, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter, ref streamLoopCounter, instructions))
+                    continue;
+
+                if (TryCompileSwitchStatement(line, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter, ref streamLoopCounter, instructions))
                     continue;
 
                 if (TryCompileStreamWaitForLoop(line, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter, ref streamLoopCounter, instructions))
@@ -1139,6 +1153,18 @@ namespace Magic.Kernel.Compilation
                     return true;
                 }
 
+                if (IsIdentifier(CurrentScanner.Current, "socket"))
+                {
+                    // var socket1 := socket; — injects the current ClawSocketContext via syscall
+                    var socketSlot = memorySlotCounter++;
+                    vars[targetName] = ("memory", socketSlot);
+                    instructions.Add(CreatePushStringInstruction(":socket"));
+                    instructions.Add(CreatePushIntInstruction(1));
+                    instructions.Add(CreateCallInstruction("get"));
+                    instructions.Add(CreatePopMemoryInstruction(socketSlot));
+                    return true;
+                }
+
                 if (TryParseVaultReadExpression(out var vaultVarName, out var readArgs))
                 {
                     if (!vars.TryGetValue(vaultVarName, out var vaultVar))
@@ -1972,28 +1998,60 @@ namespace Magic.Kernel.Compilation
             scanner.Scan();
             if (scanner.Current.Kind != TokenKind.Identifier)
                 return false;
-            var methodName = scanner.Scan().Value;
+
+            // Collect intermediate property path segments (for chains like obj.prop.method(...))
+            var pathSegments = new List<string>();
+            var firstIdent = scanner.Scan().Value;
+
+            // Check for multi-dot chain: obj.prop1.prop2...method(args)
+            while (scanner.Current.Kind == TokenKind.Dot)
+            {
+                scanner.Scan();
+                if (scanner.Current.Kind != TokenKind.Identifier)
+                    return false;
+                pathSegments.Add(firstIdent);
+                firstIdent = scanner.Scan().Value;
+            }
+            var methodName = firstIdent;
+
             if (scanner.Current.Kind != TokenKind.LParen)
                 return false;
             scanner.Scan();
 
-            string argText;
-            var argIsStringLiteral = false;
-            if (scanner.Current.Kind == TokenKind.StringLiteral)
+            // Collect all argument texts (comma-separated), respecting nesting
+            var argTexts = new List<string>();
+            var argIsStringLiterals = new List<bool>();
+
+            while (scanner.Current.Kind != TokenKind.RParen && !scanner.Current.IsEndOfInput)
             {
-                argText = scanner.Scan().Value;
-                argIsStringLiteral = true;
-            }
-            else
-            {
-                var start = scanner.Current.Start;
-                var end = start;
-                while (!scanner.Current.IsEndOfInput && scanner.Current.Kind != TokenKind.RParen)
+                if (scanner.Current.Kind == TokenKind.StringLiteral)
                 {
-                    end = scanner.Current.End;
-                    scanner.Scan();
+                    argTexts.Add(scanner.Scan().Value);
+                    argIsStringLiterals.Add(true);
                 }
-                argText = start < end ? line.Substring(start, end - start).Trim() : "";
+                else
+                {
+                    var start = scanner.Current.Start;
+                    var end = start;
+                    var depth = 0;
+                    while (!scanner.Current.IsEndOfInput)
+                    {
+                        if (scanner.Current.Kind == TokenKind.LParen || scanner.Current.Kind == TokenKind.LBrace || scanner.Current.Kind == TokenKind.LBracket) depth++;
+                        if (scanner.Current.Kind == TokenKind.RParen || scanner.Current.Kind == TokenKind.RBrace || scanner.Current.Kind == TokenKind.RBracket)
+                        {
+                            if (depth == 0) break;
+                            depth--;
+                        }
+                        if (scanner.Current.Kind == TokenKind.Comma && depth == 0) break;
+                        end = scanner.Current.End;
+                        scanner.Scan();
+                    }
+                    argTexts.Add(start < end ? line.Substring(start, end - start).Trim() : "");
+                    argIsStringLiterals.Add(false);
+                }
+
+                if (scanner.Current.Kind == TokenKind.Comma)
+                    scanner.Scan();
             }
 
             if (scanner.Current.Kind != TokenKind.RParen)
@@ -2007,95 +2065,84 @@ namespace Magic.Kernel.Compilation
             if (!vars.TryGetValue(objectName, out var objVar))
                 throw new UndeclaredVariableException(objectName);
 
-            if (LooksLikeJsonLiteral(argText))
+            // For single-argument JSON literal case (backward compatible)
+            if (argTexts.Count == 1 && pathSegments.Count == 0)
             {
-                // Argument inside (): allow object literal with ; (e.g. obj.method({ key: x; })). Only forbid ; in strict JSON.
-                if (TryParseObjectLiteralWithVarRefs(argText, out var keyVars) && keyVars != null && keyVars.Count > 0)
+                var argText = argTexts[0];
+                var argIsStringLiteral = argIsStringLiterals[0];
+                if (LooksLikeJsonLiteral(argText))
                 {
-                    var objectSlot = memorySlotCounter++;
-                    instructions.Add(CreatePushStringInstruction("{}"));
-                    instructions.Add(CreatePopMemoryInstruction(objectSlot));
-                    foreach (var (key, varName) in keyVars)
+                    if (TryParseObjectLiteralWithVarRefs(argText, out var keyVars) && keyVars != null && keyVars.Count > 0)
                     {
-                        if (!vars.TryGetValue(varName, out var valVar))
-                            throw new UndeclaredVariableException(varName);
-                        if (valVar.Kind != "memory" && valVar.Kind != "stream" && valVar.Kind != "def")
-                            return false;
-                        EmitOpJsonCall(
-                            objectSlot,
-                            "set",
-                            key,
-                            instructions,
-                            dataRef: new FunctionParameterNode
-                            {
-                                Name = "data",
-                                ParameterName = "data",
-                                EntityType = "memory",
-                                Index = valVar.Index
-                            });
+                        var objectSlot = memorySlotCounter++;
+                        instructions.Add(CreatePushStringInstruction("{}"));
+                        instructions.Add(CreatePopMemoryInstruction(objectSlot));
+                        foreach (var (key, varName) in keyVars)
+                        {
+                            if (!vars.TryGetValue(varName, out var valVar))
+                                throw new UndeclaredVariableException(varName);
+                            if (valVar.Kind != "memory" && valVar.Kind != "stream" && valVar.Kind != "def")
+                                return false;
+                            EmitOpJsonCall(objectSlot, "set", key, instructions, dataRef: new FunctionParameterNode { Name = "data", ParameterName = "data", EntityType = "memory", Index = valVar.Index });
+                        }
+                        instructions.Add(CreatePushMemoryInstruction(objVar.Index));
+                        instructions.Add(CreatePushMemoryInstruction(objectSlot));
+                        instructions.Add(CreatePushIntInstruction(1));
+                        instructions.Add(new InstructionNode { Opcode = "callobj", Parameters = new List<ParameterNode> { new FunctionNameParameterNode { FunctionName = methodName } } });
+                        instructions.Add(CreatePopInstruction());
+                        return true;
                     }
-                    instructions.Add(CreatePushMemoryInstruction(objVar.Index));
-                    instructions.Add(CreatePushMemoryInstruction(objectSlot));
-                    instructions.Add(CreatePushIntInstruction(1));
-                    instructions.Add(new InstructionNode
+                    if (HasSemicolonInsideJsonLiteral(argText))
+                        throw new CompilationException("JSON literal cannot contain ';' inside object or array.", -1);
+                    if (TryParseJsonArgument(argText, out var jsonArg))
                     {
-                        Opcode = "callobj",
-                        Parameters = new List<ParameterNode>
-                        {
-                            new FunctionNameParameterNode { FunctionName = methodName }
-                        }
-                    });
-                    // Вызов метода как statement — результат не используется.
-                    instructions.Add(CreatePopInstruction());
-                    return true;
-                }
-                if (HasSemicolonInsideJsonLiteral(argText))
-                    throw new CompilationException("JSON literal cannot contain ';' inside object or array.", -1);
-                if (TryParseJsonArgument(argText, out var jsonArg))
-                {
-                    var objectSlot = memorySlotCounter++;
-                    var init = jsonArg is JsonArrayNode ? "[]" : "{}";
-                    instructions.Add(CreatePushStringInstruction(init));
-                    instructions.Add(CreatePopMemoryInstruction(objectSlot));
-
-                    EmitBuildJsonNode(jsonArg, objectSlot, "", vars, instructions, ref memorySlotCounter);
-
-                    instructions.Add(CreatePushMemoryInstruction(objVar.Index));
-                    instructions.Add(CreatePushMemoryInstruction(objectSlot));
-                    instructions.Add(CreatePushIntInstruction(1));
-                    instructions.Add(new InstructionNode
-                    {
-                        Opcode = "callobj",
-                        Parameters = new List<ParameterNode>
-                        {
-                            new FunctionNameParameterNode { FunctionName = methodName }
-                        }
-                    });
-                    // Вызов метода как statement — результат не используется.
-                    instructions.Add(CreatePopInstruction());
-                    return true;
+                        var objectSlot = memorySlotCounter++;
+                        var init = jsonArg is JsonArrayNode ? "[]" : "{}";
+                        instructions.Add(CreatePushStringInstruction(init));
+                        instructions.Add(CreatePopMemoryInstruction(objectSlot));
+                        EmitBuildJsonNode(jsonArg, objectSlot, "", vars, instructions, ref memorySlotCounter);
+                        instructions.Add(CreatePushMemoryInstruction(objVar.Index));
+                        instructions.Add(CreatePushMemoryInstruction(objectSlot));
+                        instructions.Add(CreatePushIntInstruction(1));
+                        instructions.Add(new InstructionNode { Opcode = "callobj", Parameters = new List<ParameterNode> { new FunctionNameParameterNode { FunctionName = methodName } } });
+                        instructions.Add(CreatePopInstruction());
+                        return true;
+                    }
                 }
             }
 
+            // Push the base object, then navigate property path via getobj
             instructions.Add(CreatePushMemoryInstruction(objVar.Index));
-            if (argIsStringLiteral)
+            foreach (var seg in pathSegments)
             {
-                instructions.Add(CreatePushStringInstruction(argText));
+                instructions.Add(CreatePushStringInstruction(seg));
+                instructions.Add(new InstructionNode { Opcode = "getobj" });
             }
-            else if (vars.TryGetValue(argText, out var argVar))
-                instructions.Add(CreatePushMemoryInstruction(argVar.Index));
-            else
-                instructions.Add(CreatePushStringInstruction(argText));
-            instructions.Add(CreatePushIntInstruction(1));
-            instructions.Add(new InstructionNode
+            // If there were path segments, the traversed object is now on top of the stack.
+            // We need to store it in a temp slot to push it before args.
+            if (pathSegments.Count > 0)
             {
-                Opcode = "callobj",
-                Parameters = new List<ParameterNode>
-                {
-                    new FunctionNameParameterNode { FunctionName = methodName }
-                }
-            });
-            // Вызов метода как statement — результат не используется.
+                var tempSlot = memorySlotCounter++;
+                instructions.Add(CreatePopMemoryInstruction(tempSlot));
+                // Push args first, then the object — actually callobj pops arity, then args, then object
+                // Order: push object, then push args, then push arity → callobj pops arity, args, object
+                instructions.Add(CreatePushMemoryInstruction(tempSlot));
+            }
+
+            // Push all arguments
+            foreach (var (argText, argIsStr) in argTexts.Zip(argIsStringLiterals))
+            {
+                if (argIsStr)
+                    instructions.Add(CreatePushStringInstruction(argText));
+                else if (vars.TryGetValue(argText, out var argVar))
+                    instructions.Add(argVar.Kind == "global" ? CreatePushGlobalMemoryInstruction(argVar.Index) : CreatePushMemoryInstruction(argVar.Index));
+                else
+                    instructions.Add(CreatePushStringInstruction(argText));
+            }
+
+            instructions.Add(CreatePushIntInstruction(argTexts.Count));
+            instructions.Add(new InstructionNode { Opcode = "callobj", Parameters = new List<ParameterNode> { new FunctionNameParameterNode { FunctionName = methodName } } });
+            // Method call as statement — discard result
             instructions.Add(CreatePopInstruction());
             return true;
         }
@@ -4582,6 +4629,257 @@ namespace Magic.Kernel.Compilation
             while (scanner.Current.Kind == TokenKind.Semicolon)
                 scanner.Scan();
             return scanner.Current.IsEndOfInput;
+        }
+
+        // ─── return statement ────────────────────────────────────────────────────────
+
+        /// <summary>Compiles a bare `return;` or `return` statement into a Ret opcode.</summary>
+        private static bool TryCompileReturnStatement(string line, List<InstructionNode> instructions)
+        {
+            var t = line?.Trim() ?? "";
+            // Accept: "return" or "return;" — no expression yet.
+            if (!string.Equals(t.TrimEnd(';'), "return", StringComparison.OrdinalIgnoreCase))
+                return false;
+            instructions.Add(new InstructionNode { Opcode = "ret" });
+            return true;
+        }
+
+        // ─── switch statement ────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Compiles:
+        /// <code>
+        /// switch expr {
+        ///     if "value1"
+        ///         body1;
+        ///     if "value2" {
+        ///         body2;
+        ///     }
+        /// }
+        /// </code>
+        /// Each arm is compiled as: if (expr == "value") { body; jmp endLabel }. Falls through to endLabel.
+        /// Multi-arg form: switch arg0, arg1 { if 0: val0, 1: val1 { } } — all args must match.
+        /// </summary>
+        private bool TryCompileSwitchStatement(
+            string line,
+            Dictionary<string, (string Kind, int Index)> vars,
+            ref int vertexCounter,
+            ref int relationCounter,
+            ref int shapeCounter,
+            ref int memorySlotCounter,
+            ref int streamLoopCounter,
+            List<InstructionNode> instructions)
+        {
+            if (!TryParseSwitchStatement(line, out var switchExprs, out var bodyText))
+                return false;
+
+            var switchCounter = ++streamLoopCounter + 2000;
+            var endLabel = $"switch_end_{switchCounter}";
+
+            // Compile each switch expression to a slot
+            var exprSlots = new List<int>();
+            foreach (var exprStr in switchExprs)
+            {
+                var slot = memorySlotCounter++;
+                if (!TryCompileExpressionToSlot(exprStr, vars, slot, ref memorySlotCounter, instructions))
+                    throw new CompilationException($"Cannot compile switch expression: '{exprStr}'", -1);
+                exprSlots.Add(slot);
+            }
+
+            // Parse body lines — each arm starts with "if"
+            var arms = ParseSwitchArms(bodyText);
+
+            foreach (var (matchValues, armBody) in arms)
+            {
+                var armCounter = ++streamLoopCounter + 3000;
+                var armEndLabel = $"switch_arm_end_{armCounter}";
+
+                if (matchValues.Count == 0)
+                {
+                    // Unconditional arm (default)
+                    var armBodyLines2 = SplitStatementLines(armBody);
+                    var armInstructions2 = CompileStatementLines(armBodyLines2, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter, ref streamLoopCounter);
+                    instructions.AddRange(armInstructions2);
+                    instructions.Add(CreateJumpInstruction(endLabel));
+                    instructions.Add(CreateLabelInstruction(armEndLabel));
+                    continue;
+                }
+
+                // For each expression/match pair: emit CMP+JE to skip arm if not matching
+                // All pairs must match (AND semantics)
+                var compareCount = Math.Min(exprSlots.Count, matchValues.Count);
+                for (var ci = 0; ci < compareCount; ci++)
+                {
+                    var valSlot = memorySlotCounter++;
+                    var cmpSlot = memorySlotCounter++;
+                    instructions.Add(CreatePushStringInstruction(matchValues[ci]));
+                    instructions.Add(CreatePopMemoryInstruction(valSlot));
+                    instructions.Add(CreatePushMemoryInstruction(exprSlots[ci]));
+                    instructions.Add(CreatePushMemoryInstruction(valSlot));
+                    instructions.Add(new InstructionNode { Opcode = "equals" });
+                    instructions.Add(CreatePopMemoryInstruction(cmpSlot));
+                    // Jump to arm end if this condition is false (cmpSlot == 0)
+                    instructions.Add(CreateCmpInstruction(cmpSlot, 0L));
+                    instructions.Add(CreateJumpIfEqualInstruction(armEndLabel));
+                }
+
+                // All conditions matched — emit arm body
+                var armBodyLines = SplitStatementLines(armBody);
+                var armBodyInstructions = CompileStatementLines(armBodyLines, vars, ref vertexCounter, ref relationCounter, ref shapeCounter, ref memorySlotCounter, ref streamLoopCounter);
+                instructions.AddRange(armBodyInstructions);
+                instructions.Add(CreateJumpInstruction(endLabel)); // exit switch after matching arm
+                instructions.Add(CreateLabelInstruction(armEndLabel));
+            }
+
+            instructions.Add(CreateLabelInstruction(endLabel));
+            return true;
+        }
+
+        private static bool TryParseSwitchStatement(
+            string line,
+            out List<string> switchExprs,
+            out string bodyText)
+        {
+            switchExprs = new List<string>();
+            bodyText = "";
+
+            var t = line?.Trim() ?? "";
+            if (t.Length < 8 || !t.StartsWith("switch", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var i = 6;
+            if (i < t.Length && char.IsLetterOrDigit(t[i])) return false; // not "switch" keyword
+            while (i < t.Length && char.IsWhiteSpace(t[i])) i++;
+            if (i >= t.Length) return false;
+
+            // Parse expression list (comma-separated) until '{'
+            var exprStart = i;
+            var braceStart = -1;
+            var parenDepth = 0;
+            var inStr = false;
+            var quote = '\0';
+            while (i < t.Length)
+            {
+                var ch = t[i];
+                if (inStr)
+                {
+                    if (ch == '\\' && i + 1 < t.Length) { i += 2; continue; }
+                    if (ch == quote) { inStr = false; i++; continue; }
+                    i++;
+                    continue;
+                }
+                if (ch == '"' || ch == '\'') { inStr = true; quote = ch; i++; continue; }
+                if (ch == '(') { parenDepth++; i++; continue; }
+                if (ch == ')') { parenDepth--; i++; continue; }
+                if (ch == '{' && parenDepth == 0) { braceStart = i; break; }
+                i++;
+            }
+            if (braceStart < 0) return false;
+
+            var exprText = t.Substring(exprStart, braceStart - exprStart).Trim();
+            if (string.IsNullOrEmpty(exprText)) return false;
+
+            // Split by comma
+            foreach (var part in exprText.Split(','))
+            {
+                var expr = part.Trim();
+                if (!string.IsNullOrEmpty(expr))
+                    switchExprs.Add(expr);
+            }
+            if (switchExprs.Count == 0) return false;
+
+            // Extract body between outer braces
+            var bodyDepth = 1;
+            var j = braceStart + 1;
+            while (j < t.Length && bodyDepth > 0)
+            {
+                var c = t[j];
+                if (c == '"' || c == '\'')
+                {
+                    var q = c;
+                    j++;
+                    while (j < t.Length && t[j] != q) j++;
+                    if (j < t.Length) j++;
+                    continue;
+                }
+                if (c == '{') { bodyDepth++; j++; continue; }
+                if (c == '}') { bodyDepth--; if (bodyDepth == 0) break; j++; continue; }
+                j++;
+            }
+            if (bodyDepth != 0) return false;
+            bodyText = t.Substring(braceStart + 1, j - braceStart - 1);
+            return true;
+        }
+
+        /// <summary>
+        /// Parses switch body into arms. Each arm starts with "if" followed by match value(s) then a body.
+        /// Supported forms:
+        ///   if "value"  statement;
+        ///   if "value" { block }
+        ///   if 0: val0, 1: val1 { block }
+        /// </summary>
+        private static List<(List<string> MatchValues, string Body)> ParseSwitchArms(string bodyText)
+        {
+            var arms = new List<(List<string>, string)>();
+            var lines = SplitStatementLines(bodyText);
+
+            // Coalesce: an arm is a line starting with "if" possibly followed by a single-line statement
+            foreach (var rawLine in CoalesceMultilineStatements(lines))
+            {
+                var line = rawLine.Trim();
+                if (string.IsNullOrEmpty(line)) continue;
+
+                if (!line.StartsWith("if", StringComparison.OrdinalIgnoreCase)) continue;
+                var rest = line.Substring(2).TrimStart();
+                if (string.IsNullOrEmpty(rest)) continue;
+
+                // Parse match value(s): a string literal or positional "idx: val" pairs
+                var matchValues = new List<string>();
+                string armBody;
+
+                if (rest[0] == '"' || rest[0] == '\'')
+                {
+                    // Simple string match: if "value" body
+                    var q = rest[0];
+                    var k = 1;
+                    while (k < rest.Length && rest[k] != q) k++;
+                    if (k >= rest.Length) continue;
+                    matchValues.Add(rest.Substring(1, k - 1));
+                    armBody = rest.Substring(k + 1).Trim();
+                    if (armBody.StartsWith("{", StringComparison.Ordinal) && armBody.EndsWith("}", StringComparison.Ordinal))
+                        armBody = armBody.Substring(1, armBody.Length - 2);
+                    arms.Add((matchValues, armBody));
+                }
+                else
+                {
+                    // Positional form: if 0: val0, 1: val1 { body }
+                    var braceIdx = rest.IndexOf('{');
+                    if (braceIdx < 0)
+                    {
+                        // Single-line after if: remaining is the body, no match value
+                        arms.Add((matchValues, rest));
+                        continue;
+                    }
+                    var condPart = rest.Substring(0, braceIdx).Trim();
+                    var braceBody = rest.Substring(braceIdx).Trim();
+                    if (braceBody.StartsWith("{", StringComparison.Ordinal) && braceBody.EndsWith("}", StringComparison.Ordinal))
+                        braceBody = braceBody.Substring(1, braceBody.Length - 2);
+
+                    foreach (var part in condPart.Split(','))
+                    {
+                        var p = part.Trim();
+                        // "idx: value" or just "value"
+                        var colonIdx = p.IndexOf(':');
+                        var val = colonIdx >= 0 ? p.Substring(colonIdx + 1).Trim() : p;
+                        if (val.StartsWith("\"", StringComparison.Ordinal) && val.EndsWith("\"", StringComparison.Ordinal))
+                            val = val.Substring(1, val.Length - 2);
+                        matchValues.Add(val);
+                    }
+                    arms.Add((matchValues, braceBody));
+                }
+            }
+
+            return arms;
         }
 
         private static bool IsIdentifier(Token token, string value) =>

@@ -15,6 +15,8 @@ namespace Magic.Kernel.Compilation
         public List<AstNode> Prelude { get; set; } = new List<AstNode>();
         public Dictionary<string, List<AstNode>> Procedures { get; set; } = new Dictionary<string, List<AstNode>>();
         public Dictionary<string, List<AstNode>> Functions { get; set; } = new Dictionary<string, List<AstNode>>();
+        /// <summary>Optional named parameters for procedures: procedure name → ordered parameter names. E.g. procedure call(data) → {"call": ["data"]}.</summary>
+        public Dictionary<string, List<string>> ProcedureParameters { get; set; } = new Dictionary<string, List<string>>();
         /// <summary>Indicates whether this is a structured program (with @AGI, program, procedure, function, entrypoint) or just a set of instructions.</summary>
         public bool IsProgramStructure { get; set; }
     }
