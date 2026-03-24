@@ -28,11 +28,39 @@ namespace Magic.Kernel.Compilation
             return slot;
         }
 
+        /// <summary>Allocates a new local (non-global) memory slot for the given name and returns its index.
+        /// Unlike <see cref="AllocateGlobalSlot"/>, the slot is stored as "memory" kind so that body instructions
+        /// use <c>push [N]</c> (local memory) instead of <c>push global: [N]</c>.</summary>
+        public int AllocateLocalSlot(string name)
+        {
+            var slot = _nextGlobalSlot++;
+            _localSlots[name] = slot;
+            return slot;
+        }
+
+        private readonly Dictionary<string, int> _localSlots = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Copies all global slots from <paramref name="source"/> into this compiler so that
+        /// global variables declared in the entrypoint/prelude are accessible inside procedure bodies.</summary>
+        public void InheritGlobalSlots(StatementLoweringCompiler source)
+        {
+            foreach (var kv in source._globalSlots)
+                _globalSlots[kv.Key] = kv.Value;
+            // Advance the slot counter past any slots already allocated by the source compiler
+            // so local slots don't overlap with inherited global ones.
+            if (source._nextGlobalSlot > _nextGlobalSlot)
+                _nextGlobalSlot = source._nextGlobalSlot;
+        }
+
         public List<InstructionNode> Lower(IEnumerable<string> sourceLines, bool registerGlobals = false)
         {
             var vars = new Dictionary<string, (string Kind, int Index)>(StringComparer.OrdinalIgnoreCase);
             foreach (var global in _globalSlots)
                 vars[global.Key] = ("global", global.Value);
+            // Local slots (procedure parameters allocated via AllocateLocalSlot) use "memory" kind
+            // so that instructions use push [N] (local memory) instead of push global: [N].
+            foreach (var local in _localSlots)
+                vars[local.Key] = ("memory", local.Value);
             var vertexCounter = 1;
             var relationCounter = 1;
             var shapeCounter = 1;
@@ -951,7 +979,46 @@ namespace Magic.Kernel.Compilation
                 if (ch == '{' && parenDepth == 0) { braceStart = i; break; }
                 i++;
             }
-            if (braceStart < 0) return false;
+            // Support braceless single-statement form: "if condition singleStatement;"
+            // e.g. "if !auth.isAuthenticated return;"
+            if (braceStart < 0)
+            {
+                // Find the boundary between condition and single-line body.
+                // The condition ends at a whitespace-separated token boundary (last identifier/member-access group).
+                // Strategy: scan tokens and treat the last complete token group as the body.
+                var rest = t.Substring(condStart).Trim();
+                if (string.IsNullOrEmpty(rest)) return false;
+
+                // We need to split "condition body" where condition is identifier or member access
+                // and body is the remaining statement. Find the last "word boundary" before the body keyword.
+                var lastSpaceIdx = -1;
+                var scanDepth = 0;
+                var scanInStr = false;
+                var scanQuote = '\0';
+                for (var si = 0; si < rest.Length; si++)
+                {
+                    var ch = rest[si];
+                    if (scanInStr)
+                    {
+                        if (ch == '\\' && si + 1 < rest.Length) { si++; continue; }
+                        if (ch == scanQuote) { scanInStr = false; }
+                        continue;
+                    }
+                    if (ch == '"' || ch == '\'') { scanInStr = true; scanQuote = ch; continue; }
+                    if (ch == '(') { scanDepth++; continue; }
+                    if (ch == ')') { scanDepth--; continue; }
+                    if (scanDepth == 0 && char.IsWhiteSpace(ch))
+                        lastSpaceIdx = si;
+                }
+
+                if (lastSpaceIdx < 0) return false;
+                condText = rest.Substring(0, lastSpaceIdx).Trim();
+                bodyText = rest.Substring(lastSpaceIdx).Trim();
+                if (string.IsNullOrEmpty(condText) || string.IsNullOrEmpty(bodyText)) return false;
+                elseText = "";
+                elseIsBlock = false;
+                return true;
+            }
             condText = t.Substring(condStart, braceStart - condStart).Trim();
             if (string.IsNullOrEmpty(condText)) return false;
 

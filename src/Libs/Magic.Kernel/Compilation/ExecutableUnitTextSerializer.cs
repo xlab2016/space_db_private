@@ -25,9 +25,8 @@ namespace Magic.Kernel.Compilation
                 sb.AppendLine($"program {unit.Name}");
             if (!string.IsNullOrEmpty(unit.Module))
                 sb.AppendLine($"module {unit.Module}");
-            sb.AppendLine("entrypoint");
-            foreach (var cmd in unit.EntryPoint ?? new ExecutionBlock())
-                sb.AppendLine(CommandToInstruction(cmd));
+            // Procedures and functions are emitted before the entrypoint body so that all definitions
+            // appear before the entry-point call (matching the expected AGI assembly format).
             foreach (var kv in unit.Procedures ?? new Dictionary<string, Processor.Procedure>())
             {
                 sb.AppendLine($"procedure {kv.Key}");
@@ -40,6 +39,9 @@ namespace Magic.Kernel.Compilation
                 foreach (var cmd in kv.Value.Body ?? new ExecutionBlock())
                     sb.AppendLine(CommandToInstruction(cmd));
             }
+            sb.AppendLine("entrypoint");
+            foreach (var cmd in unit.EntryPoint ?? new ExecutionBlock())
+                sb.AppendLine(CommandToInstruction(cmd));
             return sb.ToString();
         }
 

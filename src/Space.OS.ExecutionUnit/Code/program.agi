@@ -1,3 +1,39 @@
-// Placeholder: replace with your AGI program or use program.agic
-module main;
-program demo;
+@AGI 0.0.1;
+
+program client_claw;
+system samples;
+module claw;
+
+procedure call(data) {
+	var authentication := data.authentication;
+
+	if !authentication.isAuthenticated return;
+
+	var command := data.command;
+	var socket1 := socket;
+
+	switch command {
+		if "hello_world"
+			print(#"Hello world from Claw {socket1.name}");
+	}
+}
+
+procedure Main() {
+	var vault1 := vault;
+	var port := vault1.read("port");
+	var credentials := vault1.read("credentials");
+
+	var claw1 := stream<claw>;
+	claw1.open({
+		port: port,
+		authentication: {
+			credentials: credentials
+		}
+	});
+	claw1.methods.add("call", &call);
+	await claw1;
+}
+
+entrypoint {
+	Main;
+}
