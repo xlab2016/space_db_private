@@ -63,8 +63,8 @@ namespace Magic.Kernel.Devices.Streams
                 ParseConfig(args[0]);
 
             // Capture kernel config and unit from execution context
-            _kernelConfig = ExecutionContext.CurrentInterpreter?.Configuration;
-            _unit = ExecutionContext.CurrentUnit;
+            _kernelConfig = Magic.Kernel.Interpretation.ExecutionContext.CurrentInterpreter?.Configuration;
+            _unit = Magic.Kernel.Interpretation.ExecutionContext.CurrentUnit;
 
             return await OpenAsync().ConfigureAwait(false);
         }

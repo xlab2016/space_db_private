@@ -3733,10 +3733,12 @@ namespace Magic.Kernel.Compilation
                     return false;
                 streamName = CurrentScanner.Scan().Value;
 
-                if (CurrentScanner.Current.Kind != TokenKind.Colon || CurrentScanner.Watch(1)?.Kind != TokenKind.Assign)
+                // Accept both ":= stream<>" (single-line) and ": stream<>" (multi-line var block)
+                if (CurrentScanner.Current.Kind != TokenKind.Colon)
                     return false;
-                CurrentScanner.Scan();
-                CurrentScanner.Scan();
+                CurrentScanner.Scan(); // consume ":"
+                if (CurrentScanner.Current.Kind == TokenKind.Assign)
+                    CurrentScanner.Scan(); // consume optional "=" from ":="
 
                 if (!IsIdentifier(CurrentScanner.Current, "stream"))
                     return false;

@@ -165,7 +165,7 @@ entrypoint {
 }";
 
             // Act
-            var structure = parser.Parse(source);
+            var structure = parser.ParseProgram(source);
 
             // Assert
             structure.ProcedureParameters.Should().ContainKey("call");

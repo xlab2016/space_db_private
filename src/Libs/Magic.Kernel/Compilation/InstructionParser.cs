@@ -268,7 +268,10 @@ namespace Magic.Kernel.Compilation
             }
             if (_scanner.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("string", StringComparison.OrdinalIgnoreCase))
             {
-                Sequence((TokenKind.Identifier, "string"), (TokenKind.Colon, null));
+                _scanner.Scan(); // consume "string"
+                // Support both "push string: value" (with colon) and "push string value" (without colon)
+                if (_scanner.Current.Kind == TokenKind.Colon)
+                    _scanner.Scan(); // consume optional ":"
                 var strTok = Expect(TokenKind.StringLiteral);
                 return new List<ParameterNode> { new StringParameterNode { Name = "string", Value = strTok.Value } };
             }
