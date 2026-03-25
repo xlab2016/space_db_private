@@ -80,3 +80,4 @@ dump.rdb
 .idea/**/workspace.xml
 .vs/config/applicationhost.config
 "design/Space/vault.json" 
+/design/Space/vault.json

@@ -1,94 +1,100 @@
 ﻿@AGIASM 1
 @AGI 0.0.1
-program client_claw
+program clients_claw
 module claw
-entrypoint
-push 0
-call Main
 procedure call
+pop
 pop [0]
-pop [0]
-push global: [0]
+push [0]
 push string: "authentication"
 getobj
 pop [1]
-push global: [0]
-push string: "command"
+push [0]
+push string: "socket"
 getobj
 pop [2]
-push string: ":socket"
-push 1
-call get
-pop [3]
-push [2]
-pop [4]
-push string: "hello_world"
-pop [5]
-push [4]
-push [5]
-equals
-pop [6]
-cmp [6], 0
-je switch_arm_end_3002
-push [3]
-push string: "name"
+push [1]
+push string: "isAuthenticated"
 getobj
+pop [3]
+push [3]
+not
+pop [4]
+cmp [4], 0
+je if_end_1001
+ret
+label if_end_1001
+push [0]
+push string: "command"
+getobj
+pop [5]
+push [5]
+pop [6]
+push string: "hello_world"
 pop [7]
-call format, 0: "Hello world from Claw {0}", [7]
-push 1
-call print
-pop [0]
-jmp switch_end_2001
-label switch_arm_end_3002
-label switch_end_2001
+push [6]
+push [7]
+equals
+pop [8]
+cmp [8], 0
+je switch_arm_end_3003
+jmp switch_end_2002
+label switch_arm_end_3003
+label switch_end_2002
 ret
 procedure Main
 push vault
 push 1
 def
-pop [8]
-push [8]
+pop [0]
+push [0]
 push string: "port"
 push 1
 callobj "read"
-pop [9]
-push [8]
+pop [1]
+push [0]
 push string: "credentials"
 push 1
 callobj "read"
-pop [10]
+pop [2]
 push stream
 push 1
 def
-pop [11]
-push [11]
+pop [3]
+push [3]
 push claw
 push 1
 defgen
-pop [12]
+pop [4]
 push string: "{}"
-pop [13]
-call opjson, [13], operation: "set", path: "port", [9]
-pop [0]
+pop [5]
+call opjson, [5], operation: "set", path: "port", [1]
+pop
 push string: "{}"
-pop [14]
-call opjson, [14], operation: "set", path: "credentials", [10]
-pop [0]
-call opjson, [13], operation: "set", path: "authentication", [14]
-pop [0]
-push [12]
-push [13]
+pop [6]
+call opjson, [6], operation: "set", path: "credentials", [2]
+pop
+call opjson, [5], operation: "set", path: "authentication", [6]
+pop
+push [4]
+push [5]
 push 1
 callobj "open"
-pop [0]
-push [12]
+pop
+push [4]
 push string: "methods"
 getobj
-pop [15]
-push [15]
+pop [7]
+push [7]
 push string: "call"
-push string: "&call"
+push address: "call"
 push 2
 callobj "add"
-pop [0]
+pop
+push [4]
+awaitobj
+pop
 ret
+entrypoint
+push 0
+call Main

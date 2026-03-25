@@ -6,7 +6,7 @@ module claw;
 
 procedure call(data) {
 	var authentication := data.authentication;
-	var socket1 := data.socket;
+	var socket := data.socket;
 
 	if !authentication.isAuthenticated return;
 
@@ -31,6 +31,7 @@ procedure Main() {
 		}
 	});
 	claw1.methods.add("call", &call);
+	await claw1;
 }
 
 entrypoint {

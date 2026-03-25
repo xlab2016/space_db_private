@@ -25,9 +25,8 @@ namespace Magic.Kernel.Compilation
                 sb.AppendLine($"program {unit.Name}");
             if (!string.IsNullOrEmpty(unit.Module))
                 sb.AppendLine($"module {unit.Module}");
-            sb.AppendLine("entrypoint");
-            foreach (var cmd in unit.EntryPoint ?? new ExecutionBlock())
-                sb.AppendLine(CommandToInstruction(cmd));
+            // Procedures and functions are emitted before the entrypoint body so that all definitions
+            // appear before the entry-point call (matching the expected AGI assembly format).
             foreach (var kv in unit.Procedures ?? new Dictionary<string, Processor.Procedure>())
             {
                 sb.AppendLine($"procedure {kv.Key}");
@@ -40,6 +39,9 @@ namespace Magic.Kernel.Compilation
                 foreach (var cmd in kv.Value.Body ?? new ExecutionBlock())
                     sb.AppendLine(CommandToInstruction(cmd));
             }
+            sb.AppendLine("entrypoint");
+            foreach (var cmd in unit.EntryPoint ?? new ExecutionBlock())
+                sb.AppendLine(CommandToInstruction(cmd));
             return sb.ToString();
         }
 
@@ -289,7 +291,9 @@ namespace Magic.Kernel.Compilation
 
         private static string FormatPop(MemoryAddress? ma)
         {
-            if (ma?.Index == null) return "pop [0]";
+            // "pop" with no operand is represented in runtime as Pop(MemoryAddress.Index = null).
+            // In previous versions we serialized it as "pop [0]" which made the disassembly ambiguous.
+            if (ma?.Index == null) return "pop";
             if (ma.IsGlobal) return $"pop global: [{ma.Index.Value}]";
             return $"pop [{ma.Index.Value}]";
         }
@@ -308,12 +312,24 @@ namespace Magic.Kernel.Compilation
                 {
                     "Type" => "push " + (po.Value as string ?? ""),
                     "IntLiteral" => "push " + (po.Value is long l ? l.ToString() : po.Value?.ToString() ?? "0"),
-                    "StringLiteral" => "push string: \"" + EscapeString(po.Value as string ?? "") + "\"",
+                    "StringLiteral" => BuildFormattedStringPush(po.Value as string ?? ""),
                     "LambdaArg" => "push lambda: arg" + (po.Value is int i ? i.ToString() : "0"),
                     _ => "push [0]"
                 };
             }
             return "push [0]";
+        }
+
+        private static string BuildFormattedStringPush(string value)
+        {
+            // Compiler uses unary '&' for procedure references (e.g. &call).
+            // In runtime it's still a plain string (the '&' may be stripped by device bindings),
+            // but in text dumps we prefer making it explicit as an address-like literal.
+            if (value.StartsWith("&", StringComparison.Ordinal) && value.Length > 1)
+            {
+                return "push address: \"" + EscapeString(value.Substring(1)) + "\"";
+            }
+            return "push string: \"" + EscapeString(value) + "\"";
         }
 
         private static string EscapeString(string s)

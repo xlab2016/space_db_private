@@ -1,0 +1,55 @@
+@AGI 0.0.1;
+
+library lib1;
+system samples;
+module library;
+
+use lib1_internal as internal;
+
+stream<file>: {
+	Opened: bool;
+	Path: string;
+	Size: bigint;
+	File: file;
+
+	method open(path) {
+		Path := path;
+		File := file;
+		var result := await internal.open(File, { path: Path });
+
+		if !result.success streamwait error<stream, file>(&, result.currentError);
+
+		Size := result.size;
+		Opened := result;
+	}
+
+	method close() {
+		await internal.close(File, { path: Path });
+		Opened := false;
+	}
+
+
+	method read(buffer, size) {
+		await internal.read(File, buffer, size);
+	}
+
+	method write(buffer, size) {
+		await internal.write(File, buffer, size);
+	}
+}
+
+// extensions to object
+method print(&: stream<file>, ...args) {
+	system.print(&, args);
+}
+
+procedure Main() {
+}
+
+export {
+	stream<file>;
+}
+
+entrypoint {
+	Main;
+}
