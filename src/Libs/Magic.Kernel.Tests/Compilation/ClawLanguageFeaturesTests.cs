@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Magic.Kernel;
 using Magic.Kernel.Compilation;
 using Magic.Kernel.Processor;
 using Xunit;
@@ -264,6 +265,67 @@ entrypoint {
         }
 
         [Fact]
+        public async Task CompileAsync_InlineIfWithoutBraces_ShouldEmitRetInstruction()
+        {
+            // Arrange: "if !condition return;" without braces should compile and emit a ret opcode.
+            // Previously this was silently dropped because TryParseIfStatement required braces.
+            var source = @"@AGI 0.0.1
+program Test;
+module Test/Test;
+
+procedure check(data) {
+    var auth := data.authentication;
+    if !auth.isAuthenticated return;
+    var cmd := data.command;
+}
+
+entrypoint {
+    asm {
+        push int 0;
+        push int 1;
+        call check;
+    }
+}";
+
+            // Act
+            var result = await _compiler.CompileAsync(source);
+
+            // Assert
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            var proc = result.Result!.Procedures["check"];
+            // Body should contain a Ret instruction from the inline if
+            proc.Body.Count(cmd => cmd.Opcode == Opcodes.Ret).Should().BeGreaterThan(1,
+                "inline 'if !cond return;' should emit a Ret opcode in addition to the final procedure ret");
+        }
+
+        [Fact]
+        public async Task CompileAsync_AwaitStreamStatement_ShouldCompileSuccessfully()
+        {
+            // Arrange: "await claw1;" should compile for a stream variable.
+            var source = @"@AGI 0.0.1
+program Test;
+module Test/Test;
+
+procedure Main() {
+    var claw1 := stream<claw>;
+    await claw1;
+}
+
+entrypoint {
+    Main;
+}";
+
+            // Act
+            var result = await _compiler.CompileAsync(source);
+
+            // Assert
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            var proc = result.Result!.Procedures["Main"];
+            proc.Body.Any(cmd => cmd.Opcode == Opcodes.AwaitObj).Should().BeTrue(
+                "await claw1 should emit an AwaitObj opcode");
+        }
+
+        [Fact]
         public async Task CompileAsync_PrintWithFormatStringArgument_ShouldCompileSuccessfully()
         {
             // Arrange: print() with a #"format {expr}" argument.
@@ -295,7 +357,10 @@ entrypoint {
         [Fact]
         public async Task CompileAsync_FullClientClawPattern_ShouldCompileSuccessfully()
         {
-            // Arrange: the full pattern from client_claw.agi that was failing to compile.
+            // Arrange: the full client_claw.agi pattern including all fixed issues:
+            // - inline if without braces: "if !condition return;"
+            // - socket variable from global device (not from data parameter)
+            // - await claw1 at end of Main to keep the stream loop alive
             var source = @"@AGI 0.0.1;
 
 program clients_claw;
@@ -329,6 +394,7 @@ procedure Main() {
         }
     });
     claw1.methods.add(""call"", &call);
+    await claw1;
 }
 
 entrypoint {
@@ -342,6 +408,55 @@ entrypoint {
             result.Success.Should().BeTrue(result.ErrorMessage);
             result.Result!.Procedures.Should().ContainKey("call");
             result.Result.Procedures.Should().ContainKey("Main");
+            // Main should contain an AwaitObj instruction for "await claw1"
+            result.Result.Procedures["Main"].Body.Any(cmd => cmd.Opcode == Opcodes.AwaitObj).Should().BeTrue(
+                "await claw1 should produce an AwaitObj opcode");
+            // call procedure body should use local memory (push [N]) not global (push global: [N]) for params
+            var callBody = result.Result.Procedures["call"].Body;
+            callBody.Where(cmd => cmd.Opcode == Opcodes.Push)
+                .Select(cmd => cmd.Operand1 as MemoryAddress)
+                .Where(ma => ma != null)
+                .Should().AllSatisfy(ma => ma!.IsGlobal.Should().BeFalse(
+                    "procedure parameters should use local memory (push [N]) not global memory (push global: [N])"));
+        }
+
+        [Fact]
+        public async Task Serialize_ProgramWithProcedures_ShouldEmitProceduresBeforeEntrypoint()
+        {
+            // Arrange: procedures should appear before the entrypoint body in serialized output
+            // so that all definitions are present before the entry-point call.
+            var source = @"@AGI 0.0.1
+program Test;
+module Test/Test;
+
+procedure greet() {
+    print(""hello"");
+}
+
+entrypoint {
+    greet;
+}";
+
+            var result = await _compiler.CompileAsync(source);
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            result.Result!.OutputFormat = "agiasm";
+            var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"test_{System.Guid.NewGuid():N}.agiasm");
+            try
+            {
+                // Act
+                await result.Result.SaveAsync(path);
+                var serialized = await System.IO.File.ReadAllTextAsync(path);
+
+                // Assert: "procedure" should appear before "entrypoint" in the output
+                var procedureIdx = serialized.IndexOf("\nprocedure ", StringComparison.Ordinal);
+                var entrypointIdx = serialized.IndexOf("\nentrypoint", StringComparison.Ordinal);
+                procedureIdx.Should().BeLessThan(entrypointIdx,
+                    "all procedure definitions must appear before the entrypoint body in the serialized output");
+            }
+            finally
+            {
+                if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+            }
         }
     }
 }

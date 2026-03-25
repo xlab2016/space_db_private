@@ -90,37 +90,43 @@ namespace Magic.Kernel.Compilation
             {
                 var procedure = new Processor.Procedure { Name = proc.Key };
 
+                // Each procedure uses a fresh compiler so parameter slots are local to the procedure
+                // and body instructions use push [N] (local memory) instead of push global: [N].
+                // Global variables declared in the prelude/entrypoint are inherited so they remain
+                // accessible inside the procedure body (e.g. schema references like Db>).
+                var procCompiler = new StatementLoweringCompiler();
+                procCompiler.InheritGlobalSlots(_statementLoweringCompiler);
+
                 // If the procedure has named parameters, prepend parameter-binding instructions.
                 // Calling convention: stack has [arg0, arg1, ..., argN-1, N] before procedure body.
-                // We allocate memory slots for each parameter and emit Pop instructions to bind them.
-                // We use a fresh StatementLoweringCompiler pass that prepends synthetic var declarations.
+                // We allocate local memory slots for each parameter and emit Pop instructions to bind them.
                 if (programStructure.ProcedureParameters.TryGetValue(proc.Key, out var paramNames) && paramNames.Count > 0)
                 {
                     // Calling convention: stack has [arg0, arg1, ..., argN-1, N] before procedure body.
                     // 1. Pop arity (N) and discard it.
-                    // 2. Pop each argument in reverse order (argN-1 first) into a dedicated memory slot.
-                    // 3. Register those slots as globals so the body can reference params by name.
+                    // 2. Pop each argument in reverse order (argN-1 first) into a dedicated local memory slot.
+                    // 3. Register those slots as local ("memory" kind) so the body uses push [N] (not global).
 
                     // Discard arity (top of stack)
                     procedure.Body.Add(_assembler.Emit(Opcodes.Pop, null));
 
-                    // Allocate slots and pop args (last param is nearest to arity on stack)
+                    // Allocate local slots and pop args (last param is nearest to arity on stack)
                     var paramSlots = new int[paramNames.Count];
                     for (var pi = paramNames.Count - 1; pi >= 0; pi--)
                     {
-                        var slot = _statementLoweringCompiler.AllocateGlobalSlot(paramNames[pi]);
+                        var slot = procCompiler.AllocateLocalSlot(paramNames[pi]);
                         paramSlots[pi] = slot;
                         procedure.Body.Add(_assembler.Emit(Opcodes.Pop,
                             new List<ParameterNode> { new Ast.MemoryParameterNode { Name = "index", Index = slot } }));
                     }
 
-                    // Compile body with the same compiler (it has the parameter slots registered as globals)
-                    foreach (var instructionNode in LowerToInstructions(proc.Value))
+                    // Compile body with the per-procedure compiler (params registered as local "memory" kind)
+                    foreach (var instructionNode in LowerToInstructions(proc.Value, procCompiler))
                         AddAnalyzedCommand(procedure.Body, instructionNode);
                 }
                 else
                 {
-                    foreach (var instructionNode in LowerToInstructions(proc.Value))
+                    foreach (var instructionNode in LowerToInstructions(proc.Value, procCompiler))
                         AddAnalyzedCommand(procedure.Body, instructionNode);
                 }
                 // Явный ret в конце процедуры (для корректного asm-дампа и локальных подпрограмм).
@@ -151,6 +157,9 @@ namespace Magic.Kernel.Compilation
         }
 
         private IEnumerable<InstructionNode> LowerToInstructions(IEnumerable<AstNode> bodyNodes, bool registerGlobals = false)
+            => LowerToInstructions(bodyNodes, _statementLoweringCompiler, registerGlobals);
+
+        private IEnumerable<InstructionNode> LowerToInstructions(IEnumerable<AstNode> bodyNodes, StatementLoweringCompiler compiler, bool registerGlobals = false)
         {
             var instructions = new List<InstructionNode>();
             var statementLines = new List<string>();
@@ -163,7 +172,7 @@ namespace Magic.Kernel.Compilation
                     continue;
                 }
 
-                FlushStatementLines(statementLines, instructions, registerGlobals);
+                FlushStatementLines(statementLines, instructions, compiler, registerGlobals);
 
                 if (node is InstructionNode instructionNode)
                 {
@@ -171,16 +180,19 @@ namespace Magic.Kernel.Compilation
                 }
             }
 
-            FlushStatementLines(statementLines, instructions, registerGlobals);
+            FlushStatementLines(statementLines, instructions, compiler, registerGlobals);
             return instructions;
         }
 
         private void FlushStatementLines(List<string> statementLines, List<InstructionNode> instructions, bool registerGlobals = false)
+            => FlushStatementLines(statementLines, instructions, _statementLoweringCompiler, registerGlobals);
+
+        private static void FlushStatementLines(List<string> statementLines, List<InstructionNode> instructions, StatementLoweringCompiler compiler, bool registerGlobals = false)
         {
             if (statementLines.Count == 0)
                 return;
 
-            instructions.AddRange(_statementLoweringCompiler.Lower(statementLines, registerGlobals));
+            instructions.AddRange(compiler.Lower(statementLines, registerGlobals));
             statementLines.Clear();
         }
 
