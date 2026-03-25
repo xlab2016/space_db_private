@@ -6,11 +6,11 @@ module claw;
 
 procedure call(data) {
 	var authentication := data.authentication;
+	var socket := data.socket;
 
 	if !authentication.isAuthenticated return;
 
 	var command := data.command;
-	var socket1 := socket;
 
 	switch command {
 		if "hello_world"
@@ -31,6 +31,7 @@ procedure Main() {
 		}
 	});
 	claw1.methods.add("call", &call);
+	await claw1;
 }
 
 entrypoint {

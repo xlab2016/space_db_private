@@ -1,0 +1,31 @@
+@AGI 0.0.1;
+
+program use_lib1;
+system samples;
+module library;
+
+use lib1;
+
+procedure Main() {
+	var console1 := console;
+	print("Path to file: ");
+	var path := await console1.read();
+
+	var stream1 := stream<file>;
+	await stream1.open(path or "file1.agires");
+
+	var memory1 := memory;
+	var buffer := await memory1.allocate(f1.Size);
+
+	await stream1.read(buffer, buffer.Size);
+	
+	print(#"Readed buffer: {string: utf8: buffer}");	
+
+	await memory1.free(buffer);
+
+	await stream1.close();
+}
+
+entrypoint {
+	Main;
+}

@@ -1,0 +1,37 @@
+@AGI 0.0.1;
+
+library lib1_internal;
+system samples;
+module library;
+
+function open(file, data): json: { success: bool, size: bigint, currentError: error } {
+	var result := await file.open(data.path);
+	var currentError := file.lastError;
+
+	var size: bigint;
+
+	if result size := await file.size();
+
+	return { result, size, currentError };
+}
+
+procedure close(file, data) {
+	await file.close(data.path);
+}
+
+procedure read(file, buffer, size) {
+	if size > buffer.size streamwait error<stream, file>(&, file, error.greaterThan(size, buffer.size));
+	await file.read(buffer, size);
+}
+
+procedure write(file, buffer, size) {
+	if size > buffer.size streamwait error<stream, file>(&, file, error.greaterThan(size, buffer.size));
+	await file.write(buffer, size);
+}
+
+export {
+	open;
+	close;
+	read;
+	write;
+}

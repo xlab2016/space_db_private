@@ -155,6 +155,59 @@ entrypoint { asm { acall Worker; } }
                 if (File.Exists(path)) File.Delete(path);
             }
         }
+
+        [Fact]
+        public async Task Agiasm_Roundtrip_PopWithoutOperand_And_AddressPush()
+        {
+            var compiler = new Compiler();
+            var source = @"@AGI 0.0.1;
+program clients_claw;
+system samples;
+module claw;
+
+procedure call(data) {
+    var command := data.command;
+    print(command);
+}
+
+procedure Main() {
+    var claw1 := stream<claw>;
+    claw1.methods.add(""call"", &call);
+}
+
+entrypoint {
+    Main;
+}";
+
+            var result = await compiler.CompileAsync(source);
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            result.Result!.OutputFormat = "agiasm";
+
+            var path = Path.Combine(Path.GetTempPath(), $"agiasm_format_test_{Guid.NewGuid():N}.agiasm");
+            try
+            {
+                await result.Result.SaveAsync(path);
+                var text = await File.ReadAllTextAsync(path);
+
+                text = text.Replace("\r\n", "\n");
+
+                // "pop" without operand should be unambiguously printed as a standalone instruction.
+                text.Should().Contain("procedure call\npop\npop [0]\npush [0]");
+
+                // Unary '&' procedure references should be displayed as address literals in dumps.
+                text.Should().Contain("push address: \"call\"");
+                text.Should().NotContain("push string: \"&call\"");
+
+                // And the loaded unit must deserialize the new text format successfully.
+                var loaded = await ExecutableUnit.LoadAsync(path);
+                loaded.Procedures.Should().ContainKey("call");
+                loaded.Procedures.Should().ContainKey("Main");
+            }
+            finally
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
+        }
     }
 }
 
