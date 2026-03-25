@@ -1,0 +1,94 @@
+﻿@AGIASM 1
+@AGI 0.0.1
+program client_claw
+module claw
+entrypoint
+push 0
+call Main
+procedure call
+pop [0]
+pop [0]
+push global: [0]
+push string: "authentication"
+getobj
+pop [1]
+push global: [0]
+push string: "command"
+getobj
+pop [2]
+push string: ":socket"
+push 1
+call get
+pop [3]
+push [2]
+pop [4]
+push string: "hello_world"
+pop [5]
+push [4]
+push [5]
+equals
+pop [6]
+cmp [6], 0
+je switch_arm_end_3002
+push [3]
+push string: "name"
+getobj
+pop [7]
+call format, 0: "Hello world from Claw {0}", [7]
+push 1
+call print
+pop [0]
+jmp switch_end_2001
+label switch_arm_end_3002
+label switch_end_2001
+ret
+procedure Main
+push vault
+push 1
+def
+pop [8]
+push [8]
+push string: "port"
+push 1
+callobj "read"
+pop [9]
+push [8]
+push string: "credentials"
+push 1
+callobj "read"
+pop [10]
+push stream
+push 1
+def
+pop [11]
+push [11]
+push claw
+push 1
+defgen
+pop [12]
+push string: "{}"
+pop [13]
+call opjson, [13], operation: "set", path: "port", [9]
+pop [0]
+push string: "{}"
+pop [14]
+call opjson, [14], operation: "set", path: "credentials", [10]
+pop [0]
+call opjson, [13], operation: "set", path: "authentication", [14]
+pop [0]
+push [12]
+push [13]
+push 1
+callobj "open"
+pop [0]
+push [12]
+push string: "methods"
+getobj
+pop [15]
+push [15]
+push string: "call"
+push string: "&call"
+push 2
+callobj "add"
+pop [0]
+ret

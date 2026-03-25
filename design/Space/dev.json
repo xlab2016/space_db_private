@@ -2,7 +2,7 @@
 	"debug": "",
 	"executionUnits": [
 		{
-			"path": "samples/streams/inference/simple_inference.agi",
+			"path": "samples/claw/client_claw.agi",
 			"instanceCount": 1
 		}
 	]

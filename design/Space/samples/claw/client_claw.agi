@@ -1,16 +1,16 @@
 @AGI 0.0.1;
 
-program clients_claw;
+program client_claw;
 system samples;
 module claw;
 
 procedure call(data) {
 	var authentication := data.authentication;
+	var socket1 := data.socket;
 
 	if !authentication.isAuthenticated return;
 
 	var command := data.command;
-	var socket1 := socket;
 
 	switch command {
 		if "hello_world"
