@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Magic.Compiler2": {
+      "commandName": "Project",
+      "commandLineArgs": "design/Space/samples/dev.agi --output agiasm"
+    }
+  }
+}
