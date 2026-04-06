@@ -2,6 +2,118 @@
 @AGI 0.0.1
 program client_claw
 module claw
+procedure operate_db_read
+pop
+pop [0]
+push [0]
+push string: "socket"
+getobj
+pop [1]
+push [0]
+push string: "sql"
+getobj
+pop [2]
+push vault
+push 1
+def
+pop [3]
+push [3]
+push string: "connectionString"
+push 1
+callobj "read"
+pop [4]
+push database
+push 1
+def
+pop [5]
+push [5]
+push postgres
+push 1
+defgen
+pop [6]
+push [6]
+push [4]
+push 1
+callobj "open"
+pop
+push [2]
+pop [7]
+call format, 0: "operate: db: run: {0}", [7]
+push 1
+call println
+pop
+push [6]
+push string: "{}"
+pop [10]
+call opjson, [10], operation: "set", path: "instruction", [2]
+pop
+push [10]
+push 1
+callobj "read"
+pop [9]
+push [9]
+awaitobj
+pop [8]
+push [1]
+push [8]
+push 1
+callobj "write"
+pop
+push [6]
+push 0
+callobj "close"
+pop
+ret
+procedure operate_db
+pop
+pop [0]
+push [0]
+push string: "method"
+getobj
+pop [1]
+push [1]
+pop [2]
+push string: "read"
+pop [3]
+push [2]
+push [3]
+equals
+pop [4]
+cmp [4], 0
+je switch_arm_end_3002
+push [0]
+push 1
+call operate_db_read
+pop
+jmp switch_end_2001
+label switch_arm_end_3002
+label switch_end_2001
+ret
+procedure operate
+pop
+pop [0]
+push [0]
+push string: "object"
+getobj
+pop [1]
+push [1]
+pop [2]
+push string: "db"
+pop [3]
+push [2]
+push [3]
+equals
+pop [4]
+cmp [4], 0
+je switch_arm_end_3002
+push [0]
+push 1
+call operate_db
+pop
+jmp switch_end_2001
+label switch_arm_end_3002
+label switch_end_2001
+ret
 procedure call
 pop
 pop [0]
@@ -48,6 +160,20 @@ call println
 pop
 jmp switch_end_2001
 label switch_arm_end_3002
+push string: "operate"
+pop [10]
+push [6]
+push [10]
+equals
+pop [11]
+cmp [11], 0
+je switch_arm_end_3003
+push [0]
+push 1
+call operate
+pop
+jmp switch_end_2001
+label switch_arm_end_3003
 label switch_end_2001
 ret
 procedure Main

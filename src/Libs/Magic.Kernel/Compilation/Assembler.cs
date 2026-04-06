@@ -300,6 +300,13 @@ namespace Magic.Kernel.Compilation
                         callInfo.FunctionName = nameParam.FunctionName;
                         break;
 
+                    case StreamWaitDeltaBindSlotsParameterNode swBind:
+                        callInfo.StreamWaitDeltaBindSlots = new[] { swBind.AggregateSlot, swBind.DeltaSlot };
+                        callInfo.StreamWaitCaptureToSlots = swBind.CaptureToSlots is { Length: > 0 }
+                            ? (long[])swBind.CaptureToSlots.Clone()
+                            : null;
+                        break;
+
                     case FunctionParameterNode funcParam:
                         var paramName = !string.IsNullOrWhiteSpace(funcParam.ParameterName) ? funcParam.ParameterName : funcParam.Name;
                         
@@ -476,6 +483,7 @@ namespace Magic.Kernel.Compilation
                 if (param is MemoryParameterNode memoryParam)
                 {
                     memoryAddress.Index = memoryParam.Index;
+                    memoryAddress.LogicalIndex = memoryParam.LogicalIndex ?? memoryParam.Index;
                     memoryAddress.IsGlobal = string.Equals(memoryParam.Name, "global", StringComparison.OrdinalIgnoreCase);
                     break;
                 }
@@ -491,9 +499,16 @@ namespace Magic.Kernel.Compilation
 
             var p = parameters[0];
             if (p is MemoryParameterNode mem)
-                return new MemoryAddress { Index = mem.Index, IsGlobal = string.Equals(mem.Name, "global", StringComparison.OrdinalIgnoreCase) };
+                return new MemoryAddress
+                {
+                    Index = mem.Index,
+                    LogicalIndex = mem.LogicalIndex ?? mem.Index,
+                    IsGlobal = string.Equals(mem.Name, "global", StringComparison.OrdinalIgnoreCase)
+                };
             if (p is TypeLiteralParameterNode typeNode)
                 return new PushOperand { Kind = "Type", Value = typeNode.TypeName };
+            if (p is ClassLiteralParameterNode classNode)
+                return new PushOperand { Kind = "Class", Value = classNode.ClassName };
             if (p is IndexParameterNode idx && p.Name == "int")
                 return new PushOperand { Kind = "IntLiteral", Value = idx.Value };
             if (p is StringParameterNode str && (p.Name == "string" || !string.IsNullOrEmpty(str.Value)))
@@ -524,7 +539,12 @@ namespace Magic.Kernel.Compilation
             foreach (var p in parameters ?? new List<ParameterNode>())
             {
                 if (p is MemoryParameterNode mem)
-                    left = new MemoryAddress { Index = mem.Index, IsGlobal = string.Equals(mem.Name, "global", StringComparison.OrdinalIgnoreCase) };
+                    left = new MemoryAddress
+                    {
+                        Index = mem.Index,
+                        LogicalIndex = mem.LogicalIndex ?? mem.Index,
+                        IsGlobal = string.Equals(mem.Name, "global", StringComparison.OrdinalIgnoreCase)
+                    };
                 else if (p is IndexParameterNode idx)
                     right = idx.Value;
             }

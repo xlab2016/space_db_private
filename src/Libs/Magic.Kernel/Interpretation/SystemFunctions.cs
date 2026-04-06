@@ -1,5 +1,7 @@
 using Magic.Kernel.Processor;
 using Magic.Kernel.Space;
+using Magic.Kernel.Core;
+using Magic.Kernel.Core.OS;
 using Magic.Kernel.Devices;
 using Magic.Kernel.Devices.SSC;
 using Magic.Kernel.Devices.Streams;
@@ -57,13 +59,15 @@ namespace Magic.Kernel.Interpretation
         private readonly IVaultReader _vaultReader;
         private readonly Compilation.ExecutableUnit? _currentUnit;
         private readonly Func<Magic.Kernel.Devices.Streams.ClawSocketContext?> _socketAccessor;
+        private readonly TextReader? _standardInput;
+        private readonly Func<InterpreterDebugSession?>? _debugSessionAccessor;
 
         public SystemFunctions(KernelConfiguration? configuration, List<object> stack, Dictionary<long, object> memory)
-            : this(configuration, stack, memory, new EnvironmentVaultReader(), null, null)
+            : this(configuration, stack, memory, new EnvironmentVaultReader(), null, null, null, null)
         {
         }
 
-        public SystemFunctions(KernelConfiguration? configuration, List<object> stack, Dictionary<long, object> memory, IVaultReader vaultReader, Compilation.ExecutableUnit? currentUnit = null, Func<Magic.Kernel.Devices.Streams.ClawSocketContext?>? socketAccessor = null)
+        public SystemFunctions(KernelConfiguration? configuration, List<object> stack, Dictionary<long, object> memory, IVaultReader vaultReader, Compilation.ExecutableUnit? currentUnit = null, Func<Magic.Kernel.Devices.Streams.ClawSocketContext?>? socketAccessor = null, TextReader? standardInput = null, Func<InterpreterDebugSession?>? debugSessionAccessor = null)
             : this(
                 configuration,
                 stack,
@@ -85,7 +89,9 @@ namespace Magic.Kernel.Interpretation
                 },
                 vaultReader,
                 currentUnit,
-                socketAccessor)
+                socketAccessor,
+                standardInput,
+                debugSessionAccessor)
         {
         }
 
@@ -96,7 +102,9 @@ namespace Magic.Kernel.Interpretation
             Action<MemoryAddress, object?> memoryWriter,
             IVaultReader vaultReader,
             Compilation.ExecutableUnit? currentUnit,
-            Func<Magic.Kernel.Devices.Streams.ClawSocketContext?>? socketAccessor)
+            Func<Magic.Kernel.Devices.Streams.ClawSocketContext?>? socketAccessor,
+            TextReader? standardInput = null,
+            Func<InterpreterDebugSession?>? debugSessionAccessor = null)
         {
             _configuration = configuration;
             _stack = stack;
@@ -106,6 +114,8 @@ namespace Magic.Kernel.Interpretation
             _vaultReader = vaultReader ?? throw new ArgumentNullException(nameof(vaultReader));
             _currentUnit = currentUnit;
             _socketAccessor = socketAccessor ?? (() => null);
+            _standardInput = standardInput;
+            _debugSessionAccessor = debugSessionAccessor;
         }
 
         private bool TryReadMemory(MemoryAddress memoryAddress, out object? value)
@@ -169,9 +179,60 @@ namespace Magic.Kernel.Interpretation
                     await ExecuteFormatAsync(callInfo);
                     return true;
 
+                case "length":
+                    ExecuteLength(callInfo);
+                    return true;
+
+                case "materialize":
+                    ExecuteMaterialize(callInfo);
+                    return true;
+
+                case "is":
+                    ExecuteIs(callInfo);
+                    return true;
+
+                case "read":
+                    await ExecuteReadAsync();
+                    return true;
+                case "readln":
+                    await ExecuteReadLnAsync();
+                    return true;
+
                 default:
                     return false;
             }
+        }
+
+        /// <summary>
+        /// Console input helper for AGI: `read()` -> pushes parsed number (long/decimal) or string.
+        /// </summary>
+        private Task ExecuteReadAsync()
+        {
+            var line = (_standardInput ?? Console.In).ReadLine();
+            line ??= string.Empty;
+            if (long.TryParse(line.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var l))
+            {
+                _stack.Add(l);
+                return Task.CompletedTask;
+            }
+            if (decimal.TryParse(line.Trim(), NumberStyles.Number, CultureInfo.InvariantCulture, out var d))
+            {
+                _stack.Add(d);
+                return Task.CompletedTask;
+            }
+            _stack.Add(line);
+            return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Console input helper for AGI: `readln()` -> pushes raw line as string.
+        /// Unlike `read()`, it does not coerce numeric values.
+        /// </summary>
+        private Task ExecuteReadLnAsync()
+        {
+            var line = (_standardInput ?? Console.In).ReadLine() ?? string.Empty;
+            _stack.Add(line);
+            return Task.CompletedTask;
         }
 
         /// <summary>Erlang-like spawn: enqueue task (current unit + procedure/function) to runtime TaskQueue. Pushes 0 (ok) on stack.</summary>
@@ -206,7 +267,7 @@ namespace Magic.Kernel.Interpretation
                 }
             }
 
-            await runtime.SpawnAsync(unit, entryName, spawnCallInfo).ConfigureAwait(false);
+            await runtime.SpawnAsync(unit, entryName, spawnCallInfo, debugSession: _debugSessionAccessor?.Invoke()).ConfigureAwait(false);
             _stack.Add(0); // ok
         }
 
@@ -270,6 +331,31 @@ namespace Magic.Kernel.Interpretation
 
             _memoryWriter(sourceAddr, root);
             _stack.Add(root);
+        }
+
+        /// <summary>AGI <c>length(x)</c>: для <see cref="DefList"/> — число элементов; для строки — длина; для <see cref="ICollection"/> — <c>Count</c>.</summary>
+        private void ExecuteLength(CallInfo callInfo)
+        {
+            if (!callInfo.Parameters.TryGetValue("0", out var p))
+                throw new InvalidOperationException("length requires one argument.");
+
+            object? val = p;
+            if (p is MemoryAddress ma && TryReadMemory(ma, out var memVal))
+                val = memVal;
+
+            long len;
+            if (val is DefList dl)
+                len = dl.Items.Count;
+            else if (val is string s)
+                len = s.Length;
+            else if (val is Array arr)
+                len = arr.Length;
+            else if (val is System.Collections.ICollection coll)
+                len = coll.Count;
+            else
+                throw new InvalidOperationException(
+                    $"length: unsupported value type '{val?.GetType().Name ?? "null"}'.");
+            _stack.Add(len);
         }
 
         private Task ExecuteGetAsync(CallInfo callInfo)
@@ -636,12 +722,129 @@ namespace Magic.Kernel.Interpretation
             }
             try
             {
+                for (var i = 0; i < args.Count; i++)
+                {
+                    if (args[i] is DefObject d)
+                        args[i] = d.ToConstructorStyleString(typeCatalog: _currentUnit?.Types);
+                }
+
                 var result = string.Format(CultureInfo.InvariantCulture, formatString, args.ToArray());
                 _stack.Add(result);
             }
             catch (FormatException ex)
             {
                 throw new InvalidOperationException($"format: invalid format string or argument count. {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
+        /// <c>materialize(targetType, sourceKind, targetObject, data)</c> — fills <paramref name="callInfo"/> args from stack:
+        /// push class, push source kind string (<c>json</c>), push DefObject, push JSON tree/slot value, push 4, call materialize.
+        /// </summary>
+        private void ExecuteMaterialize(CallInfo callInfo)
+        {
+            if (callInfo.Parameters == null ||
+                !callInfo.Parameters.TryGetValue("0", out var a0) ||
+                !callInfo.Parameters.TryGetValue("1", out var a1) ||
+                !callInfo.Parameters.TryGetValue("2", out var a2) ||
+                !callInfo.Parameters.TryGetValue("3", out var a3))
+                throw new InvalidOperationException("materialize expects 4 arguments: targetType, sourceKind, targetObject, jsonData.");
+
+            if (a0 is not DefType schema)
+                throw new InvalidOperationException("materialize: first argument must be target type (push class).");
+
+            var source = a1?.ToString() ?? "";
+            if (!string.Equals(source, "json", StringComparison.OrdinalIgnoreCase))
+                throw new NotSupportedException($"materialize: source kind '{source}' is not supported (only \"json\").");
+
+            if (a2 is not DefObject target)
+                throw new InvalidOperationException("materialize: third argument must be DefObject instance.");
+
+            IReadOnlyList<DefType>? catalog = _currentUnit?.Types;
+            Hal.Materialize(schema, target, a3, catalog);
+            // Как у остальных call: результат на стеке (тот же DefObject); statement-lowering сбрасывает через pop.
+            _stack.Add(target);
+        }
+
+        /// <summary>
+        /// <c>is(instance, type)</c> — для <see cref="DefObject"/>: подтип по <see cref="DefClass.Inheritances"/>.
+        /// Стек: <c>push</c> instance, <c>push class</c>, <c>push 2</c>, <c>call is</c> → два значения:
+        /// снизу экземпляр для binding (тот же <see cref="DefObject"/> при успехе, иначе <c>null</c>),
+        /// сверху <c>1</c> / <c>0</c> (как у <c>cmp …, 1</c> + <c>je</c> на ветку).
+        /// </summary>
+        private void ExecuteIs(CallInfo callInfo)
+        {
+            if (callInfo.Parameters == null ||
+                !callInfo.Parameters.TryGetValue("0", out var inst) ||
+                !callInfo.Parameters.TryGetValue("1", out var typeArg))
+                throw new InvalidOperationException("is requires two arguments: instance and type (push class).");
+
+            void PushNoMatch()
+            {
+                _stack.Add(null!);
+                _stack.Add(0L);
+            }
+
+            if (!TryResolveIsSuperFq(typeArg, out var superFq) || string.IsNullOrWhiteSpace(superFq))
+            {
+                PushNoMatch();
+                return;
+            }
+
+            superFq = superFq.Trim();
+            if (inst is not DefObject d)
+            {
+                PushNoMatch();
+                return;
+            }
+
+            var subFq = (d.Type?.FullName ?? d.TypeName)?.Trim();
+            if (string.IsNullOrEmpty(subFq))
+            {
+                PushNoMatch();
+                return;
+            }
+
+            var ok = Interpreter.IsSubtypeOfFq(subFq, superFq, _currentUnit);
+            if (!ok)
+            {
+                PushNoMatch();
+                return;
+            }
+
+            _stack.Add(d);
+            _stack.Add(1L);
+        }
+
+        private bool TryResolveIsSuperFq(object? typeArg, out string fq)
+        {
+            fq = "";
+            switch (typeArg)
+            {
+                case DefType dt:
+                    fq = !string.IsNullOrWhiteSpace(dt.FullName) ? dt.FullName.Trim() : (dt.Name ?? "").Trim();
+                    return fq.Length > 0;
+                case string s when !string.IsNullOrWhiteSpace(s):
+                {
+                    var req = s.Trim();
+                    if (_currentUnit?.Types != null)
+                    {
+                        foreach (var t in _currentUnit.Types)
+                        {
+                            if (string.Equals(t.Name, req, StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(t.FullName, req, StringComparison.OrdinalIgnoreCase))
+                            {
+                                fq = !string.IsNullOrWhiteSpace(t.FullName) ? t.FullName.Trim() : t.Name.Trim();
+                                return fq.Length > 0;
+                            }
+                        }
+                    }
+
+                    fq = req;
+                    return true;
+                }
+                default:
+                    return false;
             }
         }
 

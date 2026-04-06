@@ -5,18 +5,21 @@ using Magic.Kernel.Processor;
 using Magic.Kernel.Types;
 using Magic.Kernel.Space;
 using Magic.Kernel.Devices;
+using Magic.Kernel.Devices.Streams;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Tasks;
 using System.Reflection;
+using System.IO;
 using System.Threading;
 
 namespace Magic.Kernel.Interpretation
 {
-    public class Interpreter
+    public partial class Interpreter
     {
         private long instructionPointer = 0;
         private KernelConfiguration? _configuration;
@@ -29,6 +32,7 @@ namespace Magic.Kernel.Interpretation
         private readonly Stack<(ExecutionBlock Block, long ReturnIp)> _lambdaCallStack = new Stack<(ExecutionBlock, long)>();
         private readonly Stack<object?[]> _lambdaArgsStack = new Stack<object?[]>();
         private int _queryExecutionDepth;
+        public List<DefType> InheritedTypes { get; set; } = new List<DefType>();
         public Devices.Streams.ClawSocketContext? CurrentSocketContext { get; set; }
 
         private sealed class CallFrame
@@ -36,6 +40,12 @@ namespace Magic.Kernel.Interpretation
             public required ExecutionBlock Block { get; init; }
             public required long ReturnIp { get; init; }
             public string? Name { get; init; }
+
+            /// <summary>После <c>ret</c> из вызванного тела — положить на стек (для <c>callobj</c> → user <c>_ctor_</c> на <see cref="DefObject"/>).</summary>
+            public object? PushOnRet { get; init; }
+
+            /// <summary>После <c>ret</c> из метода типа, вызванного через <c>callobj</c> с коротким именем — положить <c>null</c> (как у <see cref="Hal.CallObjAsync"/> для void).</summary>
+            public bool PushNullReturnOnRet { get; init; }
         }
 
         public List<object> Stack = new List<object>();
@@ -61,42 +71,187 @@ namespace Magic.Kernel.Interpretation
         /// <summary>Если true, выполнять entrypoint в этом интерпретаторе, а не через <see cref="KernelRuntime.SpawnAsync"/>.</summary>
         public bool BypassRuntimeSpawn { get; set; }
 
+        /// <summary>Если задано, <c>read/readln</c> читают отсюда; иначе <see cref="System.Console.In"/>.</summary>
+        public TextReader? StandardInput { get; set; }
+
         private int _debugSkipSourceLine;
+        private string? _debugSkipSourcePath;
+        private int _debugSkipAsmLine;
         private bool _breakOnDifferentSourceLine;
         private int _stepOverAnchorLine;
+        private string? _stepOverAnchorSourcePath;
         private int _instructionStepsRemaining;
+
+        /// <summary>Последняя пауза была после инструкции (UI уже на PC следующей). StepInstruction тогда подавляет одно срабатывание breakpoint до её выполнения.</summary>
+        private bool _debugPausedAfterInstruction;
+
+        private int _debugOneShotSkipAsmBreakpoint;
+        private int _debugOneShotSkipSourceBreakpoint;
+
+        private bool _stepIntoSameLineSkip;
+        private int _stepIntoAnchorLine;
+        private string? _stepIntoAnchorSourcePath;
 
         private void ResetDebugSessionState()
         {
             _debugSkipSourceLine = 0;
+            _debugSkipSourcePath = null;
+            _debugSkipAsmLine = 0;
             _breakOnDifferentSourceLine = false;
             _stepOverAnchorLine = 0;
+            _stepOverAnchorSourcePath = null;
             _instructionStepsRemaining = 0;
+            _debugPausedAfterInstruction = false;
+            _debugOneShotSkipAsmBreakpoint = 0;
+            _debugOneShotSkipSourceBreakpoint = 0;
+            _stepIntoSameLineSkip = false;
+            _stepIntoAnchorLine = 0;
+            _stepIntoAnchorSourcePath = null;
         }
 
-        private void ApplyDebugResumeAction(DebugResumeAction action, int pausedSourceLine)
+        private static bool IsStepIntoUserCallOpcode(Opcodes op)
+            => op is Opcodes.Call or Opcodes.ACall or Opcodes.CallObj;
+
+        private static bool DebugPathEquals(string? a, string? b)
+        {
+            if (string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b))
+                return true;
+            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b))
+                return false;
+            return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private string? ResolveDebugSourcePath(Command command)
+        {
+            if (!string.IsNullOrWhiteSpace(command.SourcePath))
+                return command.SourcePath;
+            if (_currentBlock != null && instructionPointer > 0)
+            {
+                var cur = (int)instructionPointer - 1;
+                for (var i = cur; i < _currentBlock.Count; i++)
+                {
+                    var sp = _currentBlock[i].SourcePath;
+                    if (!string.IsNullOrWhiteSpace(sp))
+                        return sp;
+                }
+
+                for (var i = cur - 1; i >= 0; i--)
+                {
+                    var sp = _currentBlock[i].SourcePath;
+                    if (!string.IsNullOrWhiteSpace(sp))
+                        return sp;
+                }
+            }
+
+            return _unit?.AttachSourcePath;
+        }
+
+        private static string? FirstSourcePathInBlockFrom(ExecutionBlock? block, int startIndex)
+        {
+            if (block == null || startIndex < 0)
+                return null;
+            for (var i = startIndex; i < block.Count; i++)
+            {
+                var sp = block[i].SourcePath;
+                if (!string.IsNullOrWhiteSpace(sp))
+                    return sp;
+            }
+
+            for (var i = startIndex - 1; i >= 0; i--)
+            {
+                var sp = block[i].SourcePath;
+                if (!string.IsNullOrWhiteSpace(sp))
+                    return sp;
+            }
+
+            return null;
+        }
+
+        private CancellationToken DebugContinueCancellationToken
+            => DebugSession?.ContinueCancellationToken ?? CancellationToken.None;
+
+        private void ApplyDebugResumeAction(DebugResumeAction action, int pausedSourceLine, int pausedAsmLine, string? pausedSourcePath)
         {
             switch (action)
             {
                 case DebugResumeAction.Stop:
+                    _debugPausedAfterInstruction = false;
+                    _debugOneShotSkipAsmBreakpoint = 0;
+                    _debugOneShotSkipSourceBreakpoint = 0;
+                    _stepIntoSameLineSkip = false;
+                    _stepIntoAnchorLine = 0;
+                    _stepIntoAnchorSourcePath = null;
                     throw new OperationCanceledException("Debug stopped.");
                 case DebugResumeAction.Run:
                     _breakOnDifferentSourceLine = false;
                     _stepOverAnchorLine = 0;
+                    _stepOverAnchorSourcePath = null;
                     _instructionStepsRemaining = 0;
                     _debugSkipSourceLine = pausedSourceLine;
+                    _debugSkipSourcePath = pausedSourcePath;
+                    _debugSkipAsmLine = pausedAsmLine;
+                    _debugPausedAfterInstruction = false;
+                    _debugOneShotSkipAsmBreakpoint = 0;
+                    _debugOneShotSkipSourceBreakpoint = 0;
+                    _stepIntoSameLineSkip = false;
+                    _stepIntoAnchorLine = 0;
+                    _stepIntoAnchorSourcePath = null;
                     break;
                 case DebugResumeAction.StepOverLine:
                     _breakOnDifferentSourceLine = true;
                     _stepOverAnchorLine = pausedSourceLine;
+                    _stepOverAnchorSourcePath = pausedSourcePath;
                     _instructionStepsRemaining = 0;
                     _debugSkipSourceLine = pausedSourceLine;
+                    _debugSkipSourcePath = pausedSourcePath;
+                    _debugSkipAsmLine = pausedAsmLine;
+                    _debugPausedAfterInstruction = false;
+                    _debugOneShotSkipAsmBreakpoint = 0;
+                    _debugOneShotSkipSourceBreakpoint = 0;
+                    _stepIntoSameLineSkip = false;
+                    _stepIntoAnchorLine = 0;
+                    _stepIntoAnchorSourcePath = null;
                     break;
                 case DebugResumeAction.StepInstruction:
                     _breakOnDifferentSourceLine = false;
                     _stepOverAnchorLine = 0;
+                    _stepOverAnchorSourcePath = null;
+                    _stepIntoSameLineSkip = false;
+                    _stepIntoAnchorLine = 0;
+                    _stepIntoAnchorSourcePath = null;
                     _debugSkipSourceLine = 0;
+                    _debugSkipSourcePath = null;
+                    _debugSkipAsmLine = 0;
                     _instructionStepsRemaining = 1;
+                    if (_debugPausedAfterInstruction)
+                    {
+                        if (pausedAsmLine > 0)
+                            _debugOneShotSkipAsmBreakpoint = pausedAsmLine;
+                        if (pausedSourceLine > 0)
+                            _debugOneShotSkipSourceBreakpoint = pausedSourceLine;
+                        _debugPausedAfterInstruction = false;
+                    }
+                    else
+                    {
+                        _debugOneShotSkipAsmBreakpoint = 0;
+                        _debugOneShotSkipSourceBreakpoint = 0;
+                    }
+
+                    break;
+                case DebugResumeAction.StepInto:
+                    _breakOnDifferentSourceLine = false;
+                    _stepOverAnchorLine = 0;
+                    _stepOverAnchorSourcePath = null;
+                    _stepIntoSameLineSkip = true;
+                    _stepIntoAnchorLine = pausedSourceLine;
+                    _stepIntoAnchorSourcePath = pausedSourcePath;
+                    _debugSkipSourceLine = 0;
+                    _debugSkipSourcePath = null;
+                    _debugSkipAsmLine = 0;
+                    _instructionStepsRemaining = 0;
+                    _debugPausedAfterInstruction = false;
+                    _debugOneShotSkipAsmBreakpoint = 0;
+                    _debugOneShotSkipSourceBreakpoint = 0;
                     break;
             }
         }
@@ -109,22 +264,76 @@ namespace Magic.Kernel.Interpretation
 
             session.ContinueCancellationToken.ThrowIfCancellationRequested();
 
+            var path = ResolveDebugSourcePath(command);
             var line = command.SourceLine;
-            if (line > 0 && _debugSkipSourceLine != 0 && line != _debugSkipSourceLine)
+            var asmLine = command.AsmListingLine;
+
+            if (_stepIntoSameLineSkip)
+            {
+                var onAnchor = line > 0 && line == _stepIntoAnchorLine &&
+                               DebugPathEquals(path, _stepIntoAnchorSourcePath);
+                if (!onAnchor)
+                {
+                    _stepIntoSameLineSkip = false;
+                }
+                else if (IsStepIntoUserCallOpcode(command.Opcode))
+                {
+                    _stepIntoSameLineSkip = false;
+                    _instructionStepsRemaining = 1;
+                    return;
+                }
+                else
+                {
+                    return;
+                }
+            }
+
+            if (line > 0 && _debugSkipSourceLine != 0 &&
+                (line != _debugSkipSourceLine || !DebugPathEquals(path, _debugSkipSourcePath)))
+            {
                 _debugSkipSourceLine = 0;
+                _debugSkipSourcePath = null;
+            }
 
-            var stepOverHit = _breakOnDifferentSourceLine && line > 0 && line != _stepOverAnchorLine;
-            var breakpointHit = line > 0 && session.IsBreakpointLine(line) &&
-                                (_debugSkipSourceLine == 0 || line != _debugSkipSourceLine);
+            if (asmLine > 0 && _debugSkipAsmLine != 0 && asmLine != _debugSkipAsmLine)
+                _debugSkipAsmLine = 0;
 
-            if (!stepOverHit && !breakpointHit)
+            if (_debugOneShotSkipAsmBreakpoint > 0 && asmLine > 0 && asmLine != _debugOneShotSkipAsmBreakpoint)
+                _debugOneShotSkipAsmBreakpoint = 0;
+            if (_debugOneShotSkipSourceBreakpoint > 0 && line > 0 && line != _debugOneShotSkipSourceBreakpoint)
+                _debugOneShotSkipSourceBreakpoint = 0;
+
+            var suppressSrcBpOnce = _debugOneShotSkipSourceBreakpoint > 0 && line == _debugOneShotSkipSourceBreakpoint;
+            var suppressAsmBpOnce = _debugOneShotSkipAsmBreakpoint > 0 && asmLine == _debugOneShotSkipAsmBreakpoint;
+            if (suppressSrcBpOnce)
+                _debugOneShotSkipSourceBreakpoint = 0;
+            if (suppressAsmBpOnce)
+                _debugOneShotSkipAsmBreakpoint = 0;
+
+            var stepOverHit = _breakOnDifferentSourceLine && line > 0 &&
+                              (line != _stepOverAnchorLine || !DebugPathEquals(path, _stepOverAnchorSourcePath));
+            var skipMatchesBreakpoint = _debugSkipSourceLine > 0 && line == _debugSkipSourceLine &&
+                                        DebugPathEquals(path, _debugSkipSourcePath);
+            var breakpointHit = line > 0 && !string.IsNullOrWhiteSpace(path) &&
+                                  session.IsBreakpointAgiLine(path, line) &&
+                                  !skipMatchesBreakpoint &&
+                                  !suppressSrcBpOnce;
+            var sameStepOverSourceLine = _breakOnDifferentSourceLine && line > 0 && line == _stepOverAnchorLine &&
+                                         DebugPathEquals(path, _stepOverAnchorSourcePath);
+            var asmBreakpointHit = asmLine > 0 && session.IsBreakpointAsmLine(asmLine) &&
+                                   (_debugSkipAsmLine == 0 || asmLine != _debugSkipAsmLine) &&
+                                   !sameStepOverSourceLine &&
+                                   !suppressAsmBpOnce;
+
+            if (!stepOverHit && !breakpointHit && !asmBreakpointHit)
                 return;
 
-            await session.WaitPausedAsync(line, session.ContinueCancellationToken).ConfigureAwait(false);
-            ApplyDebugResumeAction(session.ConsumeResumeAction(), line);
+            _debugPausedAfterInstruction = false;
+            await session.WaitPausedAsync(this, line, asmLine, path, session.ContinueCancellationToken).ConfigureAwait(false);
+            ApplyDebugResumeAction(session.ConsumeResumeAction(), line, asmLine, path);
         }
 
-        private async Task MaybeDebugPauseAfterInstructionAsync(Command command)
+        private async Task MaybeDebugPauseAfterInstructionAsync(Command executedCommand)
         {
             var session = DebugSession;
             if (session == null || _instructionStepsRemaining <= 0)
@@ -134,9 +343,37 @@ namespace Magic.Kernel.Interpretation
             if (_instructionStepsRemaining > 0)
                 return;
 
-            var showLine = command.SourceLine > 0 ? command.SourceLine : (_stepOverAnchorLine > 0 ? _stepOverAnchorLine : 1);
-            await session.WaitPausedAsync(showLine, session.ContinueCancellationToken).ConfigureAwait(false);
-            ApplyDebugResumeAction(session.ConsumeResumeAction(), command.SourceLine > 0 ? command.SourceLine : showLine);
+            // IP уже указывает на следующую команду; иначе UI показывал бы только что выполненную (def и т.д.).
+            GetDebugLinesForNextInstruction(executedCommand, out var showLine, out var showAsm, out var showPath);
+            _debugPausedAfterInstruction = true;
+            await session.WaitPausedAsync(this, showLine, showAsm, showPath, session.ContinueCancellationToken).ConfigureAwait(false);
+            ApplyDebugResumeAction(session.ConsumeResumeAction(), showLine, showAsm, showPath);
+        }
+
+        /// <summary>Строки для подсветки «текущей» позиции: следующая к выполнению команда, если есть.</summary>
+        private void GetDebugLinesForNextInstruction(Command executedCommand, out int sourceLine, out int asmLine, out string? sourcePath)
+        {
+            if (_currentBlock != null && instructionPointer >= 0 && instructionPointer < _currentBlock.Count)
+            {
+                var next = _currentBlock[(int)instructionPointer];
+                sourceLine = next.SourceLine > 0
+                    ? next.SourceLine
+                    : (executedCommand.SourceLine > 0 ? executedCommand.SourceLine : (_stepOverAnchorLine > 0 ? _stepOverAnchorLine : 1));
+                asmLine = next.AsmListingLine > 0 ? next.AsmListingLine : executedCommand.AsmListingLine;
+                sourcePath = !string.IsNullOrWhiteSpace(next.SourcePath)
+                    ? next.SourcePath
+                    : FirstSourcePathInBlockFrom(_currentBlock, (int)instructionPointer)
+                      ?? ResolveDebugSourcePath(executedCommand);
+            }
+            else
+            {
+                sourceLine = executedCommand.SourceLine > 0 ? executedCommand.SourceLine : (_stepOverAnchorLine > 0 ? _stepOverAnchorLine : 1);
+                asmLine = executedCommand.AsmListingLine;
+                sourcePath = ResolveDebugSourcePath(executedCommand);
+            }
+
+            if (sourceLine <= 0)
+                sourceLine = _stepOverAnchorLine > 0 ? _stepOverAnchorLine : 1;
         }
 
         public async Task<List<InterpretationResult>> InterpreteAsync(List<ExecutableUnit> list)
@@ -174,10 +411,10 @@ namespace Magic.Kernel.Interpretation
             _currentLabelOffsets = BuildLabelOffsets(_currentBlock);
             _callStack.Clear();
             MemoryContext.ClearLocalScopes();
+            MemoryContext.ClearAmbientLocal();
 
             // Для корневого запуска нет наследуемой памяти, локальная/глобальная начинаются с нуля.
             MemoryContext.Inherited.Clear();
-            MemoryContext.Local.Clear();
             MemoryContext.Global.Clear();
 
             // SpaceName в ExecutableUnit: system|module|program для префикса ключей диска
@@ -227,7 +464,10 @@ namespace Magic.Kernel.Interpretation
             {
                 return new InterpretationResult { Success = false };
             }
-            finally { }
+            finally
+            {
+                await CloseOwnedDefStreamsAsync().ConfigureAwait(false);
+            }
         }
 
         /// <summary>
@@ -239,8 +479,8 @@ namespace Magic.Kernel.Interpretation
             _unit = executableUnit ?? throw new ArgumentNullException(nameof(executableUnit));
             _callStack.Clear();
             MemoryContext.ClearLocalScopes();
+            MemoryContext.ClearAmbientLocal();
             // Global / Inherited уже проставлены рантаймом как наследованные слои.
-            MemoryContext.Local.Clear();
             executableUnit.SpaceName = BuildSpaceName(executableUnit.System, executableUnit.Module, executableUnit.Name);
 
             if (!string.IsNullOrEmpty(entryName) && _unit.Procedures != null && _unit.Procedures.TryGetValue(entryName, out var proc))
@@ -248,12 +488,14 @@ namespace Magic.Kernel.Interpretation
                 _currentBlock = proc.Body ?? new ExecutionBlock();
                 instructionPointer = 0;
                 PushCallArgs(callInfo);
+                MemoryContext.PushCallFrame();
             }
             else if (!string.IsNullOrEmpty(entryName) && _unit.Functions != null && _unit.Functions.TryGetValue(entryName, out var func))
             {
                 _currentBlock = func.Body ?? new ExecutionBlock();
                 instructionPointer = 0;
                 PushCallArgs(callInfo);
+                MemoryContext.PushCallFrame();
             }
             else if (!string.IsNullOrEmpty(entryName))
             {
@@ -328,7 +570,10 @@ namespace Magic.Kernel.Interpretation
             {
                 return new InterpretationResult { Success = false };
             }
-            finally { }
+            finally
+            {
+                await CloseOwnedDefStreamsAsync().ConfigureAwait(false);
+            }
         }
 
         private void PushCallArgs(Processor.CallInfo? callInfo)
@@ -386,6 +631,9 @@ namespace Magic.Kernel.Interpretation
                 case Opcodes.Def:
                     await ExecuteDefAsync(command);
                     break;
+                case Opcodes.DefObj:
+                    await ExecuteDefObjAsync(command);
+                    break;
                 case Opcodes.DefGen:
                     await ExecuteDefGenAsync(command);
                     break;
@@ -436,6 +684,21 @@ namespace Magic.Kernel.Interpretation
                     break;
                 case Opcodes.Lt:
                     await ExecuteLtAsync(command);
+                    break;
+                case Opcodes.Add:
+                    await ExecuteAddAsync(command);
+                    break;
+                case Opcodes.Sub:
+                    await ExecuteSubAsync(command);
+                    break;
+                case Opcodes.Mul:
+                    await ExecuteMulAsync(command);
+                    break;
+                case Opcodes.Div:
+                    await ExecuteDivAsync(command);
+                    break;
+                case Opcodes.Pow:
+                    await ExecutePowAsync(command);
                     break;
                 case Opcodes.Not:
                     await ExecuteNotAsync(command);
@@ -552,7 +815,13 @@ namespace Magic.Kernel.Interpretation
                 FunctionName = source.FunctionName,
                 Parameters = source.Parameters != null
                     ? new Dictionary<string, object>(source.Parameters, StringComparer.Ordinal)
-                    : new Dictionary<string, object>(StringComparer.Ordinal)
+                    : new Dictionary<string, object>(StringComparer.Ordinal),
+                StreamWaitDeltaBindSlots = source.StreamWaitDeltaBindSlots != null
+                    ? (long[])source.StreamWaitDeltaBindSlots.Clone()
+                    : null,
+                StreamWaitCaptureToSlots = source.StreamWaitCaptureToSlots != null
+                    ? (long[])source.StreamWaitCaptureToSlots.Clone()
+                    : null
             };
             return clone;
         }
@@ -562,10 +831,36 @@ namespace Magic.Kernel.Interpretation
             // Аргументы на стеке: сверху arity, под ним arg1, arg2, ...
             if ((callInfo.Parameters == null || callInfo.Parameters.Count == 0) && Stack.Count > 0)
             {
-                var (n, args) = PopArityAndArgs(extraRequired: 0);
-                callInfo.Parameters ??= new Dictionary<string, object>();
-                for (var i = 0; i < n; i++)
-                    callInfo.Parameters[$"{i}"] = args[i]!;
+                var isUserDefined =
+                    _unit?.Procedures != null && _unit.Procedures.ContainsKey(callInfo.FunctionName) ||
+                    _unit?.Functions != null && _unit.Functions.ContainsKey(callInfo.FunctionName);
+
+                if (isUserDefined)
+                {
+                    // Don't consume the stack here: user-defined procedure/function bodies
+                    // usually start with parameter-binding instructions that expect the values
+                    // (arity + args) to still be present on the stack.
+                    var arityObj = Stack[^1];
+                    var n = arityObj switch
+                    {
+                        long l => l,
+                        int i => i,
+                        double d => (long)d,
+                        _ => 0L
+                    };
+
+                    callInfo.Parameters ??= new Dictionary<string, object>();
+                    var baseIndex = Stack.Count - 1 - (int)n;
+                    for (var i = 0; i < n; i++)
+                        callInfo.Parameters[$"{i}"] = Stack[baseIndex + i]!;
+                }
+                else
+                {
+                    var (n, args) = PopArityAndArgs(extraRequired: 0);
+                    callInfo.Parameters ??= new Dictionary<string, object>();
+                    for (var i = 0; i < n; i++)
+                        callInfo.Parameters[$"{i}"] = args[i]!;
+                }
             }
         }
 
@@ -575,7 +870,6 @@ namespace Magic.Kernel.Interpretation
                 return false;
 
             string? entryNameForSpawn = null;
-            ExecutionBlock? startBlockForSpawn = null;
 
             if (_unit.Procedures != null && _unit.Procedures.TryGetValue(callInfo.FunctionName, out var proc))
             {
@@ -585,18 +879,15 @@ namespace Magic.Kernel.Interpretation
             {
                 entryNameForSpawn = func.Name;
             }
-            else if (_currentBlock != null && _currentLabelOffsets.TryGetValue(callInfo.FunctionName, out _))
-            {
-                entryNameForSpawn = callInfo.FunctionName;
-                startBlockForSpawn = _currentBlock;
-            }
+
+            // Локальная метка в текущем блоке (streamwait_loop_N_delta и т.п.) — только inline через
+            // ExecuteResolvedCallAsync. Spawn ставит новый Interpreter в очередь и не ждёт: родитель
+            // сразу делает jmp на следующую итерацию streamwaitobj и ломает ожидание потока.
 
             if (string.IsNullOrEmpty(entryNameForSpawn))
                 return false;
 
-            Dictionary<long, object>? inheritedLocal = null;
-            if (MemoryContext.Local.Count > 0)
-                inheritedLocal = new Dictionary<long, object>(MemoryContext.Local);
+            Dictionary<long, object>? inheritedLocal = MemoryContext.CaptureLocalsForSpawn();
 
             Dictionary<long, object>? inheritedGlobal = null;
             if (MemoryContext.Global.Count > 0)
@@ -609,7 +900,9 @@ namespace Magic.Kernel.Interpretation
                 tag: null,
                 inheritedLocalMemory: inheritedLocal,
                 inheritedGlobalMemory: inheritedGlobal,
-                startBlock: startBlockForSpawn
+                inheritedTypes: _unit.Types?.ToList() ?? new List<DefType>(),
+                startBlock: null,
+                debugSession: DebugSession
             ).ConfigureAwait(false);
 
             return true;
@@ -648,6 +941,24 @@ namespace Magic.Kernel.Interpretation
                 _currentLabelOffsets.TryGetValue(callInfo.FunctionName, out _))
             {
                 MemoryContext.PushLocalScope();
+                if (callInfo.StreamWaitDeltaBindSlots is { Length: 2 } bind &&
+                    callInfo.Parameters.TryGetValue("0", out var aggArg) &&
+                    callInfo.Parameters.TryGetValue("1", out var deltaArg))
+                {
+                    MemoryContext.Local[bind[0]] = aggArg!;
+                    MemoryContext.Local[bind[1]] = deltaArg!;
+                    if (callInfo.StreamWaitCaptureToSlots is { Length: > 0 } capSlots)
+                    {
+                        for (var i = 0; i < capSlots.Length; i++)
+                        {
+                            if (!callInfo.Parameters.TryGetValue($"{2 + i}", out var capVal))
+                                throw new InvalidOperationException(
+                                    $"streamwait_loop delta call: expected capture argument index {2 + i} on stack (arity includes outer slots).");
+                            MemoryContext.Local[capSlots[i]] = capVal!;
+                        }
+                    }
+                }
+
                 _callStack.Push(new CallFrame { Block = _currentBlock, ReturnIp = instructionPointer, Name = callInfo.FunctionName });
                 instructionPointer = ResolveLabelOffset(callInfo.FunctionName);
                 return;
@@ -691,6 +1002,10 @@ namespace Magic.Kernel.Interpretation
             _currentBlock = frame.Block;
             _currentLabelOffsets = BuildLabelOffsets(_currentBlock);
             instructionPointer = frame.ReturnIp;
+            if (frame.PushOnRet != null)
+                Stack.Add(frame.PushOnRet);
+            else if (frame.PushNullReturnOnRet)
+                Stack.Add(null!);
             return Task.CompletedTask;
         }
 
@@ -742,7 +1057,9 @@ namespace Magic.Kernel.Interpretation
                 },
                 vaultReader,
                 _unit,
-                () => CurrentSocketContext);
+                () => CurrentSocketContext,
+                StandardInput,
+                () => DebugSession);
         }
 
         private bool IsExecutingEntryPoint()
@@ -765,6 +1082,7 @@ namespace Magic.Kernel.Interpretation
                 object? val = po.Kind switch
                 {
                     "Type" => po.Value,
+                    "Class" => FindType(po.Value?.ToString()),
                     "IntLiteral" => po.Value,
                     "StringLiteral" => po.Value,
                     "AddressLiteral" => new AddressLiteral(po.Value?.ToString() ?? string.Empty),
@@ -779,20 +1097,85 @@ namespace Magic.Kernel.Interpretation
             throw new InvalidOperationException($"Push command expects MemoryAddress or PushOperand, but got {command.Operand1?.GetType().Name ?? "null"}");
         }
 
+        /// <summary>Resolves a type name against <see cref="ExecutableUnit.Types"/> and <see cref="InheritedTypes"/>.</summary>
+        private DefType FindType(string? typeName)
+        {
+            var requested = (typeName ?? string.Empty).Trim();
+            if (requested.Length == 0)
+                throw new InvalidOperationException("push class: class name is empty.");
+
+            static bool Matches(DefType t, string req) =>
+                string.Equals(t.Name, req, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(t.FullName, req, StringComparison.OrdinalIgnoreCase);
+
+            if (_unit?.Types != null)
+            {
+                var direct = _unit.Types.FirstOrDefault(t => Matches(t, requested));
+                if (direct != null)
+                    return direct;
+            }
+
+            if (InheritedTypes.Count > 0)
+            {
+                var inherited = InheritedTypes.FirstOrDefault(t => Matches(t, requested));
+                if (inherited != null)
+                    return inherited;
+            }
+
+            throw new InvalidOperationException($"Type '{requested}' is not defined in current ExecutableUnit.Types.");
+        }
+
+        private Task ExecuteDefObjAsync(Command command)
+        {
+            if (Stack.Count < 1)
+                throw new InvalidOperationException("DefObj: stack underflow.");
+
+            // new T[] : push class T; push "list"; defobj
+            var top = Stack[Stack.Count - 1];
+            if (top is string topStr && string.Equals(topStr, "list", StringComparison.OrdinalIgnoreCase))
+            {
+                Stack.RemoveAt(Stack.Count - 1);
+                if (Stack.Count < 1)
+                    throw new InvalidOperationException("DefObj(list): missing element type under 'list'.");
+
+                var elemKind = Stack[Stack.Count - 1];
+                Stack.RemoveAt(Stack.Count - 1);
+                var list = elemKind switch
+                {
+                    DefType dt => new DefList { Name = dt.Name },
+                    string s => new DefList { Name = FindType(s).Name },
+                    _ => throw new InvalidOperationException($"DefObj(list): expected DefType or type name under 'list', got {elemKind?.GetType().Name ?? "null"}.")
+                };
+                Stack.Add(list);
+                return Task.CompletedTask;
+            }
+
+            var typeObj = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            var defType = typeObj as DefType
+                ?? (typeObj is string ts ? FindType(ts) : null);
+            if (defType == null)
+                throw new InvalidOperationException($"DefObj: expected DefType or type name on stack, got {typeObj?.GetType().Name ?? "null"}.");
+
+            var obj = Hal.DefObj(defType);
+            if (_unit != null)
+                _unit.Objects.Add(obj);
+            Stack.Add(obj);
+            return Task.CompletedTask;
+        }
+
         private Task ExecuteDefAsync(Command command)
         {
             if (Stack.Count < 1) throw new InvalidOperationException("Def: stack underflow.");
 
             var arityObj = Stack[Stack.Count - 1];
-            if (arityObj is long or int)
+            // Arity после десериализации JSON / иных путей может быть double/float — иначе n=0, снимается только «column» и стек ломается.
+            if (TryCoerceStackArity(arityObj, out var n) && n > 0 && Stack.Count >= n + 1)
             {
-                var n = arityObj is long l ? (int)l : (int)arityObj;
-                if (n > 0 && Stack.Count >= n + 1)
-                {
-                    var (_, args) = PopArityAndArgs(extraRequired: 0);
-                    Stack.Add(Hal.Def(args, _unit)!);
-                    return Task.CompletedTask;
-                }
+                var (_, args) = PopArityAndArgs(extraRequired: 0);
+                // Hal.Def (multi-arg strings): DefClass.Inheritances = bases; Generalizations reserved for DefGen/device meanings.
+                Stack.Add(Hal.Def(args, _unit)!);
+                return Task.CompletedTask;
             }
 
             var typeObj = Stack[Stack.Count - 1];
@@ -816,8 +1199,194 @@ namespace Magic.Kernel.Interpretation
             var obj = Stack[Stack.Count - 1];
             Stack.RemoveAt(Stack.Count - 1);
             var methodName = command.Operand1 as string ?? "";
+
+            // defobj → DefObject; конструктор типа — отдельная функция unit с именем …_ctor_N.
+            // Стек callobj: [receiver, arg0.., arity=argCount]; внутри функции ожидается [this, args…, arity=1+argCount] как у call.
+            if (obj is DefObject defObj &&
+                methodName.IndexOf("_ctor_", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                _unit?.Functions != null &&
+                _unit.Functions.TryGetValue(methodName, out var ctorFunc))
+            {
+                Stack.Add(defObj);
+                foreach (var a in args)
+                    Stack.Add(a);
+                Stack.Add(1 + args.Length);
+
+                if (_currentBlock == null)
+                    throw new InvalidOperationException("CallObj: interpreter has no current block.");
+
+                MemoryContext.PushLocalScope();
+                _callStack.Push(new CallFrame
+                {
+                    Block = _currentBlock,
+                    ReturnIp = instructionPointer,
+                    Name = methodName,
+                    PushOnRet = defObj
+                });
+                _currentBlock = ctorFunc.Body ?? new ExecutionBlock();
+                _currentLabelOffsets = BuildLabelOffsets(_currentBlock);
+                instructionPointer = 0;
+                return;
+            }
+
+            // Экземпляр пользовательского типа: callobj с коротким именем → перегрузки по FirstParameterTypeFq и иерархии типов.
+            if (obj is DefObject instanceObj && _unit?.Functions != null)
+            {
+                foreach (var userProcName in OrderDefObjectUserMethodProcedureKeys(instanceObj, methodName, args, _unit))
+                {
+                    if (!_unit.Functions.TryGetValue(userProcName, out var userMethodFunc))
+                        continue;
+
+                    Stack.Add(instanceObj);
+                    foreach (var a in args)
+                        Stack.Add(a);
+                    Stack.Add(1 + args.Length);
+
+                    if (_currentBlock == null)
+                        throw new InvalidOperationException("CallObj: interpreter has no current block.");
+
+                    MemoryContext.PushLocalScope();
+                    _callStack.Push(new CallFrame
+                    {
+                        Block = _currentBlock,
+                        ReturnIp = instructionPointer,
+                        Name = userProcName,
+                        PushNullReturnOnRet = true
+                    });
+                    _currentBlock = userMethodFunc.Body ?? new ExecutionBlock();
+                    _currentLabelOffsets = BuildLabelOffsets(_currentBlock);
+                    instructionPointer = 0;
+                    return;
+                }
+            }
+
             var result = await Hal.CallObjAsync(obj, methodName, args, BuildCallContext()).ConfigureAwait(false);
             Stack.Add(result!);
+        }
+
+        /// <summary>Порядок имён процедур для <c>callobj</c>: квалифицированное имя как есть; иначе перегрузки с учётом типа первого аргумента.</summary>
+        private static IEnumerable<string> OrderDefObjectUserMethodProcedureKeys(
+            DefObject instance,
+            string methodName,
+            object?[] args,
+            ExecutableUnit unit)
+        {
+            var mn = (methodName ?? "").Trim();
+            if (string.IsNullOrEmpty(mn))
+                yield break;
+
+            if (mn.IndexOf(':') >= 0)
+            {
+                yield return mn;
+                yield break;
+            }
+
+            var list = instance.Type.Methods;
+            if (list == null || list.Count == 0)
+                yield break;
+
+            var matches = list
+                .Where(m => string.Equals((m.Name ?? "").Trim(), mn, StringComparison.OrdinalIgnoreCase) &&
+                            !string.IsNullOrWhiteSpace(m.FullName))
+                .ToList();
+            if (matches.Count == 0)
+                yield break;
+            if (matches.Count == 1)
+            {
+                yield return matches[0].FullName!.Trim();
+                yield break;
+            }
+
+            foreach (var full in SelectBestOverloadProcedureNames(matches, args, unit))
+                yield return full;
+        }
+
+        private static IEnumerable<string> SelectBestOverloadProcedureNames(
+            List<DefTypeMethod> matches,
+            object?[] args,
+            ExecutableUnit unit)
+        {
+            var arg0 = args.Length > 0 ? args[0] : null;
+            var argFq = arg0 is DefObject d ? (d.Type?.FullName ?? d.TypeName) : null;
+
+            if (!string.IsNullOrEmpty(argFq))
+            {
+                foreach (var m in matches)
+                {
+                    var p = m.FirstParameterTypeFq?.Trim();
+                    if (!string.IsNullOrEmpty(p) && string.Equals(argFq, p, StringComparison.OrdinalIgnoreCase))
+                    {
+                        yield return m.FullName!.Trim();
+                        yield break;
+                    }
+                }
+
+                var assignable = matches
+                    .Where(m => !string.IsNullOrWhiteSpace(m.FirstParameterTypeFq) &&
+                                IsSubtypeOfFq(argFq, m.FirstParameterTypeFq!.Trim(), unit))
+                    .ToList();
+                if (assignable.Count > 0)
+                {
+                    DefTypeMethod? best = null;
+                    foreach (var m in assignable)
+                    {
+                        if (best == null)
+                        {
+                            best = m;
+                            continue;
+                        }
+
+                        var bp = best.FirstParameterTypeFq?.Trim() ?? "";
+                        var mp = m.FirstParameterTypeFq?.Trim() ?? "";
+                        if (ParamTypeStrictlyMoreSpecificThan(mp, bp, unit))
+                            best = m;
+                    }
+
+                    if (best != null)
+                    {
+                        yield return best.FullName!.Trim();
+                        yield break;
+                    }
+                }
+            }
+
+            foreach (var m in matches)
+                yield return m.FullName!.Trim();
+        }
+
+        private static bool ParamTypeStrictlyMoreSpecificThan(string paramA, string paramB, ExecutableUnit unit) =>
+            !string.IsNullOrEmpty(paramA) && !string.IsNullOrEmpty(paramB) &&
+            IsSubtypeOfFq(paramA, paramB, unit) && !IsSubtypeOfFq(paramB, paramA, unit);
+
+        private static DefType? TryResolveTypeByFullName(ExecutableUnit? unit, string fq)
+        {
+            if (unit?.Types == null || string.IsNullOrWhiteSpace(fq))
+                return null;
+            foreach (var t in unit.Types)
+                if (string.Equals(t.FullName, fq, StringComparison.OrdinalIgnoreCase))
+                    return t;
+            return null;
+        }
+
+        internal static bool IsSubtypeOfFq(string subFq, string superFq, ExecutableUnit? unit)
+        {
+            if (string.Equals(subFq, superFq, StringComparison.OrdinalIgnoreCase))
+                return true;
+            var sub = TryResolveTypeByFullName(unit, subFq);
+            if (sub is not DefClass cl)
+                return false;
+            foreach (var b in cl.Inheritances)
+            {
+                if (string.IsNullOrWhiteSpace(b))
+                    continue;
+                var bt = b.Trim();
+                if (string.Equals(bt, superFq, StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (IsSubtypeOfFq(bt, superFq, unit))
+                    return true;
+            }
+
+            return false;
         }
 
         private Task ExecuteGetObjAsync(Command command)
@@ -835,12 +1404,14 @@ namespace Magic.Kernel.Interpretation
         private Task ExecuteSetObjAsync(Command command)
         {
             if (Stack.Count < 3) throw new InvalidOperationException("SetObj: stack underflow.");
+
             var value = Stack[Stack.Count - 1];
             Stack.RemoveAt(Stack.Count - 1);
             var memberNameObj = Stack[Stack.Count - 1];
             Stack.RemoveAt(Stack.Count - 1);
             var obj = Stack[Stack.Count - 1];
             Stack.RemoveAt(Stack.Count - 1);
+
             var updated = Hal.SetObj(obj, memberNameObj?.ToString(), value);
             Stack.Add(updated!);
             return Task.CompletedTask;
@@ -1005,6 +1576,113 @@ namespace Magic.Kernel.Interpretation
             return Task.CompletedTask;
         }
 
+        private Task ExecuteAddAsync(Command command)
+        {
+            if (Stack.Count < 2) throw new InvalidOperationException("Add: stack underflow.");
+            var b = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            var a = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+
+            // Prefer numeric addition when both sides look like numbers.
+            if (TryConvertToDecimal(a, out var leftNum) && TryConvertToDecimal(b, out var rightNum))
+            {
+                var sum = leftNum + rightNum;
+                // Keep integer-ish results as long (most AGI numeric code uses long).
+                if (sum == Math.Truncate(sum))
+                    Stack.Add((long)sum);
+                else
+                    Stack.Add(sum);
+                return Task.CompletedTask;
+            }
+
+            // Fallback: string concatenation.
+            Stack.Add((a?.ToString() ?? "") + (b?.ToString() ?? ""));
+            return Task.CompletedTask;
+        }
+
+        private Task ExecuteSubAsync(Command command)
+        {
+            if (Stack.Count < 2) throw new InvalidOperationException("Sub: stack underflow.");
+            var b = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            var a = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            if (!TryConvertToDecimal(a, out var da) || !TryConvertToDecimal(b, out var db))
+                throw new InvalidOperationException("Sub: operands must be numeric.");
+            var diff = da - db;
+            if (diff == Math.Truncate(diff))
+                Stack.Add((long)diff);
+            else
+                Stack.Add(diff);
+            return Task.CompletedTask;
+        }
+
+        private Task ExecuteMulAsync(Command command)
+        {
+            if (Stack.Count < 2) throw new InvalidOperationException("Mul: stack underflow.");
+            var b = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            var a = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            if (!TryConvertToDecimal(a, out var da) || !TryConvertToDecimal(b, out var db))
+                throw new InvalidOperationException("Mul: operands must be numeric.");
+            var prod = da * db;
+            if (prod == Math.Truncate(prod))
+                Stack.Add((long)prod);
+            else
+                Stack.Add(prod);
+            return Task.CompletedTask;
+        }
+
+        private Task ExecuteDivAsync(Command command)
+        {
+            if (Stack.Count < 2) throw new InvalidOperationException("Div: stack underflow.");
+            var b = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            var a = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            if (a is FloatDecimal leftFloatDecimal && b is FloatDecimal rightFloatDecimal)
+            {
+                Stack.Add(leftFloatDecimal / rightFloatDecimal);
+                return Task.CompletedTask;
+            }
+            if (!TryConvertToDecimal(a, out var da) || !TryConvertToDecimal(b, out var db))
+                throw new InvalidOperationException("Div: operands must be numeric.");
+            if (db == 0m)
+                throw new DivideByZeroException("Div: division by zero.");
+            var quot = da / db;
+            if (quot == Math.Truncate(quot))
+                Stack.Add((long)quot);
+            else
+                Stack.Add(quot);
+            return Task.CompletedTask;
+        }
+
+        private Task ExecutePowAsync(Command command)
+        {
+            if (Stack.Count < 2) throw new InvalidOperationException("Pow: stack underflow.");
+            var b = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            var a = Stack[Stack.Count - 1];
+            Stack.RemoveAt(Stack.Count - 1);
+            if (a is FloatDecimal || b is FloatDecimal)
+                throw new InvalidOperationException("Pow: FloatDecimal operands not supported; use decimal/long.");
+            if (!TryConvertToDecimal(a, out var da) || !TryConvertToDecimal(b, out var db))
+                throw new InvalidOperationException("Pow: operands must be numeric.");
+            var adb = (double)da;
+            var bdb = (double)db;
+            var r = Math.Pow(adb, bdb);
+            if (double.IsNaN(r) || double.IsInfinity(r))
+                throw new InvalidOperationException("Pow: result is NaN or infinity.");
+            var dr = (decimal)r;
+            if (dr == Math.Truncate(dr))
+                Stack.Add((long)dr);
+            else
+                Stack.Add(dr);
+            return Task.CompletedTask;
+        }
+
         private static bool CompareForLt(object? a, object? b)
         {
             if (a is FloatDecimal leftFloatDecimal && b is FloatDecimal rightFloatDecimal)
@@ -1097,7 +1775,7 @@ namespace Magic.Kernel.Interpretation
             Stack.RemoveAt(Stack.Count - 1);
 
             var streamWaitType = streamWaitTypeObj?.ToString() ?? "delta";
-            var result = await Hal.StreamWaitObjAsync(obj, streamWaitType).ConfigureAwait(false);
+            var result = await Hal.StreamWaitObjAsync(obj, streamWaitType).WaitAsync(DebugContinueCancellationToken).ConfigureAwait(false);
             if (string.Equals(streamWaitType, "data", StringComparison.OrdinalIgnoreCase))
                 Stack.Add(result.Delta!);
             else
@@ -1113,7 +1791,7 @@ namespace Magic.Kernel.Interpretation
             if (Stack.Count < 1) throw new InvalidOperationException("AwaitObj: stack underflow.");
             var obj = Stack[Stack.Count - 1];
             Stack.RemoveAt(Stack.Count - 1);
-            var result = await Hal.ExecuteAwaitObjAsync(obj).ConfigureAwait(false);
+            var result = await Hal.ExecuteAwaitObjAsync(obj).WaitAsync(DebugContinueCancellationToken).ConfigureAwait(false);
             Stack.Add(result!);
         }
 
@@ -1125,7 +1803,7 @@ namespace Magic.Kernel.Interpretation
 
             if (obj is Task task)
             {
-                await task.ConfigureAwait(false);
+                await task.WaitAsync(DebugContinueCancellationToken).ConfigureAwait(false);
                 var taskType = task.GetType();
                 if (taskType.IsGenericType && taskType.GetGenericTypeDefinition() == typeof(Task<>))
                 {
@@ -1141,7 +1819,7 @@ namespace Magic.Kernel.Interpretation
 
             if (obj is IDefType)
             {
-                var awaited = await Hal.ExecuteAwaitAsync(obj).ConfigureAwait(false);
+                var awaited = await Hal.ExecuteAwaitAsync(obj).WaitAsync(DebugContinueCancellationToken).ConfigureAwait(false);
                 Stack.Add(awaited!);
                 return;
             }
@@ -1194,13 +1872,14 @@ namespace Magic.Kernel.Interpretation
             return Task.CompletedTask;
         }
 
-        /// <summary>Pops arity (int/long) from stack, then pops n values. Returns (n, args) with args[0] = first arg below arity. Throws if stack has fewer than 1 + n + extraRequired elements.</summary>
+        /// <summary>Pops arity (numeric) from stack, then pops n values. Returns (n, args) with args[0] = first arg below arity. Throws if stack has fewer than 1 + n + extraRequired elements.</summary>
         private (int n, object?[] args) PopArityAndArgs(int extraRequired = 0)
         {
             if (Stack.Count < 1) throw new InvalidOperationException("Stack underflow (arity).");
             var arityObj = Stack[Stack.Count - 1];
             Stack.RemoveAt(Stack.Count - 1);
-            var n = arityObj is long l ? (int)l : (arityObj is int k ? k : 0);
+            if (!TryCoerceStackArity(arityObj, out var n) || n < 0)
+                throw new InvalidOperationException($"Invalid arity on stack (expected integral count): {arityObj?.GetType().Name ?? "null"}.");
             if (Stack.Count < n + extraRequired) throw new InvalidOperationException("Not enough arguments on stack.");
             var args = new object?[n];
             for (var i = 0; i < n; i++)
@@ -1209,6 +1888,55 @@ namespace Magic.Kernel.Interpretation
                 Stack.RemoveAt(Stack.Count - 1);
             }
             return (n, args);
+        }
+
+        /// <summary>Arity для <see cref="Opcodes.Def"/> / <see cref="Opcodes.CallObj"/> и т.д.: int/long или целое в double/float.</summary>
+        private static bool TryCoerceStackArity(object? arityObj, out int n)
+        {
+            n = 0;
+            if (arityObj == null) return false;
+            switch (arityObj)
+            {
+                case int i:
+                    n = i;
+                    return true;
+                case long l:
+                    if (l > int.MaxValue || l < int.MinValue) return false;
+                    n = (int)l;
+                    return true;
+                case uint ui:
+                    if (ui > int.MaxValue) return false;
+                    n = (int)ui;
+                    return true;
+                case short s:
+                    n = s;
+                    return true;
+                case ushort us:
+                    n = us;
+                    return true;
+                case byte b:
+                    n = b;
+                    return true;
+                case sbyte sb:
+                    n = sb;
+                    return true;
+                case double d:
+                    if (double.IsNaN(d) || double.IsInfinity(d)) return false;
+                    var rd = Math.Round(d);
+                    if (Math.Abs(d - rd) > 1e-9) return false;
+                    if (rd > int.MaxValue || rd < int.MinValue) return false;
+                    n = (int)rd;
+                    return true;
+                case float f:
+                    if (float.IsNaN(f) || float.IsInfinity(f)) return false;
+                    var rf = (float)Math.Round(f);
+                    if (Math.Abs(f - rf) > 1e-5f) return false;
+                    if (rf > int.MaxValue || rf < int.MinValue) return false;
+                    n = (int)rf;
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         private bool TryResolveCmpOperandValue(object? operand, out object? value)
@@ -1320,9 +2048,20 @@ namespace Magic.Kernel.Interpretation
                 case bool b:
                     result = b ? 1m : 0m;
                     return true;
-                case object o:
-                    result = o != null ? 1m : 0m;
-                    return true;
+                case string s:
+                    if (string.IsNullOrWhiteSpace(s))
+                    {
+                        result = 0m;
+                        return true;
+                    }
+                    if (decimal.TryParse(s.Trim(), NumberStyles.Number, CultureInfo.InvariantCulture, out var parsedString))
+                    {
+                        result = parsedString;
+                        return true;
+                    }
+                    return false;
+                default:
+                    return false;
             }
         }
 
@@ -1364,6 +2103,76 @@ namespace Magic.Kernel.Interpretation
             if (m != null) parts.Add(m);
             if (p != null) parts.Add(p);
             return parts.Count > 0 ? string.Join("|", parts) : string.Empty;
+        }
+
+        private sealed class DefStreamReferenceEquality : IEqualityComparer<DefStream>
+        {
+            internal static readonly DefStreamReferenceEquality Instance = new();
+
+            public bool Equals(DefStream? x, DefStream? y) => ReferenceEquals(x, y);
+
+            public int GetHashCode(DefStream obj) => RuntimeHelpers.GetHashCode(obj);
+        }
+
+        private static void CollectDefStreamsForShutdown(object? o, HashSet<DefStream> sink)
+        {
+            switch (o)
+            {
+                case null:
+                    return;
+                case DefStream ds:
+                    sink.Add(ds);
+                    foreach (var g in ds.Generalizations)
+                    {
+                        if (g is DefStream inner)
+                            CollectDefStreamsForShutdown(inner, sink);
+                    }
+
+                    return;
+                case DefList list:
+                    foreach (var it in list.Items)
+                        CollectDefStreamsForShutdown(it, sink);
+                    return;
+            }
+        }
+
+        /// <summary>Принудительно закрыть потоки (claw и т.д.) извне — например Terminal Restart, пока корень ждёт await claw.</summary>
+        public async Task ForceCloseOwnedStreamsAsync()
+        {
+            await CloseOwnedDefStreamsAsync().ConfigureAwait(false);
+        }
+
+        /// <summary>Закрыть потоки, созданные этим интерпретатором (Stop отладки / выход из unit).</summary>
+        private async Task CloseOwnedDefStreamsAsync()
+        {
+            var seen = new HashSet<DefStream>(DefStreamReferenceEquality.Instance);
+            void add(object? o) => CollectDefStreamsForShutdown(o, seen);
+            foreach (var kv in MemoryContext.Global)
+                add(kv.Value);
+            foreach (var kv in MemoryContext.Inherited)
+                add(kv.Value);
+            foreach (var v in MemoryContext.EnumerateAllFrameLocalValues())
+                add(v);
+            foreach (var o in Stack)
+                add(o);
+
+            foreach (var s in DefStream.GetActiveStreams())
+            {
+                if (s is ClawStreamDevice claw && claw.IsHostedByInterpreter(this))
+                    seen.Add(s);
+            }
+
+            foreach (var d in seen.ToArray())
+            {
+                try
+                {
+                    //await d.CloseAsync().ConfigureAwait(false);
+                }
+                catch
+                {
+                    // best-effort
+                }
+            }
         }
     }
 }

@@ -38,7 +38,7 @@ var runFromConfig = executionUnits.Count > 0;
 if (!runFromConfig)
 {
     var debugEl2 = SpaceEnvironment.Configuration.TryGetValue("debug", out var debugEl) ? debugEl : default(System.Text.Json.JsonElement);
-    var debug = debugEl2.GetString();
+    var debug = debugEl2.ValueKind == System.Text.Json.JsonValueKind.String ? debugEl2.GetString() : null;
 
     filePath = GetFirstNonOptionArg(args);
     var isDebugMode = Debugger.IsAttached;

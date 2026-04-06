@@ -8,6 +8,7 @@ namespace Space.OS.Terminal;
 public static class ConsoleLogCapture
 {
     private static readonly ConcurrentQueue<string> Queue = new();
+    private static readonly BlockingCollection<string> InputQueue = new(new ConcurrentQueue<string>());
     private static readonly object Sync = new();
     private static bool _installed;
 
@@ -24,6 +25,7 @@ public static class ConsoleLogCapture
             var originalError = Console.Error;
             Console.SetOut(new TeeWriter(originalOut, Enqueue));
             Console.SetError(new TeeWriter(originalError, Enqueue));
+            Console.SetIn(new QueueReader(InputQueue));
 
             if (!HasQueueListener(Trace.Listeners))
                 Trace.Listeners.Add(new QueueTraceListener(Enqueue));
@@ -52,6 +54,11 @@ public static class ConsoleLogCapture
         }
 
         return list;
+    }
+
+    public static void SubmitInput(string? line)
+    {
+        InputQueue.Add(line ?? string.Empty);
     }
 
     private static void Enqueue(string? line)
@@ -183,6 +190,24 @@ public static class ConsoleLogCapture
 
             _onLine(_buffer.ToString());
             _buffer.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Блокирующий reader для Console.ReadLine(): интерпретатор ждёт, пока UI отправит строку в очередь.
+    /// </summary>
+    private sealed class QueueReader : TextReader
+    {
+        private readonly BlockingCollection<string> _queue;
+
+        public QueueReader(BlockingCollection<string> queue)
+        {
+            _queue = queue;
+        }
+
+        public override string? ReadLine()
+        {
+            return _queue.Take();
         }
     }
 }

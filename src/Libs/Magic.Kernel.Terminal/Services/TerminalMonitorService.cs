@@ -1,3 +1,6 @@
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
 using Magic.Kernel.Terminal.Models;
 using Magic.Kernel;
 using Magic.Kernel.Devices.Streams;
@@ -6,9 +9,20 @@ namespace Magic.Kernel.Terminal.Services;
 
 public sealed class TerminalMonitorService
 {
+    private sealed class DefStreamReferenceEquality : IEqualityComparer<DefStream>
+    {
+        internal static readonly DefStreamReferenceEquality Instance = new();
+
+        public bool Equals(DefStream? x, DefStream? y) => ReferenceEquals(x, y);
+
+        public int GetHashCode(DefStream obj) => RuntimeHelpers.GetHashCode(obj);
+    }
+
     public MonitorSnapshot CreateSnapshot(MagicKernel? kernel, IEnumerable<RuntimeExecutionRecord>? records = null)
     {
         var snapshot = new MonitorSnapshot();
+        // Только по ссылке: иначе два (unnamed) StreamDevice / ClawStreamDevice от разных программ схлопывались в одну строку.
+        var listedDefStreams = new HashSet<DefStream>(DefStreamReferenceEquality.Instance);
         var activeStreams = DefStream.GetActiveStreams();
         var activeClawByUnit = activeStreams
             .OfType<ClawStreamDevice>()
@@ -18,7 +32,8 @@ public sealed class TerminalMonitorService
 
         if (records != null)
         {
-            foreach (var exe in records.OrderByDescending(x => x.StartedAtUtc))
+            // Завершённые (Stop / ошибка / нормальный выход) не показываем — иначе строка debug:* и «трупы» висят в Exes.
+            foreach (var exe in records.Where(r => !r.EndedAtUtc.HasValue).OrderByDescending(x => x.StartedAtUtc))
             {
                 var normalizedState = xStatus(exe.Status, exe.Name, activeClawByUnit);
                 var ended = exe.EndedAtUtc.HasValue ? $"; ended={exe.EndedAtUtc:O}" : string.Empty;
@@ -49,6 +64,8 @@ public sealed class TerminalMonitorService
                 if (DeviceClassification.IsStream(device))
                 {
                     snapshot.Streams.Add(row);
+                    if (device is DefStream defs)
+                        listedDefStreams.Add(defs);
                 }
 
                 if (DeviceClassification.IsDriver(device))
@@ -69,12 +86,10 @@ public sealed class TerminalMonitorService
                 details = $"{details}; port={claw.Port}; unit={claw.UnitName}; instance={claw.UnitInstanceIndex?.ToString() ?? "n/a"}";
             }
 
-            if (snapshot.Streams.Any(x => string.Equals(x.Name, streamName, StringComparison.Ordinal) &&
-                                          string.Equals(x.Type, stream.GetType().Name, StringComparison.Ordinal)))
-            {
+            if (listedDefStreams.Contains(stream))
                 continue;
-            }
 
+            listedDefStreams.Add(stream);
             snapshot.Streams.Add(new MonitorRow
             {
                 Name = streamName,

@@ -45,5 +45,18 @@ namespace Magic.Kernel.Processor
         Not = 29,
         /// <summary>Pop b, pop a, push (a &lt; b) as 1L or 0L. Uses numeric comparison when both convert to number.</summary>
         Lt = 30
+        ,
+        /// <summary>Pop b, pop a, push (a + b). Supports numeric addition (long/decimal) and string concatenation.</summary>
+        Add = 31,
+        /// <summary>Pop b, pop a, push (a - b). Numeric only (long/decimal).</summary>
+        Sub = 32,
+        /// <summary>Pop b, pop a, push (a * b). Numeric only (long/decimal).</summary>
+        Mul = 33,
+        /// <summary>Pop b, pop a, push (a / b). Numeric only (long/decimal).</summary>
+        Div = 34,
+        /// <summary>Pop b, pop a, push (a raised to b). Numeric via double conversion (AGI ^ operator).</summary>
+        Pow = 35,
+        /// <summary>Object construction opcode (semantic alias of Def, emitted for `new Type{...}` flows).</summary>
+        DefObj = 36
     }
 }

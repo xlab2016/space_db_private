@@ -4,6 +4,41 @@ program client_claw;
 system samples;
 module claw;
 
+procedure operate_db_read(data) {
+	var socket := data.socket;
+	var sql := data.sql;
+
+	var vault1 := vault;
+	var connectionString := vault1.read("connectionString");
+	var db1 := database<postgres>;
+	db1.open(connectionString);
+
+	println(#"operate: db: run: {sql}");
+
+	var tableData := await db1.read({ instruction: sql });
+	await socket.write(json: tableData);
+
+	db1.close();
+}
+
+procedure operate_db(data) {
+	var method := data.method;
+			
+	switch method {
+		if "read"
+			operate_db_read(data);
+	}
+}
+
+procedure operate(data) {
+	var object := data.object;
+	
+	switch object {
+		if "db"
+			operate_db(data);
+	}
+}
+
 procedure call(data) {
 	var authentication := data.authentication;
 	
@@ -16,6 +51,8 @@ procedure call(data) {
 	switch command {
 		if "hello_world"
 			println(#"Hello world from Claw {socket.name}");
+		if "operate"
+			operate(data);
 	}
 }
 

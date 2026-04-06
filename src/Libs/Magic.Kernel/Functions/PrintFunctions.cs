@@ -2,9 +2,12 @@ using Magic.Kernel.Processor;
 using Magic.Kernel.Space;
 using Magic.Kernel.Devices;
 using Magic.Kernel;
+using Magic.Kernel.Core;
+using Magic.Kernel.Types;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 
 namespace Magic.Kernel.Functions
@@ -152,6 +155,7 @@ namespace Magic.Kernel.Functions
         {
             return value switch
             {
+                DefObject defObj => JsonSerializer.Serialize(defObj.ToJsonMapBySchemaFieldNames(includeTypeDiscriminator: true, _currentUnit?.Types)),
                 string str => FormatString(str),
                 Position pos => FormatPosition(pos),
                 Shape shape => FormatShape(shape),
@@ -163,6 +167,19 @@ namespace Magic.Kernel.Functions
                 null => "None",
                 _ => value.ToString() ?? "null"
             };
+        }
+
+        private object? AgiValueToJsonTree(object? v)
+        {
+            if (v == null)
+                return null;
+            if (v is DefObject d)
+                return d.ToJsonMapBySchemaFieldNames(includeTypeDiscriminator: true, _currentUnit?.Types);
+            if (v is DefList list)
+                return list.Items.Select(AgiValueToJsonTree).ToList();
+            if (v is string or bool or long or int or short or byte or decimal or double or float)
+                return v;
+            return v.ToString();
         }
 
         private static string FormatString(string value)

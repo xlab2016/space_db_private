@@ -27,7 +27,7 @@ namespace Magic.Kernel.Devices.Store
                 list.Add(result);
             }
 
-            return list;
+            return list.Count == 1 ? list[0] : list;
         }
 
         public override async Task<object?> AwaitObjAsync()

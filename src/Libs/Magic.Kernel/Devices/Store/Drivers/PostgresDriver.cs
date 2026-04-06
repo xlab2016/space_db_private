@@ -14,6 +14,63 @@ namespace Magic.Kernel.Devices.Store.Drivers
     /// <summary>Low-level PostgreSQL driver operations for runtime database.</summary>
     public class PostgresDriver
     {
+        /// <summary>Upper bound on estimated payload returned by <see cref="ReadSqlAsync"/> (per query).</summary>
+        private const long MaxReadSqlResultBytes = 200L * 1024 * 1024;
+
+        private static long EstimateSqlValueBytes(object? value)
+        {
+            if (value == null || value is DBNull)
+                return 0;
+
+            switch (value)
+            {
+                case string s:
+                    return Encoding.UTF8.GetByteCount(s);
+                case char[] chars:
+                    return Encoding.UTF8.GetByteCount(chars);
+                case byte[] bytes:
+                    return bytes.Length;
+                case bool _:
+                    return sizeof(bool);
+                case byte _:
+                case sbyte _:
+                    return 1;
+                case short _:
+                case ushort _:
+                    return sizeof(short);
+                case char _:
+                    return sizeof(char);
+                case int _:
+                case uint _:
+                    return sizeof(int);
+                case long _:
+                case ulong _:
+                    return sizeof(long);
+                case float _:
+                    return sizeof(float);
+                case double _:
+                    return sizeof(double);
+                case decimal _:
+                    return sizeof(decimal);
+                case DateTime _:
+                    return sizeof(long);
+                case DateTimeOffset _:
+                    return 16;
+                case TimeSpan _:
+                    return sizeof(long);
+                case Guid _:
+                    return 16;
+                default:
+                {
+                    var t = value.GetType();
+                    if (t.IsArray && t.GetElementType()?.IsPrimitive == true && value is Array primitiveArr)
+                        return Buffer.ByteLength(primitiveArr);
+                    var text = Convert.ToString(value, CultureInfo.InvariantCulture) ?? value.ToString() ?? "";
+                    return Encoding.UTF8.GetByteCount(text);
+                }
+            }
+        }
+
         public Data.Database? ResolveSchema(DatabaseDevice database)
         {
             if (database == null)
@@ -68,27 +125,79 @@ namespace Magic.Kernel.Devices.Store.Drivers
             schema.AddTable(table);
         }
 
-        public async Task OpenAsync(string connectionString, DatabaseDevice database)
-        {
-            await EnsureDatabaseAndSchemaAsync(connectionString, database).ConfigureAwait(false);
-        }
+        public Task<string> OpenAsync(string connectionString, DatabaseDevice database)
+            => EnsureDatabaseAndSchemaAsync(connectionString, database);
 
-        public async Task EnsureDatabaseAndSchemaAsync(string connectionString, DatabaseDevice database)
+        /// <summary>Ensures the database exists; applies table DDL only when a <see cref="Data.Database"/> schema is attached.</summary>
+        /// <returns>Normalized connection string (including resolved <c>Database=</c> when it was omitted).</returns>
+        public async Task<string> EnsureDatabaseAndSchemaAsync(string connectionString, DatabaseDevice database)
         {
             if (database == null)
                 throw new ArgumentNullException(nameof(database));
             var schema = ResolveSchema(database);
-            if (schema == null)
-                return;
-
             var targetBuilder = new NpgsqlConnectionStringBuilder(connectionString);
-            var dbName = ResolveDatabaseName(targetBuilder, schema, database.Name);
+            var dbName = schema != null
+                ? ResolveDatabaseName(targetBuilder, schema, database.Name)
+                : ResolveDatabaseNameWithoutSchema(targetBuilder, database.Name);
             if (!string.IsNullOrEmpty(dbName))
                 targetBuilder.Database = dbName;
             var normalizedConnectionString = targetBuilder.ConnectionString;
 
             await EnsureDatabaseExistsAsync(targetBuilder, dbName).ConfigureAwait(false);
-            await ApplySchemaAsync(normalizedConnectionString, schema).ConfigureAwait(false);
+            if (schema != null)
+                await ApplySchemaAsync(normalizedConnectionString, schema).ConfigureAwait(false);
+            return normalizedConnectionString;
+        }
+
+        /// <summary>Runs arbitrary SQL (typically SELECT) and returns rows as a list of column dictionaries.</summary>
+        public async Task<List<Dictionary<string, object?>>> ReadSqlAsync(string connectionString, DatabaseDevice database, string sql)
+        {
+            if (database == null)
+                throw new ArgumentNullException(nameof(database));
+            if (string.IsNullOrWhiteSpace(sql))
+                throw new ArgumentException("SQL is empty.", nameof(sql));
+
+            var targetBuilder = new NpgsqlConnectionStringBuilder(connectionString);
+            if (string.IsNullOrWhiteSpace(targetBuilder.Database))
+            {
+                var schema = ResolveSchema(database);
+                var dbName = schema != null
+                    ? ResolveDatabaseName(targetBuilder, schema, database.Name)
+                    : ResolveDatabaseNameWithoutSchema(targetBuilder, database.Name);
+                if (!string.IsNullOrEmpty(dbName))
+                    targetBuilder.Database = dbName;
+            }
+
+            await using var conn = new NpgsqlConnection(targetBuilder.ConnectionString);
+            await conn.OpenAsync().ConfigureAwait(false);
+            await using var cmd = new NpgsqlCommand(sql, conn);
+            await using var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false);
+            var rows = new List<Dictionary<string, object?>>();
+            long totalBytes = 0;
+            while (await reader.ReadAsync().ConfigureAwait(false))
+            {
+                var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                long rowBytes = 0;
+                for (var i = 0; i < reader.FieldCount; i++)
+                {
+                    var name = reader.GetName(i);
+                    rowBytes += Encoding.UTF8.GetByteCount(name);
+                    var cell = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                    row[name] = cell;
+                    rowBytes += EstimateSqlValueBytes(cell);
+                }
+
+                if (totalBytes + rowBytes > MaxReadSqlResultBytes)
+                {
+                    throw new InvalidOperationException(
+                        $"ReadSqlAsync: result size would exceed {MaxReadSqlResultBytes} bytes (approximate). Narrow the query or use LIMIT.");
+                }
+
+                totalBytes += rowBytes;
+                rows.Add(row);
+            }
+
+            return rows;
         }
 
         /// <summary>Returns 1 if at least one row in table matches the predicate (ExprTree translated to PostgreSQL WHERE by driver visitor), 0 otherwise.</summary>
@@ -990,6 +1099,16 @@ SELECT EXISTS (
                 return targetBuilder.Database;
             if (!string.IsNullOrWhiteSpace(schema.Name))
                 return SanitizeDatabaseName(schema.Name);
+            if (!string.IsNullOrWhiteSpace(runtimeName))
+                return SanitizeDatabaseName(runtimeName);
+            return "magic_db";
+        }
+
+        /// <summary>When no embedded schema: use connection string database, else runtime device name, else default.</summary>
+        private static string ResolveDatabaseNameWithoutSchema(NpgsqlConnectionStringBuilder targetBuilder, string runtimeName)
+        {
+            if (!string.IsNullOrWhiteSpace(targetBuilder.Database))
+                return targetBuilder.Database;
             if (!string.IsNullOrWhiteSpace(runtimeName))
                 return SanitizeDatabaseName(runtimeName);
             return "magic_db";

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -10,8 +11,13 @@ public enum DebugResumeAction
     Run,
     /// <summary>Следующая другая строка исходника (SourceLine &gt; 0).</summary>
     StepOverLine,
-    /// <summary>Одна машинная инструкция (входит в call).</summary>
+    /// <summary>Одна машинная инструкция.</summary>
     StepInstruction,
+    /// <summary>
+    /// С вкладки Code: на той же строке AGI не останавливаться между инструкциями, пока не встретится вызов (Call/ACall/CallObj);
+    /// выполнить его и остановиться на первой инструкции тела (как «зайти» в процедуру/функцию).
+    /// </summary>
+    StepInto,
     Stop
 }
 
@@ -29,22 +35,54 @@ public sealed class InterpreterDebugSession
     private DebugResumeAction _pendingResume = DebugResumeAction.Run;
 
     private readonly object _breakpointLock = new();
-    private readonly HashSet<int> _breakpoints = new();
+    private readonly Dictionary<string, HashSet<int>> _agiBreakpointsByPath =
+        new(StringComparer.OrdinalIgnoreCase);
 
-    public event Action<int>? PausedAtLine;
+    private readonly HashSet<int> _asmBreakpoints = new();
 
-    /// <summary>Копирует набор строк breakpoint (1-based). Потокобезопасно: интерпретатор читает из фона.</summary>
-    public void ReplaceBreakpointsFrom(IEnumerable<int> sourceLines)
+    /// <summary>AGI строка (1-based), строка листинга ASM (1-based, 0 если нет), путь к .agi.</summary>
+    public event Action<int, int, string?>? PausedAtDebugLocation;
+
+    /// <summary>Интерпретатор, остановившийся на паузе (для Memory/Stack в UI). Сбрасывается после выхода из ожидания.</summary>
+    public Interpreter? PausedInterpreter { get; private set; }
+
+    /// <summary>Копирует breakpoint по файлам .agi и строкам листинга ASM (1-based). Потокобезопасно.</summary>
+    public void ReplaceBreakpointsFrom(
+        IReadOnlyDictionary<string, HashSet<int>>? agiBreakpointsByPath,
+        IEnumerable<int>? asmListingLines = null)
     {
         lock (_breakpointLock)
         {
-            _breakpoints.Clear();
-            if (sourceLines == null)
-                return;
-            foreach (var line in sourceLines)
+            _agiBreakpointsByPath.Clear();
+            _asmBreakpoints.Clear();
+            if (agiBreakpointsByPath != null)
             {
-                if (line > 0)
-                    _breakpoints.Add(line);
+                foreach (var kv in agiBreakpointsByPath)
+                {
+                    if (string.IsNullOrWhiteSpace(kv.Key) || kv.Value == null || kv.Value.Count == 0)
+                        continue;
+                    var key = Path.GetFullPath(kv.Key);
+                    if (!_agiBreakpointsByPath.TryGetValue(key, out var set))
+                    {
+                        set = new HashSet<int>();
+                        _agiBreakpointsByPath[key] = set;
+                    }
+
+                    foreach (var line in kv.Value)
+                    {
+                        if (line > 0)
+                            set.Add(line);
+                    }
+                }
+            }
+
+            if (asmListingLines != null)
+            {
+                foreach (var line in asmListingLines)
+                {
+                    if (line > 0)
+                        _asmBreakpoints.Add(line);
+                }
             }
         }
     }
@@ -81,24 +119,41 @@ public sealed class InterpreterDebugSession
         _pendingResume = DebugResumeAction.Run;
     }
 
-    public bool IsBreakpointLine(int sourceLine)
+    public bool IsBreakpointAgiLine(string? sourcePath, int sourceLine)
     {
+        if (sourceLine <= 0 || string.IsNullOrWhiteSpace(sourcePath))
+            return false;
+        var key = Path.GetFullPath(sourcePath);
         lock (_breakpointLock)
-            return sourceLine > 0 && _breakpoints.Contains(sourceLine);
+            return _agiBreakpointsByPath.TryGetValue(key, out var set) && set.Contains(sourceLine);
     }
 
-    public async Task WaitPausedAsync(int line, CancellationToken cancellationToken = default)
+    public bool IsBreakpointAsmLine(int asmListingLine)
     {
-        PausedAtLine?.Invoke(line);
-        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _continueTcs = tcs;
+        lock (_breakpointLock)
+            return asmListingLine > 0 && _asmBreakpoints.Contains(asmListingLine);
+    }
 
-        using (cancellationToken.Register(() => tcs.TrySetResult(true)))
+    public async Task WaitPausedAsync(Interpreter? pausedInterpreter, int sourceLine, int asmListingLine, string? agiSourcePath, CancellationToken cancellationToken = default)
+    {
+        PausedInterpreter = pausedInterpreter;
+        try
         {
-            await tcs.Task.ConfigureAwait(false);
-        }
+            PausedAtDebugLocation?.Invoke(sourceLine, asmListingLine, agiSourcePath);
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _continueTcs = tcs;
 
-        cancellationToken.ThrowIfCancellationRequested();
+            using (cancellationToken.Register(() => tcs.TrySetResult(true)))
+            {
+                await tcs.Task.ConfigureAwait(false);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        finally
+        {
+            PausedInterpreter = null;
+        }
     }
 
     public DebugResumeAction ConsumeResumeAction()
@@ -126,8 +181,12 @@ public sealed class InterpreterDebugSession
         ReleaseWaitCore();
     }
 
-    /// <summary>F11 — сейчас то же, что одна инструкция.</summary>
-    public void RequestStepInto() => RequestStepInstruction();
+    /// <summary>F11 на вкладке Code: заход в вызов без пошагового прохода пролога строки.</summary>
+    public void RequestStepInto()
+    {
+        _pendingResume = DebugResumeAction.StepInto;
+        ReleaseWaitCore();
+    }
 
     public void RequestStop()
     {

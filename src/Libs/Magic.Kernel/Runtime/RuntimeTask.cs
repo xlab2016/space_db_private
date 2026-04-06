@@ -1,4 +1,5 @@
 using Magic.Kernel.Compilation;
+using Magic.Kernel.Core;
 using Magic.Kernel.Interpretation;
 using Magic.Kernel.Processor;
 
@@ -34,7 +35,13 @@ namespace Magic.Kernel.Runtime
         /// <summary>Inherited global memory snapshot from parent task.</summary>
         public Dictionary<long, object>? InheritedGlobalMemory { get; init; }
 
+        /// <summary>Inherited type metadata snapshot from parent task.</summary>
+        public List<DefType>? InheritedTypes { get; init; }
+
         /// <summary>Optional completion source for callers that need to await task completion.</summary>
         public TaskCompletionSource<InterpretationResult>? Completion { get; init; }
+
+        /// <summary>AGI debugger session from parent interpreter (acall/spawn); when set, child hits breakpoints.</summary>
+        public InterpreterDebugSession? DebugSession { get; init; }
     }
 }

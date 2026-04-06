@@ -15,6 +15,9 @@ namespace Magic.Kernel
 
         public List<IDevice> Devices { get; } = new List<IDevice>();
 
+        /// <summary>Корневые интерпретаторы в Runtime для attach из Terminal.</summary>
+        public InterpreterAttachRegistry AttachRegistry { get; } = new InterpreterAttachRegistry();
+
         /// <summary>Erlang-like runtime: TaskQueue → Scheduler → ThreadPool. Started in StartKernel.</summary>
         public KernelRuntime Runtime { get; }
 
@@ -79,6 +82,11 @@ namespace Magic.Kernel
         public async Task<CompilationResult> CompileAsync(string sourceCode)
         {
             return await Compiler.CompileAsync(sourceCode);
+        }
+
+        public async Task<CompilationResult> CompileAsync(string sourceCode, string? sourcePath)
+        {
+            return await Compiler.CompileAsync(sourceCode, sourcePath);
         }
 
         public async Task<InterpretationResult> InterpreteCompiledFileAsync(string compiledPath)

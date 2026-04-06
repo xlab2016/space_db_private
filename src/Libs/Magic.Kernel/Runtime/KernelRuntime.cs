@@ -1,4 +1,5 @@
 using Magic.Kernel.Compilation;
+using Magic.Kernel.Core;
 using Magic.Kernel.Interpretation;
 using Magic.Kernel.Processor;
 using System;
@@ -56,10 +57,12 @@ namespace Magic.Kernel.Runtime
             string? entryName = null,
             CallInfo? callInfo = null,
             object? tag = null,
+            List<DefType>? inheritedTypes = null,
             ExecutionBlock? startBlock = null,
+            InterpreterDebugSession? debugSession = null,
             CancellationToken cancellationToken = default)
         {
-            return SpawnAsync(unit, entryName, callInfo, tag, inheritedLocalMemory: null, inheritedGlobalMemory: null, startBlock, cancellationToken);
+            return SpawnAsync(unit, entryName, callInfo, tag, inheritedLocalMemory: null, inheritedGlobalMemory: null, inheritedTypes, startBlock, debugSession, cancellationToken);
         }
 
         /// <summary>
@@ -73,10 +76,12 @@ namespace Magic.Kernel.Runtime
             object? tag,
             Dictionary<long, object>? inheritedLocalMemory,
             Dictionary<long, object>? inheritedGlobalMemory,
+            List<DefType>? inheritedTypes = null,
             ExecutionBlock? startBlock = null,
+            InterpreterDebugSession? debugSession = null,
             CancellationToken cancellationToken = default)
         {
-            var task = CreateRuntimeTask(unit, entryName, callInfo, tag, inheritedLocalMemory, inheritedGlobalMemory, startBlock, completion: null);
+            var task = CreateRuntimeTask(unit, entryName, callInfo, tag, inheritedLocalMemory, inheritedGlobalMemory, inheritedTypes, startBlock, completion: null, debugSession);
             return EnqueueAsync(task, cancellationToken);
         }
 
@@ -88,11 +93,13 @@ namespace Magic.Kernel.Runtime
             object? tag = null,
             Dictionary<long, object>? inheritedLocalMemory = null,
             Dictionary<long, object>? inheritedGlobalMemory = null,
+            List<DefType>? inheritedTypes = null,
             ExecutionBlock? startBlock = null,
+            InterpreterDebugSession? debugSession = null,
             CancellationToken cancellationToken = default)
         {
             var completion = new TaskCompletionSource<InterpretationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var task = CreateRuntimeTask(unit, entryName, callInfo, tag, inheritedLocalMemory, inheritedGlobalMemory, startBlock, completion);
+            var task = CreateRuntimeTask(unit, entryName, callInfo, tag, inheritedLocalMemory, inheritedGlobalMemory, inheritedTypes, startBlock, completion, debugSession);
             await EnqueueAsync(task, cancellationToken).ConfigureAwait(false);
             return await completion.Task.ConfigureAwait(false);
         }
@@ -104,8 +111,10 @@ namespace Magic.Kernel.Runtime
             object? tag,
             Dictionary<long, object>? inheritedLocalMemory,
             Dictionary<long, object>? inheritedGlobalMemory,
+            List<DefType>? inheritedTypes,
             ExecutionBlock? startBlock,
-            TaskCompletionSource<InterpretationResult>? completion)
+            TaskCompletionSource<InterpretationResult>? completion,
+            InterpreterDebugSession? debugSession)
         {
             return new RuntimeTask
             {
@@ -116,13 +125,19 @@ namespace Magic.Kernel.Runtime
                 StartBlock = startBlock,
                 InheritedLocalMemory = inheritedLocalMemory,
                 InheritedGlobalMemory = inheritedGlobalMemory,
-                Completion = completion
+                InheritedTypes = inheritedTypes,
+                Completion = completion,
+                DebugSession = debugSession
             };
         }
 
         private async Task RunTaskAsync(RuntimeTask task, CancellationToken cancellationToken)
         {
             var interpreter = _kernel.CreateInterpreter();
+            interpreter.DebugSession = task.DebugSession;
+            if (task.Unit != null)
+                _kernel.AttachRegistry.Register(interpreter, task.Unit);
+
             try
             {
                 void WriteLineEnsuringNewLine(string message)
@@ -150,9 +165,12 @@ namespace Magic.Kernel.Runtime
                 interpreter.MemoryContext.Inherited = task.InheritedLocalMemory != null
                     ? new Dictionary<long, object>(task.InheritedLocalMemory)
                     : new Dictionary<long, object>();
+                interpreter.InheritedTypes = task.InheritedTypes != null
+                    ? new List<DefType>(task.InheritedTypes)
+                    : new List<DefType>();
 
                 interpreter.MemoryContext.ClearLocalScopes();
-                interpreter.MemoryContext.Local.Clear();
+                interpreter.MemoryContext.ClearAmbientLocal();
 
                 var unitName = task.Unit?.Name ?? "<unknown>";
                 var entry = string.IsNullOrEmpty(task.EntryName) ? "entrypoint" : task.EntryName;
@@ -178,6 +196,11 @@ namespace Magic.Kernel.Runtime
 
                 Console.WriteLine($"[{DateTime.UtcNow:o}] {prefix}runtime task failed: {ex}");
                 task.Completion?.TrySetResult(new InterpretationResult { Success = false });
+            }
+            finally
+            {
+                if (task.Unit != null)
+                    _kernel.AttachRegistry.Unregister(task.Unit);
             }
         }
     }

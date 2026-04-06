@@ -1,0 +1,1109 @@
+﻿@AGIASM 1
+@AGI 0.0.1
+program use_module1
+module modularity
+procedure Main_debug
+push string: "execution"
+def
+pop [0]
+push [0]
+pop [1]
+push [0]
+push string: "objects"
+getobj
+pop [1]
+push string: "Objects graph start: "
+push 1
+call println
+pop
+push 0
+pop [2]
+label for_start_5001
+push [2]
+pop [3]
+push [2]
+pop [4]
+push [1]
+push 1
+call length
+pop [5]
+push [4]
+push [5]
+lt
+pop [3]
+cmp [3], 0
+je for_end_5001
+push [1]
+pop [6]
+push [2]
+pop [7]
+push [1]
+push [7]
+push 1
+callobj "get"
+pop [6]
+call format, 0: "Object: {0}", [6]
+push 1
+call println
+pop
+push [2]
+pop [9]
+push 1
+pop [10]
+push [9]
+push [10]
+add
+pop [8]
+push [8]
+pop [2]
+jmp for_start_5001
+label for_end_5001
+push string: "Objects graph end."
+push 1
+call println
+pop
+ret
+procedure Main
+push string: "Enter x, y: "
+push 1
+call println
+pop
+push string: "Enter x: "
+push 1
+call println
+pop
+push 1
+pop [11]
+push string: "Enter y: "
+push 1
+call println
+pop
+push 3
+pop [12]
+push [11]
+push [12]
+push 2
+call samples:modularity:module1:calculate
+pop [14]
+push [11]
+push [12]
+push 2
+call samples:modularity:module1:calculate_add
+pop [15]
+push [14]
+push [15]
+add
+pop [13]
+push [13]
+pop [16]
+call format, 0: "Result z: {0}", [16]
+push 1
+call println
+pop
+push class: "samples:modularity:module2:Point"
+defobj
+pop [17]
+push [17]
+push 1
+push 2
+push 2
+callobj "samples:modularity:module2:Point_ctor_1"
+pop
+push [17]
+push 0
+callobj "samples:modularity:module2:Point_Print_1"
+pop
+push [17]
+push class: "samples:modularity:module2:Point"
+defobj
+pop [18]
+push 1
+pop [19]
+push [18]
+push string: "X"
+push [19]
+setobj
+pop [20]
+push 4
+pop [21]
+push [18]
+push string: "Y"
+push [21]
+setobj
+pop [22]
+push [18]
+push 1
+callobj "samples:modularity:module2:Point_Add_1"
+pop
+push [17]
+push 0
+callobj "samples:modularity:module2:Point_Print_1"
+pop
+push class: "samples:modularity:module2:Room"
+defobj
+pop [23]
+push class: "samples:modularity:module2:Board"
+defobj
+pop [24]
+push class: "samples:modularity:module2:Point"
+push string: "list"
+defobj
+pop [25]
+push [24]
+push string: "Surface"
+push [25]
+setobj
+pop [26]
+push class: "samples:modularity:module2:Shape"
+push string: "list"
+defobj
+pop [27]
+push [24]
+push string: "Shapes"
+push [27]
+setobj
+pop [28]
+push [23]
+push string: "Board"
+push [24]
+setobj
+pop [29]
+push class: "samples:modularity:module2:Person"
+push string: "list"
+defobj
+pop [30]
+push [23]
+push string: "Persons"
+push [30]
+setobj
+pop [31]
+push 0
+call Main_debug
+pop
+push class: "samples:modularity:module2:Person"
+defobj
+pop [32]
+push string: "Person1"
+pop [33]
+push [32]
+push string: "Name"
+push [33]
+setobj
+pop [34]
+push [23]
+push string: "Persons"
+getobj
+pop [35]
+push [35]
+push [32]
+push 1
+callobj "add"
+pop [35]
+push [23]
+push string: "Persons"
+push [35]
+setobj
+pop [36]
+push [23]
+pop [37]
+push [23]
+push string: "Board"
+getobj
+pop [37]
+push [37]
+push class: "samples:modularity:module2:Circle"
+defobj
+pop [38]
+push class: "samples:modularity:module2:Point"
+defobj
+pop [39]
+push 1
+pop [40]
+push [39]
+push string: "X"
+push [40]
+setobj
+pop [41]
+push 2
+pop [42]
+push [39]
+push string: "Y"
+push [42]
+setobj
+pop [43]
+push [38]
+push string: "Origin"
+push [39]
+setobj
+pop [44]
+push 3
+pop [45]
+push [38]
+push string: "Radius"
+push [45]
+setobj
+pop [46]
+push [38]
+push 1
+callobj "samples:modularity:module2:Board_Draw_1"
+pop
+push [37]
+push class: "samples:modularity:module2:Square"
+defobj
+pop [47]
+push class: "samples:modularity:module2:Point"
+defobj
+pop [48]
+push 3
+pop [49]
+push [48]
+push string: "X"
+push [49]
+setobj
+pop [50]
+push 4
+pop [51]
+push [48]
+push string: "Y"
+push [51]
+setobj
+pop [52]
+push [47]
+push string: "Origin"
+push [48]
+setobj
+pop [53]
+push 2
+pop [54]
+push [47]
+push string: "W"
+push [54]
+setobj
+pop [55]
+push 4
+pop [56]
+push [47]
+push string: "H"
+push [56]
+setobj
+pop [57]
+push [47]
+push 1
+callobj "samples:modularity:module2:Board_Draw_1"
+pop
+push [32]
+push string: "This is basic shapes"
+push 1
+callobj "samples:modularity:module2:Person_Say_1"
+pop
+push class: "samples:modularity:module2:Person"
+defobj
+pop [58]
+push string: "Student1"
+pop [59]
+push [58]
+push string: "Name"
+push [59]
+setobj
+pop [60]
+push [23]
+push string: "Persons"
+getobj
+pop [61]
+push [61]
+push [58]
+push 1
+callobj "add"
+pop [61]
+push [23]
+push string: "Persons"
+push [61]
+setobj
+pop [62]
+push [58]
+push string: "Cool"
+push 1
+callobj "samples:modularity:module2:Person_Say_1"
+pop
+push 0
+call Main_debug
+pop
+ret
+function samples:modularity:module1:add
+pop
+pop [0]
+pop [1]
+push [1]
+pop [3]
+push [0]
+pop [4]
+push [3]
+push [4]
+add
+pop [2]
+push [2]
+ret
+function samples:modularity:module1:sub
+pop
+pop [5]
+pop [6]
+push [6]
+pop [7]
+push [5]
+pop [8]
+push [7]
+push [8]
+sub
+pop [7]
+push [7]
+ret
+function samples:modularity:module1:mul
+pop
+pop [9]
+pop [10]
+push [10]
+pop [11]
+push [9]
+pop [12]
+push [11]
+push [12]
+mul
+pop [11]
+push [11]
+ret
+function samples:modularity:module1:div
+pop
+pop [13]
+pop [14]
+push [14]
+pop [15]
+push [15]
+push string: "float<decimal>"
+push 2
+call convert
+pop [15]
+push [13]
+pop [16]
+push [16]
+push string: "float<decimal>"
+push 2
+call convert
+pop [16]
+push [15]
+push [16]
+div
+pop [15]
+push [15]
+ret
+function samples:modularity:module1:calculate_add
+pop
+pop [19]
+pop [20]
+push [20]
+pop [22]
+push [19]
+pop [23]
+push [22]
+push [23]
+add
+pop [21]
+push [21]
+ret
+function samples:modularity:module1:calculate_mul
+pop
+pop [24]
+pop [25]
+push [25]
+pop [26]
+push [24]
+pop [27]
+push [26]
+push [27]
+mul
+pop [26]
+push [26]
+ret
+function samples:modularity:module1:calculate_pow
+pop
+pop [28]
+pop [29]
+push [29]
+pop [30]
+push [28]
+pop [31]
+push [30]
+push [31]
+pow
+pop [30]
+push [30]
+ret
+function samples:modularity:module1:calculate
+pop
+pop [17]
+pop [18]
+push [18]
+push [17]
+push 2
+call samples:modularity:module1:calculate_add
+pop [33]
+push [18]
+push [17]
+push 2
+call samples:modularity:module1:calculate_mul
+pop [35]
+push [18]
+push [17]
+push 2
+call samples:modularity:module1:calculate_pow
+pop [36]
+push [35]
+push [36]
+add
+pop [34]
+push [33]
+push [34]
+add
+pop [32]
+push [32]
+ret
+function samples:modularity:module2:Point_ctor_1
+pop
+pop [26]
+pop [25]
+pop [24]
+push [24]
+push string: "X"
+push [25]
+setobj
+pop
+push [24]
+push string: "Y"
+push [26]
+setobj
+pop
+ret
+function samples:modularity:module2:Point_Add_1
+pop
+pop [25]
+pop [24]
+push [24]
+push string: "X"
+getobj
+pop [26]
+push [24]
+push string: "Y"
+getobj
+pop [27]
+push [24]
+push string: "X"
+getobj
+push [25]
+push string: "X"
+getobj
+add
+pop [28]
+push [24]
+push string: "X"
+push [28]
+setobj
+pop
+push [24]
+push string: "Y"
+getobj
+push [25]
+push string: "Y"
+getobj
+add
+pop [29]
+push [24]
+push string: "Y"
+push [29]
+setobj
+pop
+ret
+function samples:modularity:module2:Point_Print_1
+pop
+pop [24]
+push [24]
+push string: "X"
+getobj
+pop [25]
+push [24]
+push string: "Y"
+getobj
+pop [26]
+push [25]
+pop [27]
+push [26]
+pop [28]
+call format, 0: "X: {0}, Y: {1}", [27], [28]
+push 1
+call println
+pop
+ret
+function samples:modularity:module2:Shape_ctor_1
+pop
+pop [25]
+pop [24]
+push [24]
+push string: "Origin"
+push [25]
+setobj
+pop
+ret
+function samples:modularity:module2:Shape_Move_1
+pop
+pop [25]
+pop [24]
+push [24]
+push string: "Origin"
+getobj
+pop [26]
+push [24]
+push [25]
+push 1
+callobj "samples:modularity:module2:Origin_Add"
+pop
+ret
+function samples:modularity:module2:Shape_Draw_1
+pop
+pop [24]
+push [24]
+push string: "Origin"
+getobj
+pop [25]
+push [24]
+push 0
+callobj "samples:modularity:module2:Origin_Print"
+pop
+ret
+function samples:modularity:module2:Circle_ctor_1
+pop
+pop [26]
+pop [25]
+pop [24]
+push [24]
+push [25]
+push 1
+callobj "samples:modularity:module2:Shape_ctor_1"
+pop
+push [24]
+push string: "Radius"
+push [26]
+setobj
+pop
+ret
+function samples:modularity:module2:Circle_Draw_1
+pop
+pop [24]
+push [24]
+push string: "Radius"
+getobj
+pop [25]
+push [24]
+push 0
+callobj "samples:modularity:module2:Shape_Draw"
+pop
+push [25]
+pop [26]
+call format, 0: "Radius: {0}", [26]
+push 1
+call print
+pop
+ret
+function samples:modularity:module2:Square_ctor_1
+pop
+pop [27]
+pop [26]
+pop [25]
+pop [24]
+push [24]
+push [25]
+push 1
+callobj "samples:modularity:module2:Shape_ctor_1"
+pop
+push [24]
+push string: "W"
+push [26]
+setobj
+pop
+push [24]
+push string: "H"
+push [27]
+setobj
+pop
+ret
+function samples:modularity:module2:Square_Draw_1
+pop
+pop [24]
+push [24]
+push string: "W"
+getobj
+pop [25]
+push [24]
+push string: "H"
+getobj
+pop [26]
+push [24]
+push 0
+callobj "samples:modularity:module2:Shape_Draw"
+pop
+push [25]
+pop [27]
+push [26]
+pop [28]
+call format, 0: "W: {0}, H: {1}", [27], [28]
+push 1
+call print
+pop
+ret
+function samples:modularity:module2:CircleSquare_ctor_1
+pop
+pop [28]
+pop [27]
+pop [26]
+pop [25]
+pop [24]
+push [24]
+push [25]
+push [26]
+push 2
+callobj "samples:modularity:module2:Circle_ctor_1"
+pop
+push [24]
+push [25]
+push [27]
+push [28]
+push 3
+callobj "samples:modularity:module2:Square_ctor_1"
+pop
+ret
+function samples:modularity:module2:CircleSquare_Draw_1
+pop
+pop [24]
+push [24]
+push string: "Origin"
+getobj
+pop [25]
+push [24]
+push string: "Radius"
+getobj
+pop [26]
+push [24]
+push string: "W"
+getobj
+pop [27]
+push [24]
+push string: "H"
+getobj
+pop [28]
+push [24]
+push 0
+callobj "samples:modularity:module2:Circle_Draw"
+pop
+push [24]
+push 0
+callobj "samples:modularity:module2:Square_Draw"
+pop
+ret
+function samples:modularity:module2:Person_Draw_1
+pop
+pop [25]
+pop [24]
+push [24]
+push string: "Name"
+getobj
+pop [26]
+ret
+function samples:modularity:module2:Person_Say_1
+pop
+pop [25]
+pop [24]
+push [24]
+push string: "Name"
+getobj
+pop [26]
+push [26]
+pop [27]
+push [25]
+pop [28]
+call format, 0: "{0}(say): {1}", [27], [28]
+push 1
+call println
+pop
+ret
+function samples:modularity:module2:Board_Draw_1
+pop
+pop [25]
+pop [24]
+push [24]
+push string: "Surface"
+getobj
+pop [26]
+push [24]
+push string: "Shapes"
+getobj
+pop [27]
+push [25]
+pop [28]
+push [28]
+push class: "samples:modularity:module2:Circle"
+push 2
+call is
+pop [29]
+pop [30]
+cmp [29], 1
+je switch_arm_3002
+jmp switch_after_3002
+label switch_arm_3002
+push [24]
+push [30]
+push 1
+callobj "samples:modularity:module2:Board_Draw_2"
+pop
+jmp switch_end_2001
+label switch_after_3002
+push [28]
+push class: "samples:modularity:module2:Square"
+push 2
+call is
+pop [31]
+pop [32]
+cmp [31], 1
+je switch_arm_3003
+jmp switch_after_3003
+label switch_arm_3003
+push [24]
+push [32]
+push 1
+callobj "samples:modularity:module2:Board_Draw_3"
+pop
+jmp switch_end_2001
+label switch_after_3003
+label switch_end_2001
+ret
+function samples:modularity:module2:Board_Draw_2
+pop
+pop [25]
+pop [24]
+push [24]
+push string: "Surface"
+getobj
+pop [26]
+push [24]
+push string: "Shapes"
+getobj
+pop [27]
+push [27]
+push [25]
+push 1
+callobj "add"
+pop [27]
+ret
+function samples:modularity:module2:Board_Draw_3
+pop
+pop [25]
+pop [24]
+push [24]
+push string: "Surface"
+getobj
+pop [26]
+push [24]
+push string: "Shapes"
+getobj
+pop [27]
+push [27]
+push [25]
+push 1
+callobj "add"
+pop [27]
+ret
+entrypoint
+push string: "samples:modularity:module2:Point"
+push string: "type"
+push 2
+def
+pop [0]
+push [0]
+push string: "X"
+push string: "int"
+push string: "field"
+push string: "public"
+push 5
+def
+pop [1]
+push [0]
+push string: "Y"
+push string: "int"
+push string: "field"
+push string: "public"
+push 5
+def
+pop [2]
+push [0]
+push string: "Add"
+push string: "samples:modularity:module2:Point_Add_1"
+push string: "void"
+push string: "method"
+push string: "public"
+push string: "samples:modularity:module2:Point"
+push 7
+def
+pop
+push [0]
+push string: "Print"
+push string: "samples:modularity:module2:Point_Print_1"
+push string: "void"
+push string: "method"
+push string: "public"
+push string: ""
+push 7
+def
+pop
+push string: "samples:modularity:module2:Shape"
+push string: "type"
+push 2
+def
+pop [3]
+push [3]
+push string: "Origin"
+push class: "samples:modularity:module2:Point"
+push string: "field"
+push string: "public"
+push 5
+def
+pop [4]
+push [3]
+push string: "Move"
+push string: "samples:modularity:module2:Shape_Move_1"
+push string: "void"
+push string: "method"
+push string: "public"
+push string: "samples:modularity:module2:Point"
+push 7
+def
+pop
+push [3]
+push string: "Draw"
+push string: "samples:modularity:module2:Shape_Draw_1"
+push string: "void"
+push string: "method"
+push string: "public"
+push string: ""
+push 7
+def
+pop
+push string: "samples:modularity:module2:Circle"
+push string: "samples:modularity:module2:Shape"
+push 2
+def
+pop [5]
+push [5]
+push string: "Radius"
+push string: "float<decimal>"
+push string: "field"
+push string: "public"
+push 5
+def
+pop [6]
+push [5]
+push string: "Draw"
+push string: "samples:modularity:module2:Circle_Draw_1"
+push string: "void"
+push string: "method"
+push string: "public"
+push string: ""
+push 7
+def
+pop
+push string: "samples:modularity:module2:Square"
+push string: "samples:modularity:module2:Shape"
+push 2
+def
+pop [7]
+push [7]
+push string: "W"
+push string: "float<decimal>"
+push string: "field"
+push string: "public"
+push 5
+def
+pop [8]
+push [7]
+push string: "H"
+push string: "float<decimal>"
+push string: "field"
+push string: "public"
+push 5
+def
+pop [9]
+push [7]
+push string: "Draw"
+push string: "samples:modularity:module2:Square_Draw_1"
+push string: "void"
+push string: "method"
+push string: "public"
+push string: ""
+push 7
+def
+pop
+push string: "samples:modularity:module2:CircleSquare"
+push string: "samples:modularity:module2:Circle"
+push string: "samples:modularity:module2:Square"
+push 3
+def
+pop [10]
+push [10]
+push string: "Origin"
+push string: "Shape.Origin"
+push string: "field"
+push string: "public"
+push 5
+def
+pop [11]
+push [10]
+push string: "Radius"
+push string: "Circle.Radius"
+push string: "field"
+push string: "public"
+push 5
+def
+pop [12]
+push [10]
+push string: "W"
+push string: "Square.W"
+push string: "field"
+push string: "public"
+push 5
+def
+pop [13]
+push [10]
+push string: "H"
+push string: "Square.H"
+push string: "field"
+push string: "public"
+push 5
+def
+pop [14]
+push [10]
+push string: "Draw"
+push string: "samples:modularity:module2:CircleSquare_Draw_1"
+push string: "void"
+push string: "method"
+push string: "public"
+push string: ""
+push 7
+def
+pop
+push string: "samples:modularity:module2:CircleSquareList"
+push string: "samples:modularity:module2:CircleSquare[]"
+push 2
+def
+pop [15]
+push string: "samples:modularity:module2:Person"
+push string: "type"
+push 2
+def
+pop [16]
+push [16]
+push string: "Name"
+push string: "string"
+push string: "field"
+push string: "public"
+push 5
+def
+pop [17]
+push [16]
+push string: "Draw"
+push string: "samples:modularity:module2:Person_Draw_1"
+push string: "void"
+push string: "method"
+push string: "public"
+push string: "samples:modularity:module2:Board"
+push 7
+def
+pop
+push [16]
+push string: "Say"
+push string: "samples:modularity:module2:Person_Say_1"
+push string: "void"
+push string: "method"
+push string: "public"
+push string: "samples:modularity:module2:string"
+push 7
+def
+pop
+push string: "samples:modularity:module2:Board"
+push string: "type"
+push 2
+def
+pop [18]
+push [18]
+push string: "Surface"
+push string: "samples:modularity:module2:Point[]"
+push string: "field"
+push string: "public"
+push 5
+def
+pop [19]
+push [18]
+push string: "Shapes"
+push string: "samples:modularity:module2:Shape[]"
+push string: "field"
+push string: "public"
+push 5
+def
+pop [20]
+push [18]
+push string: "Draw"
+push string: "samples:modularity:module2:Board_Draw_1"
+push string: "void"
+push string: "method"
+push string: "public"
+push string: "samples:modularity:module2:Shape"
+push 7
+def
+pop
+push [18]
+push string: "Draw"
+push string: "samples:modularity:module2:Board_Draw_2"
+push string: "void"
+push string: "method"
+push string: "public"
+push string: "samples:modularity:module2:Circle"
+push 7
+def
+pop
+push [18]
+push string: "Draw"
+push string: "samples:modularity:module2:Board_Draw_3"
+push string: "void"
+push string: "method"
+push string: "public"
+push string: "samples:modularity:module2:Square"
+push 7
+def
+pop
+push string: "samples:modularity:module2:Room"
+push string: "type"
+push 2
+def
+pop [21]
+push [21]
+push string: "Board"
+push class: "samples:modularity:module2:Board"
+push string: "field"
+push string: "public"
+push 5
+def
+pop [22]
+push [21]
+push string: "Persons"
+push string: "samples:modularity:module2:Person[]"
+push string: "field"
+push string: "public"
+push 5
+def
+pop [23]
+push 0
+call Main

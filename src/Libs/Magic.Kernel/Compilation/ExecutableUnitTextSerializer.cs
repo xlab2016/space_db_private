@@ -16,8 +16,12 @@ namespace Magic.Kernel.Compilation
     {
         public const string FormatMarker = "@AGIASM";
 
-        public static string Serialize(ExecutableUnit unit)
+        public static string Serialize(ExecutableUnit unit) => Serialize(unit, null);
+
+        /// <param name="agiSourceForLineHints">Полный текст .agi: справа от инструкции выводится строка исходника по <see cref="Command.SourceLine"/> (только для просмотра).</param>
+        public static string Serialize(ExecutableUnit unit, string? agiSourceForLineHints)
         {
+            var sourceLines = SplitSourceLines(agiSourceForLineHints);
             var sb = new StringBuilder();
             sb.AppendLine($"{FormatMarker} 1");
             sb.AppendLine($"@AGI {unit.Version?.TrimEnd(';') ?? "0.0.1"}");
@@ -31,18 +35,61 @@ namespace Magic.Kernel.Compilation
             {
                 sb.AppendLine($"procedure {kv.Key}");
                 foreach (var cmd in kv.Value.Body ?? new ExecutionBlock())
-                    sb.AppendLine(CommandToInstruction(cmd));
+                    AppendInstructionLine(sb, cmd, sourceLines);
             }
             foreach (var kv in unit.Functions ?? new Dictionary<string, Processor.Function>())
             {
-                sb.AppendLine($"function {kv.Key}");
+                var headerKeyword = unit.MethodNames != null && unit.MethodNames.Contains(kv.Key)
+                    ? "method"
+                    : "function";
+                sb.AppendLine($"{headerKeyword} {kv.Key}");
                 foreach (var cmd in kv.Value.Body ?? new ExecutionBlock())
-                    sb.AppendLine(CommandToInstruction(cmd));
+                    AppendInstructionLine(sb, cmd, sourceLines);
             }
             sb.AppendLine("entrypoint");
             foreach (var cmd in unit.EntryPoint ?? new ExecutionBlock())
-                sb.AppendLine(CommandToInstruction(cmd));
+                AppendInstructionLine(sb, cmd, sourceLines);
             return sb.ToString();
+        }
+
+        private static string[]? SplitSourceLines(string? agiSource)
+        {
+            if (string.IsNullOrEmpty(agiSource))
+                return null;
+            return agiSource.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+        }
+
+        /// <summary>Инструкция + выравнивание + <c>//</c> строка AGI (1-based SourceLine).</summary>
+        private static void AppendInstructionLine(StringBuilder sb, Command cmd, string[]? sourceLines)
+        {
+            var instr = CommandToInstruction(cmd);
+            sb.Append(instr);
+            if (TryFormatSourceSuffix(sourceLines, cmd.SourceLine, out var suffix))
+            {
+                const int column = 52;
+                if (instr.Length < column)
+                    sb.Append(' ', column - instr.Length);
+                else
+                    sb.Append("  ");
+                sb.Append(suffix);
+            }
+
+            sb.AppendLine();
+        }
+
+        private static bool TryFormatSourceSuffix(string[]? lines, int sourceLine, out string suffix)
+        {
+            suffix = "";
+            if (lines == null || sourceLine <= 0 || sourceLine > lines.Length)
+                return false;
+            var src = lines[sourceLine - 1].TrimEnd();
+            if (src.Length == 0)
+                return false;
+            src = src.Replace("\t", "  ", StringComparison.Ordinal);
+            if (src.Length > 220)
+                src = src.Substring(0, 217) + "...";
+            suffix = "// " + src;
+            return true;
         }
 
         public static bool IsAgiasmFormat(byte[] data)
@@ -102,6 +149,12 @@ namespace Magic.Kernel.Compilation
                     currentProcedure = null;
                     continue;
                 }
+                if (line.StartsWith("method "))
+                {
+                    currentFunction = line.Substring(7).Trim();
+                    currentProcedure = null;
+                    continue;
+                }
 
                 var ast = parser.Parse(line);
                 var command = semanticAnalyzer.Analyze(ast);
@@ -136,6 +189,8 @@ namespace Magic.Kernel.Compilation
                     return "ret";
                 case Opcodes.Def:
                     return "def";
+                case Opcodes.DefObj:
+                    return "defobj";
                 case Opcodes.DefGen:
                     return "defgen";
                 case Opcodes.AwaitObj:
@@ -145,9 +200,29 @@ namespace Magic.Kernel.Compilation
                 case Opcodes.StreamWaitObj:
                     return "streamwaitobj";
                 case Opcodes.GetObj:
-                    return "getobj";
+                    {
+                        // Operand1 может содержать имя поля/члена.
+                        if (cmd.Operand1 is string field && !string.IsNullOrWhiteSpace(field))
+                        {
+                            var quoted = field.Contains('"')
+                                ? "'" + field.Replace("'", "\\'") + "'"
+                                : "\"" + field + "\"";
+                            return "getobj " + quoted;
+                        }
+                        return "getobj";
+                    }
                 case Opcodes.SetObj:
-                    return "setobj";
+                    {
+                        // New OOP-friendly form: Operand1 can carry field/member name.
+                        if (cmd.Operand1 is string field && !string.IsNullOrWhiteSpace(field))
+                        {
+                            var quoted = field.Contains('"')
+                                ? "'" + field.Replace("'", "\\'") + "'"
+                                : "\"" + field + "\"";
+                            return "setobj " + quoted;
+                        }
+                        return "setobj";
+                    }
                 case Opcodes.StreamWait:
                     return "streamwait";
                 case Opcodes.Label:
@@ -174,6 +249,16 @@ namespace Magic.Kernel.Compilation
                     return "not";
                 case Opcodes.Lt:
                     return "lt";
+                case Opcodes.Add:
+                    return "add";
+                case Opcodes.Sub:
+                    return "sub";
+                case Opcodes.Mul:
+                    return "mul";
+                case Opcodes.Div:
+                    return "div";
+                case Opcodes.Pow:
+                    return "pow";
                 case Opcodes.CallObj:
                     return FormatCallObj(cmd.Operand1 as string);
                 case Opcodes.AddVertex:
@@ -271,7 +356,10 @@ namespace Magic.Kernel.Compilation
             foreach (var kv in c.Parameters ?? new Dictionary<string, object>())
             {
                 if (kv.Value is MemoryAddress ma && ma.Index.HasValue)
-                    paramParts.Add($"[{ma.Index.Value}]");
+                {
+                    var idx = ma.Index.Value;
+                    paramParts.Add($"[{idx}]");
+                }
                 else if (kv.Value is string str)
                     paramParts.Add($"{kv.Key}: \"{EscapeString(str)}\"");
                 else if (kv.Value is Dictionary<string, object> dict &&
@@ -292,25 +380,29 @@ namespace Magic.Kernel.Compilation
         private static string FormatPop(MemoryAddress? ma)
         {
             // "pop" with no operand is represented in runtime as Pop(MemoryAddress.Index = null).
-            // In previous versions we serialized it as "pop [0]" which made the disassembly ambiguous.
-            if (ma?.Index == null) return "pop";
-            if (ma.IsGlobal) return $"pop global: [{ma.Index.Value}]";
-            return $"pop [{ma.Index.Value}]";
+            // Для обратной совместимости: если индекса нет — просто "pop".
+            if (ma == null || ma.Index == null)
+                return "pop";
+            var idx = ma.Index.Value;
+            if (ma.IsGlobal) return $"pop global: [{idx}]";
+            return $"pop [{idx}]";
         }
 
         private static string FormatPush(object? operand)
         {
             if (operand is MemoryAddress ma && ma.Index.HasValue)
             {
+                var idx = ma.Index.Value;
                 if (ma.IsGlobal)
-                    return $"push global: [{ma.Index.Value}]";
-                return $"push [{ma.Index.Value}]";
+                    return $"push global: [{idx}]";
+                return $"push [{idx}]";
             }
             if (operand is PushOperand po)
             {
                 return po.Kind switch
                 {
                     "Type" => "push " + (po.Value as string ?? ""),
+                    "Class" => "push class: \"" + EscapeString(po.Value as string ?? "") + "\"",
                     "IntLiteral" => "push " + (po.Value is long l ? l.ToString() : po.Value?.ToString() ?? "0"),
                     "StringLiteral" => "push string: \"" + EscapeString(po.Value as string ?? "") + "\"",
                     "AddressLiteral" => "push address: \"" + EscapeString(po.Value as string ?? "") + "\"",

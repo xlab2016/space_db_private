@@ -120,7 +120,26 @@ namespace Magic.Kernel.Devices.Streams
 
         public override Task<DeviceOperationResult> ControlAsync(DeviceControlBase deviceControl) => Task.FromResult(DeviceOperationResult.Success);
 
-        public override Task<DeviceOperationResult> CloseAsync() => Task.FromResult(DeviceOperationResult.Success);
+        public override async Task<DeviceOperationResult> CloseAsync()
+        {
+            try
+            {
+                if (Generalizations is { Count: > 0 })
+                {
+                    foreach (var g in Generalizations)
+                    {
+                        if (g is IStreamDevice dev)
+                            await dev.CloseAsync().ConfigureAwait(false);
+                    }
+                }
+            }
+            finally
+            {
+                UnregisterFromStreamRegistry();
+            }
+
+            return DeviceOperationResult.Success;
+        }
 
         public override async Task<(DeviceOperationResult Result, IStreamChunk? Chunk)> ReadChunkAsync()
         {

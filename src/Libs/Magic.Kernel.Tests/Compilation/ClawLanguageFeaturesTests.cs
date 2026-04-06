@@ -1,3 +1,5 @@
+using System.Linq;
+using System.IO;
 using FluentAssertions;
 using Magic.Kernel;
 using Magic.Kernel.Compilation;
@@ -117,6 +119,45 @@ entrypoint {
         }
 
         [Fact]
+        public async Task CompileAsync_Switch_UnbracedArmsOnNewLines_SecondArmKeepsBody()
+        {
+            // Регрессия: строка тела после «if "b"» на новой строке не должна теряться,
+            // когда предыдущая ветка уже имеет тело (не пустое Item2).
+            var source = @"@AGI 0.0.1
+program Test;
+module Test/Test;
+
+procedure op() {
+    println(""op"");
+}
+
+procedure dispatch(cmd) {
+    var command := cmd;
+    switch command {
+        if ""a"" {
+            println(""A"");
+        }
+        if ""b""
+            op();
+    }
+}
+
+entrypoint {
+    asm {
+        push string ""hello"";
+        push int 1;
+        call dispatch;
+    }
+}";
+
+            var result = await _compiler.CompileAsync(source);
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            var body = result.Result!.Procedures["dispatch"].Body;
+            var callSummary = string.Join(" | ", body.Where(c => c.Opcode == Opcodes.Call).Select(c => c.Operand1?.ToString()));
+            callSummary.Should().Contain("op", "second switch arm must emit call op(); got: " + callSummary);
+        }
+
+        [Fact]
         public async Task CompileAsync_ProcedureWithMultipleParameters_ShouldEmitCorrectPrologue()
         {
             // Arrange — procedure with two parameters
@@ -169,8 +210,9 @@ entrypoint {
             var structure = parser.ParseProgram(source);
 
             // Assert
-            structure.ProcedureParameters.Should().ContainKey("call");
-            structure.ProcedureParameters["call"].Should().ContainSingle().Which.Should().Be("data");
+            structure.Procedures.Should().ContainKey("call");
+            var procNode = structure.Procedures["call"];
+            procNode.Parameters.Should().ContainSingle().Which.Should().Be("data");
         }
 
         [Fact]
@@ -457,6 +499,575 @@ entrypoint {
             {
                 if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
             }
+        }
+
+        [Fact]
+        public async Task CompileFileAsync_UseAsFunctionSignature_ShouldLinkImportedFunction()
+        {
+            // Regression: file-based compilation must resolve `use ... as { function ... }`
+            // so runtime call lookup can find the imported function body.
+            var root = Path.Combine(Path.GetTempPath(), "agi_use_link_" + Guid.NewGuid().ToString("N"));
+            var modularityDir = Path.Combine(root, "modularity");
+            Directory.CreateDirectory(modularityDir);
+
+            var modulePath = Path.Combine(modularityDir, "module1.agi");
+            var callerPath = Path.Combine(root, "use_module1.agi");
+
+            try
+            {
+                await File.WriteAllTextAsync(modulePath, @"@AGI 0.0.1;
+
+program module1;
+system samples;
+module modularity;
+
+function add(x, y) {
+    return x + y;
+}
+");
+
+                await File.WriteAllTextAsync(callerPath, @"@AGI 0.0.1;
+
+program use_module1;
+system samples;
+module modularity;
+
+use modularity: module1 as {
+    function add(x, y);
+};
+
+procedure Main() {
+    var x:= 1;
+    var y:= 2;
+    var z:= module1: add(x, y);
+    print(#""z: {z}"");
+}
+
+entrypoint {
+    Main;
+}");
+
+                var compiler = new Compiler();
+                var result = await compiler.CompileFileAsync(callerPath);
+
+                result.Success.Should().BeTrue(result.ErrorMessage);
+                result.Result!.Functions.Should().ContainKey("samples:modularity:module1:add",
+                    "imported function from use-signature must be linked into executable unit");
+            }
+            finally
+            {
+                if (Directory.Exists(root))
+                    Directory.Delete(root, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task CompileFileAsync_UseModule_ShouldMergeImportedTypeDefsIntoEntrypoint()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "agi_use_type_link_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+
+            var modulePath = Path.Combine(root, "module2.agi");
+            var callerPath = Path.Combine(root, "use_module2.agi");
+
+            try
+            {
+                await File.WriteAllTextAsync(modulePath, @"@AGI 0.0.1;
+
+program module2;
+system samples;
+module modularity;
+
+Point: type {
+    public
+        X: int;
+}
+");
+
+                await File.WriteAllTextAsync(callerPath, @"@AGI 0.0.1;
+
+program use_module2;
+system samples;
+module modularity;
+
+use module2;
+
+entrypoint {
+}");
+
+                var compiler = new Compiler();
+                var result = await compiler.CompileFileAsync(callerPath);
+
+                result.Success.Should().BeTrue(result.ErrorMessage);
+                result.Result!.EntryPoint.Any(cmd =>
+                    cmd.Opcode == Opcodes.Push &&
+                    cmd.Operand1 is PushOperand po &&
+                    string.Equals(po.Kind, "StringLiteral", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(po.Value as string, "samples:modularity:module2:Point", StringComparison.Ordinal))
+                    .Should().BeTrue("imported module entrypoint prelude must be merged so type defs are executed");
+            }
+            finally
+            {
+                if (Directory.Exists(root))
+                    Directory.Delete(root, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task CompileFileAsync_DefObjInImporter_ShouldQualifyExternalTypeWithDefiningModuleNotConsumer()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "agi_defobj_qual_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+
+            var modulePath = Path.Combine(root, "module2.agi");
+            var callerPath = Path.Combine(root, "consumer.agi");
+
+            try
+            {
+                await File.WriteAllTextAsync(modulePath, @"@AGI 0.0.1;
+
+program module2;
+system samples;
+module modularity;
+
+Room: type {
+    public X: int;
+}
+
+entrypoint {
+}
+");
+
+                await File.WriteAllTextAsync(callerPath, @"@AGI 0.0.1;
+
+program consumer;
+system samples;
+module modularity;
+
+use module2;
+
+procedure Main() {
+    var r := new Room(X: 1);
+}
+
+entrypoint {
+    Main;
+}
+");
+
+                var compiler = new Compiler();
+                var result = await compiler.CompileFileAsync(callerPath);
+
+                result.Success.Should().BeTrue(result.ErrorMessage);
+                var main = result.Result!.Procedures["Main"].Body;
+                main.Any(c =>
+                    c.Opcode == Opcodes.Push &&
+                    c.Operand1 is PushOperand po &&
+                    string.Equals(po.Kind, "Class", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(po.Value as string, "samples:modularity:module2:Room", StringComparison.Ordinal))
+                    .Should().BeTrue("defobj must use the module where Room is defined, not samples:modularity:consumer:Room");
+            }
+            finally
+            {
+                if (Directory.Exists(root))
+                    Directory.Delete(root, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task CompileFileAsync_BareTypeCall_ShouldEmitCtorViaDefObjNotCallPointFunction()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "agi_bare_ctor_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+
+            var modulePath = Path.Combine(root, "module2.agi");
+            var callerPath = Path.Combine(root, "consumer.agi");
+
+            try
+            {
+                await File.WriteAllTextAsync(modulePath, @"@AGI 0.0.1;
+
+program module2;
+system samples;
+module modularity;
+
+Point: type {
+    public
+        X: int;
+        Y: int;
+    constructor Point(x, y) {
+        X:= x;
+        Y:= y;
+    }
+}
+
+entrypoint {
+}
+");
+
+                await File.WriteAllTextAsync(callerPath, @"@AGI 0.0.1;
+
+program consumer;
+system samples;
+module modularity;
+
+use module2;
+
+procedure Main() {
+    var p := Point(1, 2);
+}
+
+entrypoint {
+    Main;
+}
+");
+
+                var compiler = new Compiler();
+                var result = await compiler.CompileFileAsync(callerPath);
+
+                result.Success.Should().BeTrue(result.ErrorMessage);
+                var main = result.Result!.Procedures["Main"].Body;
+                main.Any(c => c.Opcode == Opcodes.DefObj).Should().BeTrue("Point(1,2) must allocate via defobj");
+                main.Any(c =>
+                    c.Opcode == Opcodes.CallObj &&
+                    c.Operand1 is string mn &&
+                    mn.Contains("Point_ctor", StringComparison.Ordinal)).Should().BeTrue();
+                main.Any(c =>
+                    c.Opcode == Opcodes.Call &&
+                    c.Operand1 is CallInfo ci2 &&
+                    string.Equals(ci2.FunctionName, "Point", StringComparison.Ordinal)).Should().BeFalse(
+                    "must not call a function named Point — this is the imported type constructor");
+            }
+            finally
+            {
+                if (Directory.Exists(root))
+                    Directory.Delete(root, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task CompileAsync_FunctionWithFloatDecimalCastReturn_ShouldEmitDivNotEmptyBody()
+        {
+            var source = """
+@AGI 0.0.1;
+program t;
+module t;
+
+function div(x, y) {
+    return float<decimal>: x / y;
+}
+
+entrypoint { }
+""";
+
+            var result = await _compiler.CompileAsync(source);
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            result.Result!.Functions["div"].Body.Should().Contain(c => c.Opcode == Opcodes.Div);
+        }
+
+        [Fact]
+        public async Task CompileAsync_TypeWithConstructorAndMethods_ShouldNotTreatConstructorBodyAsFields()
+        {
+            var source = """
+@AGI 0.0.1;
+
+program module2;
+system samples;
+module modularity;
+
+Point: type {
+    public
+        X: int;
+        Y: int;
+    constructor Point(x, y) {
+        X:= x;
+        Y:= y;
+    }
+
+    method Add(p: Point) {
+        X += p.X;
+        Y += p.Y;
+    }
+
+    method Print() {
+        print(#"X: {X}, Y: {Y}");
+    }
+}
+
+entrypoint { }
+""";
+
+            var result = await _compiler.CompileAsync(source);
+
+            result.Success.Should().BeTrue(result.ErrorMessage);
+
+            // В выходном юните не должно появляться field-декларации с типом "= x"
+            // (раньше строка "X:= x;" парсилась как поле "X: = x;").
+            var hasBogusFieldType =
+                result.Result!.EntryPoint
+                    .Where(c => c.Opcode == Opcodes.Push && c.Operand1 is PushOperand)
+                    .Select(c => (PushOperand)c.Operand1!)
+                    .Any(po => string.Equals(po.Kind, "StringLiteral", StringComparison.OrdinalIgnoreCase)
+                               && string.Equals(po.Value as string, "= x", StringComparison.Ordinal));
+
+            hasBogusFieldType.Should().BeFalse("constructor body must not be lowered as field 'X: = x'");
+        }
+
+        [Fact]
+        public async Task CompileAsync_TypesWithConstructorAssignments_ShouldKeepTypeDefsInEntrypoint()
+        {
+            var source = """
+@AGI 0.0.1;
+program module2;
+system samples;
+module modularity;
+
+Point: type {
+    public
+        X: int;
+    constructor Point(x) {
+        X:= x;
+    }
+}
+
+Shape: class {
+    public
+        Origin: Point;
+    constructor Shape(origin: Point) {
+        Origin:= origin;
+    }
+}
+
+Circle: Shape {
+    public
+        Radius: int;
+    constructor Circle(origin: Point, r) {
+        Shape(origin);
+        Radius:= r;
+    }
+}
+
+Square: Shape {
+    public
+        W: int;
+    constructor Square(origin: Point, w) {
+        Shape(origin);
+        W:= w;
+    }
+}
+
+entrypoint { }
+""";
+
+            var result = await _compiler.CompileAsync(source);
+            result.Success.Should().BeTrue(result.ErrorMessage);
+
+            var unit = result.Result!;
+            unit.OutputFormat = "agiasm";
+            var agiasm = unit.ToAgiasmText(source);
+
+            const string Q = "samples:modularity:module2:";
+            agiasm.Should().Contain($"push string: \"{Q}Point\"");
+            agiasm.Should().Contain($"push string: \"{Q}Shape\"");
+            agiasm.Should().Contain($"push string: \"{Q}Circle\"");
+            agiasm.Should().Contain($"push string: \"{Q}Square\"");
+        }
+
+        [Fact]
+        public async Task CompileAsync_TypeMethods_ShouldEmitAsMethodsAndBehaveLikeFunctions()
+        {
+            var source = """
+@AGI 0.0.1;
+program module2;
+system samples;
+module modularity;
+
+Point: type {
+    public
+        X: int;
+        Y: int;
+    constructor Point(x, y) {
+        // ctor body intentionally empty for now
+    }
+
+    method Add(p: Point) {
+        // body intentionally empty for now
+    }
+
+    method Print() {
+        // body intentionally empty for now
+    }
+}
+
+entrypoint { }
+""";
+
+            var result = await _compiler.CompileAsync(source);
+            result.Success.Should().BeTrue(result.ErrorMessage);
+
+            var unit = result.Result!;
+            // Имена методов типов теперь включают суффикс арности (_1 и т.п.),
+            // поэтому проверяем по префиксу.
+            unit.Functions.Keys.Should().Contain(k => k.Contains("Point_ctor", StringComparison.Ordinal));
+            unit.Functions.Keys.Should().Contain(k => k.Contains("Point_Add", StringComparison.Ordinal));
+            unit.Functions.Keys.Should().Contain(k => k.Contains("Point_Print", StringComparison.Ordinal));
+
+            // AGIASM-сериализация должна использовать заголовок 'method' для этих функций.
+            unit.OutputFormat = "agiasm";
+            var agiasm = unit.ToAgiasmText(source);
+            agiasm.Should().Contain("method samples:modularity:module2:Point_ctor_1", "constructor must be emitted as 'method' in AGIASM");
+            agiasm.Should().Contain("Point_Add", "Add must be emitted as 'method' in AGIASM");
+            agiasm.Should().Contain("Point_Print", "Print must be emitted as 'method' in AGIASM");
+        }
+
+        [Fact]
+        public async Task CompileAsync_TypeMethod_WithBody_ShouldLowerBodyStatements()
+        {
+            var source = """
+@AGI 0.0.1;
+program module2;
+system samples;
+module modularity;
+
+Point: type {
+    public
+        X: int;
+    method Hello() {
+        print("hello");
+    }
+}
+
+entrypoint { }
+""";
+
+            var result = await _compiler.CompileAsync(source);
+            result.Success.Should().BeTrue(result.ErrorMessage);
+
+            var unit = result.Result!;
+            // Имя метода теперь может включать суффикс арности (Point_Hello_1 и т.п.),
+            // поэтому ищем функцию по префиксу.
+            unit.Functions.Keys.Should().Contain(k => k.Contains("Point_Hello", StringComparison.Ordinal));
+            var helloKey = unit.Functions.Keys.Single(k => k.Contains("Point_Hello", StringComparison.Ordinal));
+            var body = unit.Functions[helloKey].Body;
+
+            // В теле метода должен быть вызов print (через Call).
+            body.Any(c => c.Opcode == Opcodes.Call && c.Operand1 is CallInfo ci && ci.FunctionName.Contains("print", StringComparison.OrdinalIgnoreCase))
+                .Should().BeTrue("type method body must be lowered into real instructions, not an empty stub");
+        }
+
+        [Fact]
+        public async Task CompileAsync_NestedSubfunctions_GetMangledNamesAndPowInInnerBody()
+        {
+            var source = @"
+@AGI 0.0.1;
+program t;
+module t;
+
+function calculate(x, y) {
+    function add(a, b) { return a + b; }
+    function mul(a, b) { return a * b; }
+    function pow(a, b) { return a ^ b; }
+    return add(x, y) + mul(x, y) + pow(x, y);
+}
+
+entrypoint { }
+";
+            var result = await _compiler.CompileAsync(source);
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            var funcs = result.Result!.Functions;
+            funcs.Should().ContainKey("calculate");
+            funcs.Should().ContainKey("calculate_add");
+            funcs.Should().ContainKey("calculate_mul");
+            funcs.Should().ContainKey("calculate_pow");
+            funcs["calculate"].Body.Where(c => c.Opcode == Opcodes.Call && c.Operand1 is CallInfo)
+                .Select(c => ((CallInfo)c.Operand1!).FunctionName)
+                .Should().Contain(fn => string.Equals(fn, "calculate_add", StringComparison.Ordinal));
+            funcs["calculate_pow"].Body.Should().Contain(c => c.Opcode == Opcodes.Pow);
+        }
+
+        [Fact]
+        public async Task CompileAsync_PowerOperator_EmitsPowOpcode()
+        {
+            var source = @"
+@AGI 0.0.1;
+program t;
+module t;
+function p(a, b) { return a ^ b; }
+entrypoint { }
+";
+            var result = await _compiler.CompileAsync(source);
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            result.Result!.Functions["p"].Body.Should().Contain(c => c.Opcode == Opcodes.Pow);
+        }
+
+        [Fact]
+        public async Task CompileAsync_NestedProcedureInsideProcedure_ManglesAndCallUsesMangledName()
+        {
+            var source = @"
+@AGI 0.0.1;
+program t;
+module t;
+procedure Main() {
+    procedure debug() {
+        println(""ok"");
+    }
+    debug();
+}
+entrypoint { Main; }
+";
+            var result = await _compiler.CompileAsync(source);
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            result.Result!.Procedures.Should().ContainKey("Main_debug");
+            result.Result.Functions.Should().NotContainKey("Main_debug");
+            var calls = result.Result.Procedures["Main"].Body
+                .Where(c => c.Opcode == Opcodes.Call && c.Operand1 is CallInfo)
+                .Select(c => ((CallInfo)c.Operand1!).FunctionName)
+                .ToList();
+            calls.Should().Contain(fn => string.Equals(fn, "Main_debug", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public async Task CompileAsync_DottedNestedFunctionCall_ManglesToUnderscorePath()
+        {
+            var source = @"
+@AGI 0.0.1;
+program t;
+module t;
+function box() {
+    function val() { return 7; }
+    return val();
+}
+function main() {
+    return box.val();
+}
+entrypoint { }
+";
+            var result = await _compiler.CompileAsync(source);
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            var calls = result.Result!.Functions["main"].Body
+                .Where(c => c.Opcode == Opcodes.Call && c.Operand1 is CallInfo)
+                .Select(c => ((CallInfo)c.Operand1!).FunctionName)
+                .ToList();
+            calls.Should().Contain(fn => string.Equals(fn, "box_val", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public async Task CompileAsync_ModuleColonThenDottedPath_JoinsSegmentsWithUnderscore()
+        {
+            var source = @"
+@AGI 0.0.1;
+program t;
+module t;
+procedure Main() {
+    mod1:outer.inner.mid(1);
+}
+entrypoint { Main; }
+";
+            var result = await _compiler.CompileAsync(source);
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            result.Result!.Procedures["Main"].Body.Where(c => c.Opcode == Opcodes.Call && c.Operand1 is CallInfo)
+                .Select(c => ((CallInfo)c.Operand1!).FunctionName)
+                .Should().Contain(fn => string.Equals(fn, "mod1:outer_inner_mid", StringComparison.Ordinal));
         }
     }
 }

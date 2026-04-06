@@ -40,10 +40,20 @@
                 </Setter.Value>
             </Setter>
             <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Foreground" Value="#5C6A8A" />
+                    <Setter Property="Background" Value="#13182E" />
+                    <Setter Property="BorderBrush" Value="#252E50" />
+                    <Setter Property="Cursor" Value="Arrow" />
+                </Trigger>
+                <MultiTrigger>
+                    <MultiTrigger.Conditions>
+                        <Condition Property="IsEnabled" Value="True" />
+                        <Condition Property="IsMouseOver" Value="True" />
+                    </MultiTrigger.Conditions>
                     <Setter Property="Background" Value="#273878" />
                     <Setter Property="BorderBrush" Value="#7694FF" />
-                </Trigger>
+                </MultiTrigger>
             </Style.Triggers>
         </Style>
 

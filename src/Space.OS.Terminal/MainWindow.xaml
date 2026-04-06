@@ -4,6 +4,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:avalon="clr-namespace:ICSharpCode.AvalonEdit;assembly=ICSharpCode.AvalonEdit"
+        xmlns:mkinterp="clr-namespace:Magic.Kernel.Interpretation;assembly=Magic.Kernel"
         mc:Ignorable="d"
         Title="Space.OS.Terminal"
         Height="860"
@@ -12,6 +13,135 @@
         MinWidth="1100"
         Background="{StaticResource BgRootBrush}">
     <Window.Resources>
+        <HierarchicalDataTemplate x:Key="InspectNodeTemplate"
+                                  DataType="{x:Type mkinterp:InterpreterInspectNode}"
+                                  ItemsSource="{Binding Children}">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock VerticalAlignment="Center"
+                           FontWeight="SemiBold"
+                           Foreground="#B8C8EC"
+                           Text="{Binding Caption}" />
+                <TextBlock VerticalAlignment="Center"
+                           Margin="6,0,0,0"
+                           MaxWidth="520"
+                           Foreground="#DDE8FF"
+                           Text="{Binding Detail}"
+                           TextWrapping="Wrap" />
+                <Button Margin="8,0,0,0"
+                        Padding="8,2"
+                        VerticalAlignment="Center"
+                        Click="DebuggerInspectSensitiveToggle_Click"
+                        Content="{Binding SensitiveRevealCaption}"
+                        FontSize="10"
+                        ToolTip="Показать или скрыть чувствительное значение">
+                    <Button.Style>
+                        <Style BasedOn="{StaticResource {x:Type Button}}" TargetType="Button">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsSensitiveLeaf}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
+                <Button Margin="4,0,0,0"
+                        Padding="8,2"
+                        VerticalAlignment="Center"
+                        Click="DebuggerInspectCopy_Click"
+                        Content="Копировать"
+                        FontSize="10"
+                        ToolTip="Скопировать значение в буфер обмена">
+                    <Button.Style>
+                        <Style BasedOn="{StaticResource {x:Type Button}}" TargetType="Button">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding ShowCopyButton}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
+                <Button Margin="4,0,0,0"
+                        Padding="8,2"
+                        VerticalAlignment="Center"
+                        Click="DebuggerInspectViewPayload_Click"
+                        Content="Просмотреть"
+                        FontSize="10"
+                        ToolTip="Hex-дамп (первые 48 KiB); полный файл — «Сохранить в файл»">
+                    <Button.Style>
+                        <Style BasedOn="{StaticResource {x:Type Button}}" TargetType="Button">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding ShowViewPayloadButton}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Button.Style>
+                </Button>
+            </StackPanel>
+        </HierarchicalDataTemplate>
+
+        <DataTemplate x:Key="DebuggerInspectRowDetailsTemplate">
+            <Border x:Name="InspectRowDetailsBorder"
+                    Padding="8,6"
+                    Margin="0,2,0,4"
+                    Background="#060A18"
+                    BorderBrush="#2D3C79"
+                    BorderThickness="1"
+                    MaxHeight="560">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" MinHeight="72" />
+                    </Grid.RowDefinitions>
+                    <Grid Grid.Row="0"
+                          Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0"
+                                   VerticalAlignment="Center"
+                                   Foreground="#7C9AD6"
+                                   FontSize="11"
+                                   Text="▶ слева в таблице — показать/скрыть строку."
+                                   TextWrapping="Wrap" />
+                        <StackPanel Grid.Column="1"
+                                    VerticalAlignment="Center"
+                                    Orientation="Horizontal"
+                                    Margin="10,0,0,0">
+                            <Button Padding="8,3"
+                                    Click="DebuggerInspectExpandAll_Click"
+                                    Content="Развернуть всё"
+                                    FontSize="10"
+                                    ToolTip="Раскрыть все узлы дерева значения" />
+                            <Button Margin="6,0,0,0"
+                                    Padding="8,3"
+                                    Click="DebuggerInspectCollapseAll_Click"
+                                    Content="Свернуть всё"
+                                    FontSize="10"
+                                    ToolTip="Свернуть все узлы дерева значения" />
+                        </StackPanel>
+                    </Grid>
+                    <TreeView Grid.Row="1"
+                              ItemsSource="{Binding InspectTreeRoots}"
+                              ItemTemplate="{StaticResource InspectNodeTemplate}"
+                              Background="Transparent"
+                              Foreground="#DDE8FF"
+                              BorderThickness="0"
+                              Padding="0" />
+                </Grid>
+            </Border>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding InspectTreeRoots}" Value="{x:Null}">
+                    <Setter TargetName="InspectRowDetailsBorder" Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+
         <!-- Иконки отладки: компактные path, Foreground как у кнопки (в т.ч. disabled). -->
         <Style x:Key="DebugToolbarButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="Width" Value="32" />
@@ -20,6 +150,45 @@
             <Setter Property="Padding" Value="0" />
             <Setter Property="Margin" Value="6,0,0,0" />
             <Setter Property="ToolTipService.ShowOnDisabled" Value="True" />
+        </Style>
+
+        <!-- Первая кнопка в ряду Code editor — без левого отступа. -->
+        <Style x:Key="CodeEditorToolbarIconButtonFirst" TargetType="Button" BasedOn="{StaticResource DebugToolbarButton}">
+            <Setter Property="Margin" Value="0,0,0,0" />
+        </Style>
+
+        <!-- TabControl по умолчанию рисует светлый header → глобальный светлый TextBlock даёт «белое на белом». -->
+        <Style x:Key="CodeEditorDebuggerTabItem" TargetType="TabItem">
+            <Setter Property="Foreground" Value="#EAF1FF" />
+            <Setter Property="Padding" Value="14,8" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="TabBorder"
+                                Background="#141F49"
+                                BorderBrush="#3A4A8A"
+                                BorderThickness="1,1,1,0"
+                                CornerRadius="6,6,0,0"
+                                Margin="0,0,4,0"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter x:Name="HeaderHost"
+                                              ContentSource="Header"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="TabBorder" Property="Background" Value="#273878" />
+                                <Setter Property="Panel.ZIndex" Value="1" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="TabBorder" Property="BorderBrush" Value="#7694FF" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
     </Window.Resources>
     <Grid>
@@ -112,60 +281,479 @@
                 <Grid x:Name="CodeEditorPanel" Visibility="Collapsed">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
+                        <RowDefinition Height="2*" MinHeight="120" />
+                        <RowDefinition Height="6" MinHeight="6" />
+                        <RowDefinition Height="*" MinHeight="140" />
                     </Grid.RowDefinitions>
-                    <StackPanel Orientation="Horizontal">
-                        <Button Click="CodeEditorReload_Click">Reload</Button>
-                        <Button Margin="8,0,0,0" Click="CodeEditorSave_Click">Save</Button>
-                        <Button Margin="8,0,0,0" Click="CodeEditorDebug_Click">Debug</Button>
-                        <Button x:Name="DebugContinueButton" Style="{StaticResource DebugToolbarButton}" Margin="8,0,0,0" IsEnabled="False" Click="DebugContinue_Click"
-                                ToolTip="Continue (F5)">
-                            <Viewbox Width="14" Height="14" Stretch="Uniform">
-                                <Path Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
-                                      Data="M 3,2 L 13,8 3,14 Z" />
-                            </Viewbox>
-                        </Button>
-                        <Button x:Name="DebugStepButton" Style="{StaticResource DebugToolbarButton}" IsEnabled="False" Click="DebugStep_Click"
-                                ToolTip="Next source line">
-                            <Viewbox Width="14" Height="14" Stretch="Uniform">
-                                <Canvas Width="16" Height="16">
-                                    <!-- линия «текущая строка», стрелка вниз — следующая строка -->
-                                    <Path Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
-                                          StrokeThickness="1.35" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                                          Data="M 2,5 H 14 M 8,5 V 11 M 5,8 L 8,11 L 11,8" />
-                                </Canvas>
-                            </Viewbox>
-                        </Button>
-                        <Button x:Name="DebugStepIntoButton" Style="{StaticResource DebugToolbarButton}" IsEnabled="False" Click="DebugStepInto_Click"
-                                ToolTip="Step into — one instruction (F11)">
-                            <Viewbox Width="14" Height="14" Stretch="Uniform">
-                                <Canvas Width="16" Height="16">
-                                    <Path Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
-                                          StrokeThickness="1.35" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
-                                          Data="M 8,2 V 9 M 5,6 L 8,9 L 11,6 M 3.5,12.5 H 12.5" />
-                                </Canvas>
-                            </Viewbox>
-                        </Button>
-                        <Button x:Name="DebugStopButton" Style="{StaticResource DebugToolbarButton}" IsEnabled="False" Click="DebugStop_Click"
-                                ToolTip="Stop debugging">
-                            <Viewbox Width="12" Height="12" Stretch="Uniform">
-                                <Path Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
-                                      Data="M 3,3 H 13 V 13 H 3 Z" />
-                            </Viewbox>
-                        </Button>
-                        <TextBlock x:Name="CodeEditorFileText" Margin="12,6,0,0" Foreground="{StaticResource TextMutedBrush}">No file selected</TextBlock>
-                    </StackPanel>
-                    <avalon:TextEditor x:Name="CodeEditor"
-                                       Grid.Row="1"
-                                       Margin="0,10,0,0"
-                                       FontFamily="Consolas"
-                                       FontSize="13"
-                                       ShowLineNumbers="True"
-                                       Foreground="#DDE8FF"
-                                       Background="#0C1332"
-                                       HorizontalScrollBarVisibility="Auto"
-                                       VerticalScrollBarVisibility="Auto"
-                                       WordWrap="False" />
+                    <Grid Grid.Row="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Orientation="Horizontal">
+                            <Button Style="{StaticResource CodeEditorToolbarIconButtonFirst}"
+                                    Click="CodeEditorReload_Click"
+                                    ToolTip="Перечитать файл с диска">
+                                <Viewbox Width="15" Height="15" Stretch="Uniform">
+                                    <Canvas Width="16" Height="16">
+                                        <Path Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                              StrokeThickness="1.35"
+                                              StrokeStartLineCap="Round"
+                                              StrokeEndLineCap="Round"
+                                              Fill="Transparent"
+                                              Data="M 10.8,3.2 A 5.2,5.2 0 1 0 10.8,12.8 M 10.8,3.2 L 10.8,1 M 10.8,3.2 L 13.4,4.4" />
+                                    </Canvas>
+                                </Viewbox>
+                            </Button>
+                            <Button Style="{StaticResource DebugToolbarButton}"
+                                    Click="CodeEditorSave_Click"
+                                    ToolTip="Сохранить файл">
+                                <Viewbox Width="15" Height="15" Stretch="Uniform">
+                                    <Canvas Width="16" Height="16">
+                                        <Path Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                              StrokeThickness="1.25"
+                                              StrokeLineJoin="Round"
+                                              Fill="Transparent"
+                                              Data="M 3.5,3 H 10.5 L 12.5,5 V 13 H 3.5 Z M 3.5,9 H 12.5 M 9,3 V 6.5 H 12.5" />
+                                    </Canvas>
+                                </Viewbox>
+                            </Button>
+                            <Button Style="{StaticResource DebugToolbarButton}"
+                                    Click="CodeEditorDebug_Click"
+                                    ToolTip="Запуск с отладкой (F5)">
+                                <Viewbox Width="15" Height="15" Stretch="Uniform">
+                                    <Canvas Width="16" Height="16">
+                                        <Path Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                              Data="M 5.5,3.5 L 5.5,12.5 L 12.5,8 Z" />
+                                    </Canvas>
+                                </Viewbox>
+                            </Button>
+                            <TextBlock x:Name="CodeEditorRunningHint" Margin="10,6,0,0" VerticalAlignment="Center"
+                                       Visibility="Collapsed" Foreground="#7CFCA8">Running exe instance</TextBlock>
+                            <Button x:Name="DebugAttachButton"
+                                    Style="{StaticResource DebugToolbarButton}"
+                                    Visibility="Collapsed"
+                                    Click="DebugAttach_Click"
+                                    ToolTip="Подключиться к running exe (attach)">
+                                <Viewbox Width="15" Height="15" Stretch="Uniform">
+                                    <Canvas Width="16" Height="16">
+                                        <Path Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                              StrokeThickness="1.35"
+                                              StrokeStartLineCap="Round"
+                                              StrokeEndLineCap="Round"
+                                              StrokeLineJoin="Round"
+                                              Fill="Transparent"
+                                              Data="M 8,2 L 8,4.5 M 5.5,4.5 H 10.5 V 9.5 H 5.5 Z M 8,9.5 L 8,14 M 5,12 H 11" />
+                                    </Canvas>
+                                </Viewbox>
+                            </Button>
+                            <Button x:Name="DebugRestartRunningExeButton"
+                                    Style="{StaticResource DebugToolbarButton}"
+                                    MinWidth="64"
+                                    Width="Auto"
+                                    Padding="10,0"
+                                    FontSize="10"
+                                    Visibility="Collapsed"
+                                    Click="DebugRestartRunningExe_Click"
+                                    Content="Restart"
+                                    ToolTip="Сохранить .agi, остановить exe и снова запустить из executionUnits (новый код с диска); если был F5 — повторить отладку" />
+                            <Button x:Name="DebugContinueButton" Style="{StaticResource DebugToolbarButton}" IsEnabled="False" Click="DebugContinue_Click"
+                                    ToolTip="Продолжить (F9)">
+                                <Viewbox Width="14" Height="14" Stretch="Uniform">
+                                    <Path Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                          Data="M 3,2 L 13,8 3,14 Z" />
+                                </Viewbox>
+                            </Button>
+                            <Button x:Name="DebugStepButton" Style="{StaticResource DebugToolbarButton}" IsEnabled="False" Click="DebugStep_Click"
+                                    ToolTip="Следующая строка исходника (F10)">
+                                <Viewbox Width="14" Height="14" Stretch="Uniform">
+                                    <Canvas Width="16" Height="16">
+                                        <Path Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                              StrokeThickness="1.35" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                              Data="M 2,5 H 14 M 8,5 V 11 M 5,8 L 8,11 L 11,8" />
+                                    </Canvas>
+                                </Viewbox>
+                            </Button>
+                            <Button x:Name="DebugStepIntoButton" Style="{StaticResource DebugToolbarButton}" IsEnabled="False" Click="DebugStepInto_Click"
+                                    ToolTip="Code: заход в вызов (F11). Asm/Attach: одна инструкция.">
+                                <Viewbox Width="14" Height="14" Stretch="Uniform">
+                                    <Canvas Width="16" Height="16">
+                                        <Path Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                              StrokeThickness="1.35" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                              Data="M 8,2 V 9 M 5,6 L 8,9 L 11,6 M 3.5,12.5 H 12.5" />
+                                    </Canvas>
+                                </Viewbox>
+                            </Button>
+                            <Button x:Name="DebugStopButton" Style="{StaticResource DebugToolbarButton}" IsEnabled="False" Click="DebugStop_Click"
+                                    ToolTip="Stop debugging">
+                                <Viewbox Width="12" Height="12" Stretch="Uniform">
+                                    <Path Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                          Data="M 3,3 H 13 V 13 H 3 Z" />
+                                </Viewbox>
+                            </Button>
+                            <TextBlock x:Name="CodeEditorFileText" Margin="12,6,0,0" Foreground="{StaticResource TextMutedBrush}">No file selected</TextBlock>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1"
+                                    Orientation="Horizontal"
+                                    VerticalAlignment="Center"
+                                    Margin="8,0,0,0">
+                            <Button Style="{StaticResource DebugToolbarButton}"
+                                    Margin="0,0,0,0"
+                                    Click="CodeEditorDebugger_Click"
+                                    ToolTip="Панель отладчика справа (Memory / Stack)">
+                                <Viewbox Width="15" Height="15" Stretch="Uniform">
+                                    <Canvas Width="16" Height="16">
+                                        <Path Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                              StrokeThickness="1.25"
+                                              StrokeLineJoin="Round"
+                                              Fill="Transparent"
+                                              Data="M 2.5,3.5 H 7 V 12.5 H 2.5 Z M 9,3.5 H 13.5 V 12.5 H 9 Z" />
+                                    </Canvas>
+                                </Viewbox>
+                            </Button>
+                            <Button Style="{StaticResource DebugToolbarButton}"
+                                    Click="CodeEditorEnvironment_Click"
+                                    ToolTip="Environment: логи execution units, сеть (claw), HTTP-запросы">
+                                <Viewbox Width="15" Height="15" Stretch="Uniform">
+                                    <Canvas Width="16" Height="16">
+                                        <Path Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                              StrokeThickness="1.25"
+                                              StrokeLineJoin="Round"
+                                              Fill="Transparent"
+                                              Data="M 2.5,2.5 H 13.5 V 6.5 H 2.5 Z M 2.5,8.5 H 9.5 V 13.5 H 2.5 Z M 11,8.5 H 13.5 V 13.5 H 11 Z" />
+                                    </Canvas>
+                                </Viewbox>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+                    <Grid x:Name="CodeEditorMainSplitGrid"
+                          Grid.Row="1"
+                          Margin="0,10,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition x:Name="CodeEditorEditorColumn" Width="*" MinWidth="120" />
+                            <ColumnDefinition x:Name="CodeEditorDebuggerSplitterColumn" Width="6" />
+                            <ColumnDefinition x:Name="CodeEditorDebuggerColumn" Width="280" MinWidth="200" />
+                        </Grid.ColumnDefinitions>
+                        <TabControl x:Name="CodeEditorSourceTabControl"
+                                    Grid.Column="0"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    Padding="0"
+                                    ItemContainerStyle="{StaticResource CodeEditorDebuggerTabItem}"
+                                    SelectionChanged="CodeEditorSourceTabs_SelectionChanged">
+                            <TabItem x:Name="CodeEditorMainTab" Header="Code">
+                                <avalon:TextEditor x:Name="CodeEditor"
+                                                   FontFamily="Consolas"
+                                                   FontSize="13"
+                                                   ShowLineNumbers="True"
+                                                   Foreground="#DDE8FF"
+                                                   Background="#0C1332"
+                                                   HorizontalScrollBarVisibility="Auto"
+                                                   VerticalScrollBarVisibility="Auto"
+                                                   WordWrap="False" />
+                            </TabItem>
+                            <TabItem x:Name="CodeEditorAsmTab" Header="Asm">
+                                <avalon:TextEditor x:Name="CodeAsmEditor"
+                                                   FontFamily="Consolas"
+                                                   FontSize="13"
+                                                   ShowLineNumbers="True"
+                                                   Foreground="#C8E0D0"
+                                                   Background="#0A1620"
+                                                   HorizontalScrollBarVisibility="Auto"
+                                                   VerticalScrollBarVisibility="Auto"
+                                                   WordWrap="False" />
+                            </TabItem>
+                        </TabControl>
+                        <GridSplitter x:Name="CodeEditorDebuggerColumnSplitter"
+                                      Grid.Column="1"
+                                      Width="6"
+                                      HorizontalAlignment="Stretch"
+                                      VerticalAlignment="Stretch"
+                                      Background="#3A4A8A"
+                                      ShowsPreview="False"
+                                      ResizeDirection="Columns"
+                                      ResizeBehavior="PreviousAndNext"
+                                      ToolTip="Ширина панели отладчика" />
+                        <Border x:Name="CodeEditorDebuggerPanel"
+                                Grid.Column="2"
+                                Margin="4,0,0,0"
+                                BorderBrush="#3A4A8A"
+                                BorderThickness="1,0,0,0"
+                                Background="#080D22"
+                                Padding="0,6,0,0">
+                        <DockPanel LastChildFill="True">
+                            <TextBlock x:Name="DebuggerUnitSummaryText"
+                                       DockPanel.Dock="Top"
+                                       Margin="8,0,8,6"
+                                       Foreground="#8FA3D4"
+                                       TextWrapping="Wrap"
+                                       FontSize="12" />
+                            <TabControl Background="Transparent"
+                                        BorderThickness="0"
+                                        ItemContainerStyle="{StaticResource CodeEditorDebuggerTabItem}">
+                                <TabItem Header="Memory">
+                                    <DockPanel LastChildFill="True">
+                                        <StackPanel DockPanel.Dock="Top"
+                                                    Orientation="Horizontal"
+                                                    Margin="8,6,8,4">
+                                            <TextBlock VerticalAlignment="Center"
+                                                       Margin="0,0,10,0"
+                                                       Foreground="#8FA3D4"
+                                                       FontSize="11"
+                                                       Text="Слой:" />
+                                            <RadioButton x:Name="DebuggerMemFilterAll"
+                                                         GroupName="DbgMemLayer"
+                                                         Content="Все"
+                                                         Margin="0,0,12,0"
+                                                         Foreground="#DDE8FF"
+                                                         VerticalAlignment="Center"
+                                                         IsChecked="True"
+                                                         Checked="DebuggerMemoryLayerFilter_Changed" />
+                                            <RadioButton x:Name="DebuggerMemFilterGlobal"
+                                                         GroupName="DbgMemLayer"
+                                                         Content="Global"
+                                                         Margin="0,0,12,0"
+                                                         Foreground="#DDE8FF"
+                                                         VerticalAlignment="Center"
+                                                         Checked="DebuggerMemoryLayerFilter_Changed" />
+                                            <RadioButton x:Name="DebuggerMemFilterLocal"
+                                                         GroupName="DbgMemLayer"
+                                                         Content="Local"
+                                                         Margin="0,0,12,0"
+                                                         Foreground="#DDE8FF"
+                                                         VerticalAlignment="Center"
+                                                         Checked="DebuggerMemoryLayerFilter_Changed" />
+                                            <RadioButton x:Name="DebuggerMemFilterFrame"
+                                                         GroupName="DbgMemLayer"
+                                                         Content="Frame"
+                                                         Foreground="#DDE8FF"
+                                                         VerticalAlignment="Center"
+                                                         Checked="DebuggerMemoryLayerFilter_Changed" />
+                                        </StackPanel>
+                                        <DataGrid x:Name="DebuggerMemoryGrid"
+                                                  AutoGenerateColumns="False"
+                                                  IsReadOnly="True"
+                                                  HeadersVisibility="Column"
+                                                  Background="#0C1332"
+                                                  Foreground="#DDE8FF"
+                                                  BorderBrush="#3A4A8A"
+                                                  GridLinesVisibility="Horizontal"
+                                                  RowHeight="22"
+                                                  CanUserAddRows="False"
+                                                  RowDetailsVisibilityMode="Collapsed"
+                                                  RowDetailsTemplate="{StaticResource DebuggerInspectRowDetailsTemplate}"
+                                                  LoadingRow="DebuggerDataGrid_LoadingRow">
+                                            <DataGrid.Columns>
+                                                <DataGridTemplateColumn Width="34" Header="">
+                                                    <DataGridTemplateColumn.CellTemplate>
+                                                        <DataTemplate>
+                                                            <Button x:Name="DebuggerExpandBtn"
+                                                                    Tag="DebugInspectExpand"
+                                                                    Content="▶"
+                                                                    FontSize="10"
+                                                                    Padding="2,0"
+                                                                    Margin="0"
+                                                                    Width="26"
+                                                                    Height="20"
+                                                                    VerticalAlignment="Center"
+                                                                    Click="DebuggerExpandRowDetails_Click"
+                                                                    ToolTip="Показать / скрыть значение" />
+                                                            <DataTemplate.Triggers>
+                                                                <DataTrigger Binding="{Binding InspectTreeRoots}" Value="{x:Null}">
+                                                                    <Setter TargetName="DebuggerExpandBtn" Property="IsEnabled" Value="False" />
+                                                                    <Setter TargetName="DebuggerExpandBtn" Property="Opacity" Value="0.35" />
+                                                                </DataTrigger>
+                                                            </DataTemplate.Triggers>
+                                                        </DataTemplate>
+                                                    </DataGridTemplateColumn.CellTemplate>
+                                                </DataGridTemplateColumn>
+                                                <DataGridTextColumn Header="Layer" Binding="{Binding Layer}" Width="90" />
+                                                <DataGridTextColumn Header="Slot" Binding="{Binding Slot}" Width="64" />
+                                                <DataGridTextColumn Header="Type" Binding="{Binding TypeName}" Width="120" />
+                                                <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="*" />
+                                            </DataGrid.Columns>
+                                        </DataGrid>
+                                    </DockPanel>
+                                </TabItem>
+                                <TabItem Header="Stack">
+                                    <DataGrid x:Name="DebuggerStackGrid"
+                                              AutoGenerateColumns="False"
+                                              IsReadOnly="True"
+                                              HeadersVisibility="Column"
+                                              Background="#0C1332"
+                                              Foreground="#DDE8FF"
+                                              BorderBrush="#3A4A8A"
+                                              GridLinesVisibility="Horizontal"
+                                              RowHeight="22"
+                                              CanUserAddRows="False"
+                                              RowDetailsVisibilityMode="Collapsed"
+                                              RowDetailsTemplate="{StaticResource DebuggerInspectRowDetailsTemplate}"
+                                              LoadingRow="DebuggerDataGrid_LoadingRow">
+                                        <DataGrid.Columns>
+                                            <DataGridTemplateColumn Width="34" Header="">
+                                                <DataGridTemplateColumn.CellTemplate>
+                                                    <DataTemplate>
+                                                        <Button x:Name="DebuggerExpandBtn"
+                                                                Tag="DebugInspectExpand"
+                                                                Content="▶"
+                                                                FontSize="10"
+                                                                Padding="2,0"
+                                                                Margin="0"
+                                                                Width="26"
+                                                                Height="20"
+                                                                VerticalAlignment="Center"
+                                                                Click="DebuggerExpandRowDetails_Click"
+                                                                ToolTip="Показать / скрыть значение" />
+                                                        <DataTemplate.Triggers>
+                                                            <DataTrigger Binding="{Binding InspectTreeRoots}" Value="{x:Null}">
+                                                                <Setter TargetName="DebuggerExpandBtn" Property="IsEnabled" Value="False" />
+                                                                <Setter TargetName="DebuggerExpandBtn" Property="Opacity" Value="0.35" />
+                                                            </DataTrigger>
+                                                        </DataTemplate.Triggers>
+                                                    </DataTemplate>
+                                                </DataGridTemplateColumn.CellTemplate>
+                                            </DataGridTemplateColumn>
+                                            <DataGridTextColumn Header="#" Binding="{Binding Index}" Width="48" />
+                                            <DataGridTextColumn Header="TOS" Binding="{Binding TopMark}" Width="52" />
+                                            <DataGridTextColumn Header="Type" Binding="{Binding TypeName}" Width="120" />
+                                            <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="*" />
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+                                </TabItem>
+                            </TabControl>
+                        </DockPanel>
+                    </Border>
+                    </Grid>
+                    <GridSplitter x:Name="CodeEditorEnvironmentSplitter"
+                                  Grid.Row="2"
+                                  Visibility="Visible"
+                                  Height="6"
+                                  HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Stretch"
+                                  Background="#3A4A8A"
+                                  ShowsPreview="False"
+                                  ResizeDirection="Rows"
+                                  ResizeBehavior="PreviousAndNext"
+                                  ToolTip="Высота панели Environment" />
+                    <Border x:Name="CodeEditorEnvironmentPanel"
+                            Grid.Row="3"
+                            Visibility="Visible"
+                            BorderBrush="#3A4A8A"
+                            BorderThickness="0,1,0,0"
+                            Background="#060A18"
+                            Padding="4,6,4,4"
+                            MinHeight="120">
+                        <TabControl Background="Transparent"
+                                    BorderThickness="0"
+                                    ItemContainerStyle="{StaticResource CodeEditorDebuggerTabItem}">
+                            <TabItem Header="Logs">
+                                <TextBox x:Name="CodeEditorEnvLogsTextBox"
+                                         AcceptsReturn="True"
+                                         IsReadOnly="True"
+                                         TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         HorizontalScrollBarVisibility="Auto"
+                                         FontFamily="Consolas"
+                                         FontSize="12"
+                                         Background="#0C1332"
+                                         Foreground="#C8D8F0"
+                                         BorderThickness="0" />
+                            </TabItem>
+                            <TabItem Header="Networks">
+                                <TextBox x:Name="CodeEditorEnvNetworksTextBox"
+                                         AcceptsReturn="True"
+                                         IsReadOnly="True"
+                                         TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         HorizontalScrollBarVisibility="Auto"
+                                         FontFamily="Consolas"
+                                         FontSize="12"
+                                         Background="#0C1332"
+                                         Foreground="#A8E8C8"
+                                         BorderThickness="0" />
+                            </TabItem>
+                            <TabItem Header="Requests">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="2*" MinHeight="80" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" MinHeight="60" />
+                                    </Grid.RowDefinitions>
+                                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
+                                        <Button Padding="14,4" Click="CodeEditorHttpSend_Click" Content="Send" />
+                                        <Button Margin="8,0,0,0" Padding="14,4" Click="CodeEditorHttpClearResponse_Click" Content="Clear response" />
+                                    </StackPanel>
+                                    <avalon:TextEditor x:Name="HttpScratchEditor"
+                                                       Grid.Row="1"
+                                                       FontFamily="Consolas"
+                                                       FontSize="12"
+                                                       ShowLineNumbers="True"
+                                                       Foreground="#DDE8FF"
+                                                       Background="#0A1228"
+                                                       HorizontalScrollBarVisibility="Auto"
+                                                       VerticalScrollBarVisibility="Auto"
+                                                       WordWrap="False" />
+                                    <TextBlock Grid.Row="2"
+                                               Margin="0,4,0,4"
+                                               Foreground="#8FA3D4"
+                                               Text="Response" />
+                                    <TextBox x:Name="HttpScratchResponseTextBox"
+                                             Grid.Row="3"
+                                             AcceptsReturn="True"
+                                             IsReadOnly="True"
+                                             TextWrapping="Wrap"
+                                             VerticalScrollBarVisibility="Auto"
+                                             HorizontalScrollBarVisibility="Auto"
+                                             FontFamily="Consolas"
+                                             FontSize="11"
+                                             Background="#050810"
+                                             Foreground="#B0C4E8"
+                                             BorderThickness="0" />
+                                </Grid>
+                            </TabItem>
+                            <TabItem Header="Console">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBox x:Name="CodeEditorEnvConsoleTextBox"
+                                             Grid.Row="0"
+                                             AcceptsReturn="True"
+                                             IsReadOnly="True"
+                                             TextWrapping="Wrap"
+                                             VerticalScrollBarVisibility="Auto"
+                                             HorizontalScrollBarVisibility="Auto"
+                                             FontFamily="Consolas"
+                                             FontSize="12"
+                                             Background="#050810"
+                                             Foreground="#E0E8FA"
+                                             BorderThickness="0" />
+                                    <Grid Grid.Row="1" Margin="0,8,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="CodeEditorEnvConsoleInputTextBox"
+                                                 Grid.Column="0"
+                                                 MinHeight="28"
+                                                 Padding="8,4"
+                                                 VerticalContentAlignment="Center"
+                                                 Background="#0A1228"
+                                                 Foreground="#EAF1FF"
+                                                 BorderBrush="#3A4A8A"
+                                                 PreviewKeyDown="CodeEditorEnvConsoleInputTextBox_PreviewKeyDown" />
+                                        <Button Grid.Column="1"
+                                                Margin="8,0,0,0"
+                                                Padding="14,4"
+                                                Click="CodeEditorEnvConsoleSend_Click"
+                                                Content="Send" />
+                                    </Grid>
+                                </Grid>
+                            </TabItem>
+                        </TabControl>
+                    </Border>
                 </Grid>
 
                 <Grid x:Name="VaultPanel" Visibility="Collapsed">
@@ -182,7 +770,6 @@
                         <Button Margin="8,0,0,0" Click="VaultAdd_Click">Add Item</Button>
                         <Button Margin="8,0,0,0" Click="VaultDelete_Click">Delete Item</Button>
                         <Button Margin="8,0,0,0" Click="VaultSave_Click">Save</Button>
-                        <CheckBox x:Name="ShowSensitiveCheckBox" Margin="14,5,0,0" Checked="ShowSensitiveChanged" Unchecked="ShowSensitiveChanged">Show sensitive</CheckBox>
                     </StackPanel>
                     <DataGrid x:Name="VaultItemsGrid" Grid.Row="1" AutoGenerateColumns="False" CanUserAddRows="False" SelectionChanged="VaultItemsGrid_SelectionChanged"
                               Background="#111A3F" Foreground="#EAF1FF" BorderBrush="#3A4A8A">
@@ -194,10 +781,93 @@
                         </DataGrid.Columns>
                     </DataGrid>
                     <DataGrid x:Name="VaultStoreGrid" Grid.Column="1" Grid.Row="1" Margin="12,0,0,0" AutoGenerateColumns="False" CanUserAddRows="True"
-                              Background="#111A3F" Foreground="#EAF1FF" BorderBrush="#3A4A8A">
+                              Background="#111A3F" Foreground="#EAF1FF" BorderBrush="#3A4A8A"
+                              BeginningEdit="VaultStoreGrid_BeginningEdit">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Key" Binding="{Binding Key}" Width="200" />
-                            <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="*" />
+                            <DataGridTemplateColumn Header="Value" Width="*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,2">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid Grid.Column="0" MinWidth="80">
+                                                <TextBlock VerticalAlignment="Center"
+                                                           Padding="4,2"
+                                                           Text="{Binding ValueDisplay}"
+                                                           TextTrimming="CharacterEllipsis">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                            <Style.Triggers>
+                                                                <MultiDataTrigger>
+                                                                    <MultiDataTrigger.Conditions>
+                                                                        <Condition Binding="{Binding IsSensitive}" Value="True" />
+                                                                        <Condition Binding="{Binding SensitiveRevealed}" Value="False" />
+                                                                    </MultiDataTrigger.Conditions>
+                                                                    <Setter Property="Visibility" Value="Visible" />
+                                                                </MultiDataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                                <TextBox Padding="2"
+                                                         MinHeight="22"
+                                                         VerticalContentAlignment="Center"
+                                                         Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}">
+                                                    <TextBox.Style>
+                                                        <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                            <Style.Triggers>
+                                                                <MultiDataTrigger>
+                                                                    <MultiDataTrigger.Conditions>
+                                                                        <Condition Binding="{Binding IsSensitive}" Value="True" />
+                                                                        <Condition Binding="{Binding SensitiveRevealed}" Value="False" />
+                                                                    </MultiDataTrigger.Conditions>
+                                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                                </MultiDataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBox.Style>
+                                                </TextBox>
+                                            </Grid>
+                                            <Button Grid.Column="1"
+                                                    Margin="6,0,0,0"
+                                                    Padding="8,4"
+                                                    VerticalAlignment="Center"
+                                                    Click="VaultSensitiveReveal_Click"
+                                                    Content="{Binding RevealButtonCaption}">
+                                                <Button.Style>
+                                                    <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsSensitive}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+                                            <Button Grid.Column="2"
+                                                    Margin="6,0,0,0"
+                                                    Padding="8,4"
+                                                    VerticalAlignment="Center"
+                                                    Click="VaultCopyValue_Click"
+                                                    Content="Копировать"
+                                                    ToolTip="Скопировать значение в буфер обмена" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                                <DataGridTemplateColumn.CellEditingTemplate>
+                                    <DataTemplate>
+                                        <TextBox MinHeight="22"
+                                                 Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}" />
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellEditingTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridCheckBoxColumn Header="Sensitive" Binding="{Binding IsSensitive}" Width="95" IsReadOnly="True" />
                         </DataGrid.Columns>
                     </DataGrid>

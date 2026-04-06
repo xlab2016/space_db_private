@@ -1,44 +1,46 @@
-# Space.OS.Terminal — сжатый контекст для продолжения работы
+# Space.OS.Terminal — контекст
 
-## Назначение
+WPF: workspace, AvalonEdit `.agi`, AGI debugger, vault, monitor. Refs: `Magic.Kernel`, `Magic.Kernel.Terminal`.
 
-WPF-приложение: воркспейс, редактор `.agi` (AvalonEdit), отладчик AGI, vault, монитор исполнения. Ссылается на `Magic.Kernel`, `Magic.Kernel.Terminal`.
+## Debugger UI (`MainWindow.xaml` / `.xaml.cs`)
+**Tabs:** `TabControl` — **Code** (`.agi`) и **Asm** (read-only листинг AGIASM из `ExecutableUnit.ToAgiasmText(source)`; справа от инструкций подсказки `//` с исходной строкой AGI). Подсветка Asm: `MagicAgiasmColorizer`; margin брейкпоинтов как у AGI.
 
-## Отладчик в редакторе (`MainWindow.xaml` / `MainWindow.xaml.cs`)
+**Hotkeys** (code editor, без модификаторов):
+- **Code:** F5 Debug, F9 Continue, **F10** — шаг по **строке AGI** (`RequestStepOverLine`), **F11** — заход в вызов: на текущей строке AGI пропускает VM-шаги до `Call`/`ACall`/`CallObj`, затем пауза на первой инструкции callee (`RequestStepInto`).
+- **Asm:** F10 и F11 — шаг по **одной инструкции** (`RequestStepInstruction`).
+- **Attach (`_attachDebugSession != null`):** **F10 всегда = инструкция** (как на Asm), даже если активен таб Code — иначе при процедурном вызове казалось, что нужно два F10 (первый делал line-step, не совпадающий с ожиданием по ASM).
 
-- Кнопки: **Continue**, **Step**, **Step into**, **Step over**, **Stop** (рядом с **Debug**).
-- `InterpreterDebugSession`: **`BeginRun()`** перед `InterpreteAsync`, **`EndRun()`** в `finally`; иначе нет рабочего `ContinueCancellationToken`.
-- Команды с UI: **`RequestContinue`**, **`RequestStepInstruction`**, **`RequestStepInto`** (сейчас = step instruction), **`RequestStepOverLine`**, **`RequestStop`**. Раньше был несуществующий **`Continue()`** — заменён.
-- **`SetDebugToolbarPaused(true|false)`**: при паузе (`PausedAtLine`) включаются все пять кнопок; после отправки команды — выключаются до следующей паузы.
-- Breakpoints: `HashSet<int> _agiBreakpoints` + margin в редакторе; копируются в `session.Breakpoints` перед запуском.
+Toolbar icons; `SetDebugToolbarPaused` — **Stop** enabled while `_activeDebugSession` / `_attachDebugSession` alive (not only on line pause).
 
-## Интерпретатор (`Magic.Kernel` / `Interpretation`)
+**Breakpoints:** AGI (`_agiBreakpoints`) + ASM по номеру строки листинга (`_asmBreakpoints`); `session.ReplaceBreakpointsFrom(agi, asm)`. Событие паузы: `PausedAtDebugLocation(sourceLine, asmListingLine)` (не только `PausedAtLine`).
 
-- **`Interpreter.DebugSession`**: пауза через **`MaybeDebugPauseBeforeExecuteAsync`** (breakpoint / step-over на другую `SourceLine`), после инструкции — **`MaybeDebugPauseAfterInstructionAsync`** (step на одну инструкцию).
-- **`DebugResumeAction`**: Run, StepOverLine, StepInstruction, Stop; **`ApplyDebugResumeAction`** выставляет `_debugSkipSourceLine`, `_breakOnDifferentSourceLine` / `_stepOverAnchorLine`, `_instructionStepsRemaining`.
-- **Stop**: отмена токена + `ReleaseGate`; возможен **`OperationCanceledException`** → `InterpreteAsync` / `InterpreteFromEntryAsync` возвращают `Success = false`.
+**Session:** `BeginRun()` before interpret, `EndRun()` in `finally`. API: `RequestContinue`, `RequestStepOverLine`, `RequestStepInstruction`, `RequestStop` (no legacy `Continue`).
 
-## Компиляция и строки исходника (`SemanticAnalyzer` / `StatementLoweringCompiler`)
+**Attach Stop:** only `RequestStop()` — not immediate `Detach` (else `DebugSession` cleared before cancel). Detach runs from `OnInterpreterAttachRegistryUnregistered` when the runtime task exits.
 
-- **Breakpoints на 2-й и далее строках**: раньше `FlushStatementLines` склеивал несколько строк в один `Lower` и **`SourceLine` брался только у первой** → ко второму breakpoint не попадали. Сейчас **по одной строке на вызов `Lower`**, затем проставляется `InstructionNode.SourceLine` из AST.
-- **Регрессия после пофиксеного `SourceLine`**: отдельный `Lower` на строку сбрасывал **`vars`** → локальные `var x := …` не были видны на следующей строке (пример: `Cannot compile if condition: 'authentication.isAuthenticated'`). Исправление: **`_crossLineVarState`** в `StatementLoweringCompiler` + **`BeginStatementSequence()`**; в начале `Lower` мержится состояние, в конце — обновляется из `vars`; **`_localSlots` (параметры процедуры)** после этого снова накладываются и перекрывают имена.
-- **`SemanticAnalyzer`**: `BeginStatementSequence()` — перед prelude; снова перед entrypoint (без протекания локалей prelude); для **каждого** `procCompiler` после `InheritGlobalSlots`; **перед каждой** function в цикле.
+**Memory/Stack:** `DebuggerMemoryRow` / `DebuggerStackRow` + `InspectTreeRoots` → row details `TreeView`; formatting in `InterpreterDebugSnapshot.cs` (`TryBuildInspectRoot`, `BuildInspectTree`, sensitive keys, `ClawStreamDevice` bindings). Vault: `Vault.GetDebugSections()`.
 
-## Полезные пути
+## Kernel (`Magic.Kernel`)
+- **Asm listing:** после компиляции `ExecutableUnitAsmListing.StampListingLineNumbers`; у `Command` поле `AsmListingLine` (не в `.agic` JSON). Сериализация: `ExecutableUnitTextSerializer.Serialize(unit, agiSource?)`.
+- **Pause:** `MaybeDebugPauseBeforeExecuteAsync` / `MaybeDebugPauseAfterInstructionAsync`; UI получает «текущую» позицию после шага с учётом уже сдвинутого IP (`GetDebugLinesForNextInstruction` и т.п.). При паузе **после** инструкции + `StepInstruction`: one-shot пропуск повторной остановки на том же AGI/ASM breakpoint (`_debugOneShotSkip*`, `_debugPausedAfterInstruction` в `ApplyDebugResumeAction`).
+- **ContinueCancellationToken.ThrowIfCancellationRequested** каждую инструкцию при установленной сессии.
+- **Await + Stop:** `ExecuteAwait*` uses `WaitAsync(DebugContinueCancellationToken)`.
+- **Exit:** `InterpreteAsync` / `InterpreteFromEntryAsync` `finally` → `CloseOwnedDefStreamsAsync` (memory + stack + `ClawStreamDevice.IsHostedByInterpreter`).
+- **`StreamDevice.CloseAsync`:** forwards to `Generalizations` (inner claw).
+- **`DefStream`:** registry key `long`; `UnregisterFromStreamRegistry()` in `CloseAsync` (claw + stream wrapper). `ClawStreamDevice.CloseAsync` → `CleanupListenerAfterServerEnded()`.
 
-| Область        | Файл |
-|----------------|------|
-| UI отладки     | `Space.OS.Terminal/MainWindow.xaml`, `MainWindow.xaml.cs` |
-| Сессия отладки | `Magic.Kernel/Interpretation/InterpreterDebugSession.cs` |
-| Паузы в цикле  | `Magic.Kernel/Interpretation/Interpreter.cs` |
-| Lower / vars   | `Magic.Kernel/Compilation/StatementLoweringCompiler.cs` |
-| Flush + lines  | `Magic.Kernel/Compilation/SemanticAnalyzer.cs` |
-| Пример claw    | `design/Space/samples/claw/client_claw.agi` |
+## Monitor (`TerminalMonitorService` + `MainWindow`)
+- Streams dedup by **object reference**, not name+type.
+- While debug/attach + monitor tab visible: periodic `RefreshMonitor` (~2s via console timer) + on breakpoint pause.
+- **Exes:** only records with `!EndedAtUtc` (finished debug/startup rows hidden).
 
-## Сборка
+## Paths
+| UI / monitor / Asm tab | `Space.OS.Terminal/MainWindow.xaml(.cs)`, `MagicAgiasmColorizer.cs` |
+| Inspect | `Magic.Kernel/Interpretation/InterpreterDebugSnapshot.cs`, `Interpreter.DebugSnapshot.cs` |
+| Session | `InterpreterDebugSession.cs` |
+| Loop / cleanup / debug step | `Interpreter.cs` |
+| Asm listing / compile | `ExecutableUnitAsmListing.cs`, `ExecutableUnitTextSerializer.cs`, `ExecutableUnit.cs`, `Compiler.cs`, `Command.cs` |
+| Vault | `Magic.Kernel/Devices/Store/Vault.cs` |
+| Claw sample | `design/Space/samples/claw/client_claw.agi` |
 
-```bash
-dotnet build src/Space.OS.Terminal/Space.OS.Terminal.csproj
-```
-
-Дата контекста: 2026-03-27.
+`dotnet build src/Space.OS.Terminal/Space.OS.Terminal.csproj` — 2026-03-28.

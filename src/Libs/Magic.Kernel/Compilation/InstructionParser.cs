@@ -102,6 +102,7 @@ namespace Magic.Kernel.Compilation
                     instruction.Parameters = ParsePushParametersFromTokens();
                     break;
                 case "def":
+                case "defobj":
                 case "awaitobj":
                 case "await":
                 case "streamwaitobj":
@@ -114,6 +115,11 @@ namespace Magic.Kernel.Compilation
                 case "equals":
                 case "not":
                 case "lt":
+                case "add":
+                case "sub":
+                case "mul":
+                case "div":
+                case "pow":
                     instruction.Parameters = new List<ParameterNode>();
                     break;
                 case "lambda":
@@ -274,6 +280,14 @@ namespace Magic.Kernel.Compilation
                     _scanner.Scan(); // consume optional ":"
                 var strTok = Expect(TokenKind.StringLiteral);
                 return new List<ParameterNode> { new StringParameterNode { Name = "string", Value = strTok.Value } };
+            }
+            if (_scanner.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("class", StringComparison.OrdinalIgnoreCase))
+            {
+                _scanner.Scan(); // consume "class"
+                if (_scanner.Current.Kind == TokenKind.Colon)
+                    _scanner.Scan(); // consume optional ":"
+                var classTok = Expect(TokenKind.StringLiteral);
+                return new List<ParameterNode> { new ClassLiteralParameterNode { Name = "class", ClassName = classTok.Value } };
             }
             if (_scanner.Current.Kind == TokenKind.Identifier && _scanner.Current.Value.Equals("address", StringComparison.OrdinalIgnoreCase))
             {

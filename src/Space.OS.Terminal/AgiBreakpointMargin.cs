@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -8,15 +9,17 @@ using ICSharpCode.AvalonEdit.Rendering;
 
 namespace Space.OS.Terminal;
 
-/// <summary>Клик по полю слева от номеров строк — вкл/выкл breakpoint (1-based, как в документе).</summary>
+/// <summary>Клик по полю слева от номеров строк — вкл/выкл breakpoint (1-based) для конкретного .agi.</summary>
 internal sealed class AgiBreakpointMargin : AbstractMargin
 {
-    private readonly HashSet<int> _breakpoints;
+    private readonly Func<string> _getFilePath;
+    private readonly Dictionary<string, HashSet<int>> _breakpointsByPath;
     private readonly Action? _onBreakpointsChanged;
 
-    public AgiBreakpointMargin(HashSet<int> breakpoints, Action? onBreakpointsChanged = null)
+    public AgiBreakpointMargin(Func<string> getFilePath, Dictionary<string, HashSet<int>> breakpointsByPath, Action? onBreakpointsChanged = null)
     {
-        _breakpoints = breakpoints;
+        _getFilePath = getFilePath;
+        _breakpointsByPath = breakpointsByPath;
         _onBreakpointsChanged = onBreakpointsChanged;
         ClipToBounds = false;
     }
@@ -44,10 +47,17 @@ internal sealed class AgiBreakpointMargin : AbstractMargin
         if (textView == null || !textView.VisualLinesValid)
             return;
 
+        var path = _getFilePath();
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+        var key = Path.GetFullPath(path);
+        if (!_breakpointsByPath.TryGetValue(key, out var bps))
+            return;
+
         foreach (var line in textView.VisualLines)
         {
             var ln = line.FirstDocumentLine.LineNumber;
-            if (!_breakpoints.Contains(ln))
+            if (!bps.Contains(ln))
                 continue;
 
             var y = line.GetTextLineVisualYPosition(line.TextLines[0], VisualYPosition.TextTop) - textView.VerticalOffset;
@@ -62,6 +72,11 @@ internal sealed class AgiBreakpointMargin : AbstractMargin
         if (TextView == null)
             return;
 
+        var path = _getFilePath();
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+        var key = Path.GetFullPath(path);
+
         var pos = e.GetPosition(TextView);
         pos.Y += TextView.VerticalOffset;
         var vl = TextView.GetVisualLineFromVisualTop(pos.Y);
@@ -69,8 +84,14 @@ internal sealed class AgiBreakpointMargin : AbstractMargin
             return;
 
         var ln = vl.FirstDocumentLine.LineNumber;
-        if (!_breakpoints.Add(ln))
-            _breakpoints.Remove(ln);
+        if (!_breakpointsByPath.TryGetValue(key, out var set))
+        {
+            set = new HashSet<int>();
+            _breakpointsByPath[key] = set;
+        }
+
+        if (!set.Add(ln))
+            set.Remove(ln);
 
         _onBreakpointsChanged?.Invoke();
 

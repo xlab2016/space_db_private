@@ -11,9 +11,24 @@ Authorization: {{loginReq.response.body.token}}
 {
   "method": "call",
   "data": {
-    "command": "hello_world"
+    "command": "operate",
+    "object": "db",
+    "method": "read",
+    "sql": "SELECT * FROM \"Messages\" limit 100"
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 ### Get JWT access token by password and user login
 # @name loginReq

@@ -281,9 +281,12 @@ namespace Magic.Kernel.Compilation
                     break;
                 }
 
-                // "Db> : ..." -> consume '>' as symbolic suffix when declaration-like boundary follows
+                // "Db> : ..." -> consume '>' as symbolic suffix when declaration-like boundary follows.
+                // Skip when the identifier opens a generic type arg (`float<decimal>:`): '>' must stay a token.
                 if (_source[i] == '>' && NextNonWhitespaceChar(i + 1) == ':')
                 {
+                    if (start > 0 && _source[start - 1] == '<')
+                        break;
                     i += 1;
                     consumedSymbolicSuffix = true;
                     break;

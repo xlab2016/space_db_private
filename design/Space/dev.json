@@ -2,7 +2,7 @@
 	"debug": "",
 	"executionUnits": [
 		{
-			"path": "samples/claw/client_claw.agi",
+			"path": "samples/telegram_to_db.agi",
 			"instanceCount": 1
 		}
 	]

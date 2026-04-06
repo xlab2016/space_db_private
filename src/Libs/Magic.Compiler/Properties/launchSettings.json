@@ -2,7 +2,7 @@
   "profiles": {
     "Magic.Compiler": {
       "commandName": "Project",
-      "commandLineArgs": "\"telegram_to_db.agi\""
+      "commandLineArgs": "\"c:\\dev\\DTAI\\space_db_private\\design\\Space\\samples\\modularity\\use_module1.agi\""
     }
   }
 }

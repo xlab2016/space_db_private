@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using FluentAssertions;
 using Magic.Kernel;
+using Magic.Kernel.Core;
 using Magic.Kernel.Interpretation;
 using Magic.Kernel.Processor;
 using Magic.Kernel.Types;
@@ -304,6 +305,38 @@ namespace Magic.Kernel.Tests.Interpretation
             handled.Should().BeTrue();
             stack.Should().HaveCount(1);
             stack[0].Should().Be("Size 42 exceeded mb");
+        }
+
+        [Fact]
+        public async Task Format_DefObject_SubstitutesConstructorStyle_NotJson()
+        {
+            var pointType = new DefType { Name = "Point", Namespace = "" };
+            pointType.Fields.Add(new DefTypeField { Name = "X", Type = "int" });
+            pointType.Fields.Add(new DefTypeField { Name = "Y", Type = "int" });
+            var p = new DefObject(pointType);
+            p.SetField("X", 1L);
+            p.SetField("Y", 2L);
+
+            var stack = new List<object>();
+            var memory = new Dictionary<long, object>();
+            var cfg = new KernelConfiguration();
+            var sys = new SystemFunctions(cfg, stack, memory);
+
+            var callInfo = new CallInfo
+            {
+                FunctionName = "format",
+                Parameters = new Dictionary<string, object>
+                {
+                    ["0"] = "p={0}",
+                    ["1"] = p
+                }
+            };
+
+            var handled = await sys.ExecuteAsync(callInfo);
+
+            handled.Should().BeTrue();
+            stack.Should().HaveCount(1);
+            stack[0].Should().BeOfType<string>().Which.Should().Be("p=Point(X: 1, Y: 2)");
         }
     }
 }

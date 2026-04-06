@@ -125,7 +125,12 @@ public sealed class SimulatorRunService
             }
 
             execHost.UnitArtifact = artifact;
-            return await execHost.RunAllInstancesAsync(new RunCommand { Type = RunType.NewThread, InstanceCount = unit.InstanceCount }).ConfigureAwait(false);
+            return await execHost.RunAllInstancesAsync(new RunCommand
+            {
+                Type = RunType.NewThread,
+                InstanceCount = unit.InstanceCount,
+                SourcePath = fullPath
+            }).ConfigureAwait(false);
         }
 
         if (extension == ".agi")
@@ -133,7 +138,12 @@ public sealed class SimulatorRunService
             artifact.Type = ArtifactType.Agi;
             artifact.Body = await File.ReadAllTextAsync(fullPath).ConfigureAwait(false);
             execHost.UnitArtifact = artifact;
-            return await execHost.RunAllInstancesAsync(new RunCommand { Type = RunType.NewThread, InstanceCount = unit.InstanceCount }).ConfigureAwait(false);
+            return await execHost.RunAllInstancesAsync(new RunCommand
+            {
+                Type = RunType.NewThread,
+                InstanceCount = unit.InstanceCount,
+                SourcePath = fullPath
+            }).ConfigureAwait(false);
         }
 
         Console.Error.WriteLine($"Unsupported file extension in executionUnits config: {extension}. Expected .agi, .agic or .agiasm");

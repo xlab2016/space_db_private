@@ -1,3 +1,5 @@
+using System.Collections;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Magic.Kernel.Data;
@@ -17,12 +19,12 @@ namespace Magic.Kernel.Devices.Store
 
         public async Task OpenAsync(string connectionString, DatabaseDevice database)
         {
-            await _driver.OpenAsync(connectionString, database).ConfigureAwait(false);
+            _connectionString = await _driver.OpenAsync(connectionString, database).ConfigureAwait(false);
         }
 
         public async Task EnsureDatabaseAndSchemaAsync(string connectionString, DatabaseDevice database)
         {
-            await _driver.EnsureDatabaseAndSchemaAsync(connectionString, database).ConfigureAwait(false);
+            _connectionString = await _driver.EnsureDatabaseAndSchemaAsync(connectionString, database).ConfigureAwait(false);
         }
 
         public async Task FlushPendingRowsAsync(string connectionString, DatabaseDevice database)
@@ -62,9 +64,27 @@ namespace Magic.Kernel.Devices.Store
                 if (args == null || args.Length == 0 || args[0] is not string connectionString || string.IsNullOrWhiteSpace(connectionString))
                     throw new ArgumentException("Database.open requires connection string as first argument.");
                 await OpenAsync(connectionString, database).ConfigureAwait(false);
-                _connectionString = connectionString;
                 _isOpened = true;
                 return this;
+            }
+
+            if (string.Equals(name, "close", StringComparison.OrdinalIgnoreCase))
+            {
+                if (_isOpened && Database != null && !string.IsNullOrWhiteSpace(_connectionString))
+                    await FlushPendingRowsAsync(_connectionString, Database).ConfigureAwait(false);
+                _isOpened = false;
+                _connectionString = "";
+                return this;
+            }
+
+            if (string.Equals(name, "read", StringComparison.OrdinalIgnoreCase))
+            {
+                EnsureOpened();
+                var sql = TryExtractReadSql(args);
+                if (string.IsNullOrWhiteSpace(sql))
+                    throw new ArgumentException("Database.read requires { instruction: \"...\" } or a SQL string argument.");
+                var rows = await _driver.ReadSqlAsync(_connectionString, database, sql).ConfigureAwait(false);
+                return rows;
             }
 
             if (string.Equals(name, "ensure", StringComparison.OrdinalIgnoreCase))
@@ -128,5 +148,40 @@ namespace Magic.Kernel.Devices.Store
 
         private static string SanitizeTableName(string tableName)
             => (tableName ?? string.Empty).Replace("<", string.Empty).Replace(">", string.Empty);
+
+        private static string? TryExtractReadSql(object?[]? args)
+        {
+            if (args == null || args.Length == 0)
+                return null;
+            var a0 = args[0];
+            if (a0 is string s)
+                return s;
+            if (a0 is IDictionary<string, object?> d0)
+            {
+                foreach (var kv in d0)
+                {
+                    if (string.Equals(kv.Key, "instruction", StringComparison.OrdinalIgnoreCase))
+                        return kv.Value?.ToString();
+                }
+            }
+            if (a0 is IDictionary<string, object> d1)
+            {
+                foreach (var kv in d1)
+                {
+                    if (string.Equals(kv.Key, "instruction", StringComparison.OrdinalIgnoreCase))
+                        return kv.Value?.ToString();
+                }
+            }
+            if (a0 is IDictionary raw)
+            {
+                foreach (DictionaryEntry e in raw)
+                {
+                    if (e.Key is string k && string.Equals(k, "instruction", StringComparison.OrdinalIgnoreCase))
+                        return e.Value?.ToString();
+                }
+            }
+
+            return null;
+        }
     }
 }

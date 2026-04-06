@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Magic.Kernel.Core;
 using Magic.Kernel.Devices;
@@ -50,8 +51,17 @@ namespace Magic.Kernel.Types
                     return Task.FromResult<object?>((long)Items.Count);
 
                 case "get":
-                    if (args != null && args.Length > 0 && args[0] is long idx)
-                        return Task.FromResult<object?>(idx >= 0 && idx < Items.Count ? Items[(int)idx] : null);
+                    if (args != null && args.Length > 0)
+                    {
+                        long idx = args[0] switch
+                        {
+                            long l => l,
+                            int ii => ii,
+                            _ => -1L
+                        };
+                        if (idx >= 0 && idx < Items.Count)
+                            return Task.FromResult<object?>(Items[(int)idx]);
+                    }
                     return Task.FromResult<object?>(null);
 
                 case "clear":
@@ -65,5 +75,17 @@ namespace Magic.Kernel.Types
 
         public virtual Task<(bool IsEnd, object? Delta, object? Aggregate)> StreamWaitAsync(string streamWaitType)
             => Task.FromResult((true, (object?)null, (object?)null));
+
+        public override string ToString()
+        {
+            var label = string.IsNullOrWhiteSpace(Name) ? "list" : Name.Trim();
+            if (Items.Count == 0)
+                return $"DefList({label}, count=0)";
+
+            const int max = 6;
+            var preview = string.Join(", ", Items.Take(max).Select(x => DefValueFormatter.Format(x, 0)));
+            var tail = Items.Count > max ? $", …+{Items.Count - max}" : "";
+            return $"DefList({label}, count={Items.Count}, [{preview}{tail}])";
+        }
     }
 }

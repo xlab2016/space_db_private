@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Magic.Kernel.Core;
@@ -8,6 +10,18 @@ namespace Magic.Kernel.Terminal.Services;
 public sealed class TerminalWorkspaceService
 {
     private static readonly string[] SensitiveMarkers = ["password", "secret", "token", "key", "credential", "jwt", "auth"];
+
+    private static readonly JsonSerializerOptions IndentedWriteOptions = new()
+    {
+        WriteIndented = true,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
+    private static readonly JsonSerializerOptions CompactWriteOptions = new()
+    {
+        WriteIndented = false,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
 
     public List<ExecutionUnitItem> LoadExecutionUnits(string spaceConfigPath)
     {
@@ -103,7 +117,7 @@ public sealed class TerminalWorkspaceService
             var storeObj = new JsonObject();
             foreach (var kv in item.Store)
             {
-                storeObj[kv.Key] = JsonValue.Create(kv.Value?.ToString());
+                storeObj[kv.Key] = ObjectToJsonNode(kv.Value);
             }
 
             root.Add(new JsonObject
@@ -122,27 +136,24 @@ public sealed class TerminalWorkspaceService
             Directory.CreateDirectory(dir);
         }
 
-        File.WriteAllText(resolvedPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(resolvedPath, root.ToJsonString(IndentedWriteOptions));
     }
 
-    public List<VaultStoreRow> ToRows(VaultItem item, bool includeSensitiveValues)
+    /// <summary>Всегда полные значения в памяти; маска только в UI до «Показать».</summary>
+    public List<VaultStoreRow> ToRows(VaultItem item)
     {
         return item.Store
             .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
             .Select(x =>
             {
                 var sensitive = IsSensitiveKey(x.Key);
-                var value = x.Value?.ToString() ?? string.Empty;
-                if (sensitive && !includeSensitiveValues)
-                {
-                    value = Mask(value);
-                }
-
+                var value = StoreValueToEditString(x.Value);
                 return new VaultStoreRow
                 {
                     Key = x.Key,
                     Value = value,
-                    IsSensitive = sensitive
+                    IsSensitive = sensitive,
+                    SensitiveRevealed = false
                 };
             })
             .ToList();
@@ -207,26 +218,11 @@ public sealed class TerminalWorkspaceService
             Directory.CreateDirectory(dir);
         }
 
-        File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(path, root.ToJsonString(IndentedWriteOptions));
     }
 
     private static bool IsSensitiveKey(string key)
         => SensitiveMarkers.Any(marker => key.Contains(marker, StringComparison.OrdinalIgnoreCase));
-
-    private static string Mask(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return string.Empty;
-        }
-
-        if (value.Length <= 4)
-        {
-            return "****";
-        }
-
-        return $"{value[..2]}***{value[^2..]}";
-    }
 
     private static object? JsonNodeToObject(JsonNode? node)
     {
@@ -235,11 +231,92 @@ public sealed class TerminalWorkspaceService
             return null;
         }
 
-        if (node is JsonValue value)
+        if (node is JsonObject obj)
         {
-            return value.ToJsonString().Trim('"');
+            return obj;
         }
 
-        return node.ToJsonString();
+        if (node is JsonArray arr)
+        {
+            return arr;
+        }
+
+        if (node is not JsonValue jv)
+        {
+            return node.ToJsonString();
+        }
+
+        var token = jv.ToJsonString();
+        using var doc = JsonDocument.Parse(token);
+        return doc.RootElement.ValueKind switch
+        {
+            JsonValueKind.Null => null,
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.Number => doc.RootElement.TryGetInt64(out var l) ? l : doc.RootElement.GetDouble(),
+            JsonValueKind.String => doc.RootElement.GetString() ?? "",
+            _ => token
+        };
+    }
+
+    private static JsonNode? ObjectToJsonNode(object? value)
+    {
+        switch (value)
+        {
+            case null:
+                return JsonNode.Parse("null");
+            case JsonObject o:
+                return o.DeepClone();
+            case JsonArray a:
+                return a.DeepClone();
+            case string s:
+                try
+                {
+                    return JsonNode.Parse(s);
+                }
+                catch (JsonException)
+                {
+                    return JsonValue.Create(s);
+                }
+            case bool b:
+                return JsonValue.Create(b);
+            case int i:
+                return JsonValue.Create(i);
+            case long l:
+                return JsonValue.Create(l);
+            case double d:
+                return JsonValue.Create(d);
+            case float f:
+                return JsonValue.Create(f);
+            case decimal m:
+                return JsonValue.Create(m);
+            default:
+                return JsonValue.Create(value.ToString() ?? "");
+        }
+    }
+
+    private static string StoreValueToEditString(object? v)
+    {
+        if (v is null)
+        {
+            return "";
+        }
+
+        if (v is JsonObject or JsonArray)
+        {
+            return ((JsonNode)v).ToJsonString(CompactWriteOptions);
+        }
+
+        if (v is bool b)
+        {
+            return b ? "true" : "false";
+        }
+
+        if (v is IFormattable fmt && v is not string)
+        {
+            return fmt.ToString(null, CultureInfo.InvariantCulture);
+        }
+
+        return v.ToString() ?? "";
     }
 }
