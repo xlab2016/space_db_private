@@ -758,15 +758,15 @@ namespace Magic.Kernel2.Compilation2
             var plusEqIdx = FindOperatorOutsideStrings(text, "+=");
             if (plusEqIdx > 0)
             {
-                var lhs = text.Substring(0, plusEqIdx).Trim();
-                if (!lhs.StartsWith("var ", StringComparison.OrdinalIgnoreCase) && IsValidLValue(lhs))
+                var compoundLhs = text.Substring(0, plusEqIdx).Trim();
+                if (!compoundLhs.StartsWith("var ", StringComparison.OrdinalIgnoreCase) && IsValidLValue(compoundLhs))
                 {
-                    var rhs = text.Substring(plusEqIdx + 2).Trim();
+                    var compoundRhs = text.Substring(plusEqIdx + 2).Trim();
                     result = new CompoundAssignmentStatement2
                     {
                         SourceLine = sourceLine,
-                        Target = ParseExpression(lhs, sourceLine),
-                        Value = ParseExpression(rhs, sourceLine),
+                        Target = ParseExpression(compoundLhs, sourceLine),
+                        Value = ParseExpression(compoundRhs, sourceLine),
                         Operator = "+"
                     };
                     return true;
