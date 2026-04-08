@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Magic.Kernel;
 using Magic.Kernel.Processor;
 using Magic.Kernel2.Compilation2.Ast2;
@@ -10,34 +11,395 @@ namespace Magic.Kernel2.Compilation2
     /// <summary>
     /// Magic compiler 2.0 assembler.
     /// <para>
-    /// Key difference from v1.0: this assembler walks the <strong>fully-typed AST</strong>
-    /// produced by <see cref="Parser2"/> and analyzed by <see cref="SemanticAnalyzer2"/>.
-    /// It generates <see cref="Command"/> bytecode directly from typed AST nodes —
-    /// no <c>StatementLoweringCompiler</c>, no re-parsing of raw text, no deferred lowering.
+    /// Walks the <strong>fully-typed AST</strong> produced by <see cref="Parser2"/> and
+    /// generates <see cref="Command"/> bytecode directly from typed AST nodes.
+    /// No <c>StatementLoweringCompiler</c>, no re-parsing of raw text, no deferred lowering.
     /// </para>
     /// </summary>
     public class Assembler2
     {
-        /// <summary>Emit bytecode for a type declaration (def/defobj preamble).</summary>
-        public List<Command> EmitTypeDeclaration(TypeDeclarationNode2 typeDecl, SymbolTable2 symbolTable)
+        /// <summary>
+        /// Assemble a complete program from its typed AST and symbol table.
+        /// This is the main entry point called by <see cref="Compiler2"/>.
+        /// Pipeline: typed AST → <see cref="ExecutableUnit"/> with all procedures, functions, and entrypoint.
+        /// </summary>
+        public ExecutableUnit Assemble(ProgramNode2 program, SymbolTable2 symbolTable)
         {
-            var commands = new List<Command>();
-            var scope = symbolTable.GlobalScope;
-
-            // Emit: push typeName; def
-            commands.Add(PushString(typeDecl.Name, typeDecl.SourceLine));
-            commands.Add(Emit(Opcodes.Def, typeDecl.SourceLine));
-
-            // Emit field definitions
-            foreach (var field in typeDecl.Fields)
+            var unit = new ExecutableUnit
             {
-                commands.Add(PushString(field.Name, typeDecl.SourceLine));
-                commands.Add(PushString(field.TypeSpec ?? "any", typeDecl.SourceLine));
-                commands.Add(Emit(Opcodes.Def, typeDecl.SourceLine));
+                Version = program.Version,
+                Name = program.ProgramName,
+                Module = program.Module,
+                System = program.System
+            };
+
+            // Assemble procedures.
+            foreach (var proc in program.Procedures)
+            {
+                var procedure = AssembleProcedure(proc, symbolTable);
+                unit.Procedures[proc.Name] = procedure;
             }
 
+            // Assemble functions.
+            foreach (var func in program.Functions)
+            {
+                var function = AssembleFunction(func, symbolTable);
+                unit.Functions[func.Name] = function;
+            }
+
+            // Assemble nested procedures/functions discovered during procedure body assembly.
+            foreach (var nested in symbolTable.NestedProcedures)
+            {
+                var nestedDecl = new ProcedureDeclarationNode2
+                {
+                    Name = nested.Name,
+                    Parameters = nested.Parameters,
+                    Body = nested.Body
+                };
+                var nestedProc = AssembleProcedure(nestedDecl, symbolTable);
+                unit.Procedures[nested.Name] = nestedProc;
+            }
+            foreach (var nested in symbolTable.NestedFunctions)
+            {
+                var nestedDecl = new FunctionDeclarationNode2
+                {
+                    Name = nested.Name,
+                    Parameters = nested.Parameters,
+                    Body = nested.Body
+                };
+                var nestedFunc = AssembleFunction(nestedDecl, symbolTable);
+                unit.Functions[nested.Name] = nestedFunc;
+            }
+
+            // Assemble entrypoint.
+            // The entrypoint runs: type declarations first (allocating slots 0..N),
+            // then the entrypoint body statements.
+            var entryScope = symbolTable.GlobalScope;
+            var entryBlock = new ExecutionBlock();
+
+            // Emit type declarations into the entrypoint (they allocate global slots 0..N).
+            foreach (var typeDecl in program.TypeDeclarations)
+            {
+                var typeCommands = EmitTypeDeclaration(typeDecl, entryScope);
+                entryBlock.AddRange(typeCommands);
+            }
+
+            // Emit entrypoint body statements.
+            if (program.EntryPoint != null)
+            {
+                foreach (var stmt in program.EntryPoint.Statements)
+                    EmitStatement(stmt, entryScope, entryBlock, isProcedure: false);
+            }
+
+            unit.EntryPoint = entryBlock;
+            return unit;
+        }
+
+        // ─── Procedure / Function assembly ───────────────────────────────────────
+
+        private Magic.Kernel.Processor.Procedure AssembleProcedure(
+            ProcedureDeclarationNode2 proc,
+            SymbolTable2 symbolTable)
+        {
+            var procedure = new Magic.Kernel.Processor.Procedure { Name = proc.Name };
+
+            // Create a fresh scope — procedure locals start after the global slots.
+            var scope = new ScopeSymbols2Private(symbolTable);
+
+            // Bind parameters: V1 convention is Pop (arity), then Pop [slot] for each param in reverse.
+            if (proc.Parameters.Count > 0)
+            {
+                procedure.Body.Add(Emit(Opcodes.Pop, 0));
+                for (var pi = proc.Parameters.Count - 1; pi >= 0; pi--)
+                {
+                    var slot = scope.AllocateLocal(proc.Parameters[pi].Name);
+                    procedure.Body.Add(PopSlot(slot, 0));
+                }
+            }
+
+            // Emit procedure body — collect nested procedures/functions first.
+            EmitBodyWithNested(proc.Body, scope, procedure.Body, isProcedure: true, symbolTable, procedure.Name);
+
+            // Ensure Ret at end.
+            if (procedure.Body.Count == 0 || procedure.Body[^1].Opcode != Opcodes.Ret)
+                procedure.Body.Add(Emit(Opcodes.Ret, 0));
+
+            return procedure;
+        }
+
+        private Magic.Kernel.Processor.Function AssembleFunction(
+            FunctionDeclarationNode2 func,
+            SymbolTable2 symbolTable)
+        {
+            var function = new Magic.Kernel.Processor.Function { Name = func.Name };
+            var scope = new ScopeSymbols2Private(symbolTable);
+
+            if (func.Parameters.Count > 0)
+            {
+                function.Body.Add(Emit(Opcodes.Pop, 0));
+                for (var pi = func.Parameters.Count - 1; pi >= 0; pi--)
+                {
+                    var slot = scope.AllocateLocal(func.Parameters[pi].Name);
+                    function.Body.Add(PopSlot(slot, 0));
+                }
+            }
+
+            EmitBodyWithNested(func.Body, scope, function.Body, isProcedure: false, symbolTable, func.Name);
+
+            if (function.Body.Count == 0 || function.Body[^1].Opcode != Opcodes.Ret)
+                function.Body.Add(Emit(Opcodes.Ret, 0));
+
+            return function;
+        }
+
+        /// <summary>
+        /// Emit body statements, extracting nested procedures/functions into the symbol table's
+        /// extra collection (they are emitted as procedures/functions at the program level by V1).
+        /// </summary>
+        private void EmitBodyWithNested(
+            BlockNode2 body,
+            ScopeSymbols2Private scope,
+            ExecutionBlock target,
+            bool isProcedure,
+            SymbolTable2 symbolTable,
+            string parentName)
+        {
+            foreach (var stmt in body.Statements)
+            {
+                if (stmt is NestedProcedureStatement2 nestedProc)
+                {
+                    // Nested procedures become top-level procedures in the unit.
+                    symbolTable.AddNestedProcedure(nestedProc);
+                    // No bytecode emitted inline for the declaration itself.
+                    continue;
+                }
+                if (stmt is NestedFunctionStatement2 nestedFunc)
+                {
+                    symbolTable.AddNestedFunction(nestedFunc);
+                    continue;
+                }
+
+                EmitStatement(stmt, scope, target, isProcedure);
+            }
+        }
+
+        // ─── Type declaration ─────────────────────────────────────────────────────
+
+        /// <summary>Emit bytecode for a type declaration into the given scope.</summary>
+        public List<Command> EmitTypeDeclaration(TypeDeclarationNode2 typeDecl, ScopeSymbols2 scope)
+        {
+            var commands = new List<Command>();
+            EmitTypeDeclarationInto(typeDecl, scope, commands);
             return commands;
         }
+
+        private void EmitTypeDeclarationInto(TypeDeclarationNode2 typeDecl, ScopeSymbols2 scope, List<Command> commands)
+        {
+            if (typeDecl.IsTable)
+                EmitTableDeclaration(typeDecl, scope, commands);
+            else if (typeDecl.IsDatabase)
+                EmitDatabaseDeclaration(typeDecl, scope, commands);
+            else
+                EmitSimpleTypeDeclaration(typeDecl, scope, commands);
+        }
+
+        private static void EmitSimpleTypeDeclaration(TypeDeclarationNode2 typeDecl, ScopeSymbols2 scope, List<Command> commands)
+        {
+            // push typeName; push 1 (or base count); def; pop [slot]
+            // For simple types: push typeName; def; pop [slot]
+            commands.Add(PushString(typeDecl.Name, typeDecl.SourceLine));
+            commands.Add(PushInt(1L, typeDecl.SourceLine));
+            commands.Add(Emit(Opcodes.Def, typeDecl.SourceLine));
+            var slot = scope.AllocateLocal(typeDecl.Name);
+            commands.Add(PopSlot(slot, typeDecl.SourceLine));
+        }
+
+        private static void EmitTableDeclaration(TypeDeclarationNode2 typeDecl, ScopeSymbols2 scope, List<Command> commands)
+        {
+            var slot = scope.AllocateLocal(typeDecl.Name);
+
+            // push tableName; push "table"; push 2; def; pop [slot]
+            commands.Add(PushString(typeDecl.Name, typeDecl.SourceLine));
+            commands.Add(PushString("table", typeDecl.SourceLine));
+            commands.Add(PushInt(2L, typeDecl.SourceLine));
+            commands.Add(Emit(Opcodes.Def, typeDecl.SourceLine));
+            commands.Add(PopSlot(slot, typeDecl.SourceLine));
+
+            // Each field becomes: push [slot]; push colName; push colType; push modifiers...; push "column"; push arity; def; pop [slot]
+            foreach (var field in typeDecl.Fields)
+            {
+                if (!TryParseColumnSpec(field.Name, field.TypeSpec ?? "", out var colName, out var colType, out var modifiers, out var isRelation, out var isArray))
+                    continue;
+
+                commands.Add(PushSlot(slot, typeDecl.SourceLine));
+                commands.Add(PushString(colName, typeDecl.SourceLine));
+                commands.Add(PushString(colType, typeDecl.SourceLine));
+
+                if (isRelation)
+                {
+                    commands.Add(PushString(isArray ? "array" : "single", typeDecl.SourceLine));
+                    commands.Add(PushString("relation", typeDecl.SourceLine));
+                    commands.Add(PushInt(5L, typeDecl.SourceLine));
+                }
+                else
+                {
+                    foreach (var mod in modifiers)
+                        commands.Add(PushString(mod, typeDecl.SourceLine));
+                    commands.Add(PushString("column", typeDecl.SourceLine));
+                    commands.Add(PushInt(4L + modifiers.Count, typeDecl.SourceLine));
+                }
+
+                commands.Add(Emit(Opcodes.Def, typeDecl.SourceLine));
+                commands.Add(PopSlot(slot, typeDecl.SourceLine));
+            }
+        }
+
+        private static void EmitDatabaseDeclaration(TypeDeclarationNode2 typeDecl, ScopeSymbols2 scope, List<Command> commands)
+        {
+            var slot = scope.AllocateLocal(typeDecl.Name);
+
+            // push dbName; push "database"; push 2; def; pop [slot]
+            commands.Add(PushString(typeDecl.Name, typeDecl.SourceLine));
+            commands.Add(PushString("database", typeDecl.SourceLine));
+            commands.Add(PushInt(2L, typeDecl.SourceLine));
+            commands.Add(Emit(Opcodes.Def, typeDecl.SourceLine));
+            commands.Add(PopSlot(slot, typeDecl.SourceLine));
+
+            // Each referenced table: push [dbSlot]; push [tableSlot]; push "table"; push 3; def; pop [dbSlot]
+            foreach (var field in typeDecl.Fields)
+            {
+                var tableRef = (field.TypeSpec ?? field.Name).Trim();
+                if (string.IsNullOrWhiteSpace(tableRef))
+                    tableRef = field.Name;
+
+                if (!scope.TryResolveSlot(tableRef, out var tableSlot, out _))
+                    continue;
+
+                commands.Add(PushSlot(slot, typeDecl.SourceLine));
+                commands.Add(PushSlot(tableSlot, typeDecl.SourceLine));
+                commands.Add(PushString("table", typeDecl.SourceLine));
+                commands.Add(PushInt(3L, typeDecl.SourceLine));
+                commands.Add(Emit(Opcodes.Def, typeDecl.SourceLine));
+                commands.Add(PopSlot(slot, typeDecl.SourceLine));
+            }
+        }
+
+        // ─── Column spec parsing (table column modifiers) ─────────────────────────
+
+        private static bool TryParseColumnSpec(
+            string fieldName,
+            string typeSpec,
+            out string columnName,
+            out string columnType,
+            out List<string> modifiers,
+            out bool isRelation,
+            out bool isArray)
+        {
+            columnName = fieldName.Trim();
+            columnType = "";
+            modifiers = new List<string>();
+            isRelation = false;
+            isArray = false;
+
+            var spec = typeSpec.Trim();
+            if (string.IsNullOrWhiteSpace(columnName) || string.IsNullOrWhiteSpace(spec))
+                return false;
+
+            // Try relation spec: single identifier that references another table type, or T[]
+            if (TryParseRelationSpec(spec, out var relationType, out var relationIsArray))
+            {
+                columnType = relationType;
+                isRelation = true;
+                isArray = relationIsArray;
+                return true;
+            }
+
+            // nullable?
+            var nullable = spec.EndsWith("?", StringComparison.Ordinal);
+            if (nullable)
+                spec = spec.Substring(0, spec.Length - 1).Trim();
+
+            // length modifier: nvarchar(250)
+            var lengthMatch = Regex.Match(spec, @"^(?<type>[A-Za-z_][A-Za-z0-9_]*)\((?<len>\d+)\)\s*(?<rest>.*)$", RegexOptions.IgnoreCase);
+            if (lengthMatch.Success)
+            {
+                columnType = lengthMatch.Groups["type"].Value.Trim().ToLowerInvariant();
+                modifiers.Add($"length:{lengthMatch.Groups["len"].Value.Trim()}");
+                spec = lengthMatch.Groups["rest"].Value.Trim();
+            }
+            else
+            {
+                var parts = spec.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 0)
+                    return false;
+                columnType = parts[0].Trim().ToLowerInvariant();
+                spec = string.Join(" ", parts.Skip(1)).Trim();
+            }
+
+            // Support nullable marker directly on type token, e.g. "int? index".
+            if (columnType.EndsWith("?", StringComparison.Ordinal))
+            {
+                nullable = true;
+                columnType = columnType.Substring(0, columnType.Length - 1).Trim();
+            }
+
+            if (string.IsNullOrWhiteSpace(columnType))
+                return false;
+
+            if (Regex.IsMatch(spec, @"\bprimary\s+key\b", RegexOptions.IgnoreCase))
+            {
+                modifiers.Add("primary key");
+                spec = Regex.Replace(spec, @"\bprimary\s+key\b", "", RegexOptions.IgnoreCase).Trim();
+            }
+            if (Regex.IsMatch(spec, @"\bidentity\b", RegexOptions.IgnoreCase))
+            {
+                modifiers.Add("identity");
+                spec = Regex.Replace(spec, @"\bidentity\b", "", RegexOptions.IgnoreCase).Trim();
+            }
+            if (!string.IsNullOrWhiteSpace(spec))
+                modifiers.Add(spec);
+
+            modifiers.Add(nullable ? "nullable:1" : "nullable:0");
+            return true;
+        }
+
+        private static readonly HashSet<string> BuiltinSqlTypeNames = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "bigint", "int", "integer", "smallint", "datetime", "timestamp", "date", "time",
+            "bool", "boolean", "decimal", "double", "float", "uuid", "json", "jsonb", "text",
+            "varchar", "nvarchar", "string", "any", "void", "object"
+        };
+
+        private static bool TryParseRelationSpec(string spec, out string referencedTableType, out bool isArray)
+        {
+            referencedTableType = "";
+            isArray = false;
+
+            var s = (spec ?? "").Trim();
+            if (s.Length == 0)
+                return false;
+
+            if (s.EndsWith("?", StringComparison.Ordinal))
+                s = s.Substring(0, s.Length - 1).Trim();
+
+            if (s.EndsWith("[]", StringComparison.Ordinal))
+            {
+                isArray = true;
+                s = s.Substring(0, s.Length - 2).Trim();
+            }
+
+            if (!Regex.IsMatch(s, @"^[A-Za-z_][A-Za-z0-9_]*(?:<>|>)?$"))
+                return false;
+
+            var normalizedType = s.Trim().ToLowerInvariant();
+            if (BuiltinSqlTypeNames.Contains(normalizedType))
+                return false;
+
+            referencedTableType = s;
+            return true;
+        }
+
+        // ─── Block / Statement emission ───────────────────────────────────────────
 
         /// <summary>
         /// Emit bytecode for a block of statements by walking each typed AST node directly.
@@ -89,8 +451,7 @@ namespace Magic.Kernel2.Compilation2
                     break;
 
                 case NestedProcedureStatement2 nested:
-                    // Nested procedures are handled at the SemanticAnalyzer2 level.
-                    // Here we emit a placeholder comment (nop).
+                    // Nested procedures are handled at the Assembler2 level — no inline bytecode.
                     result.Add(Emit(Opcodes.Nop, nested.SourceLine));
                     break;
 
@@ -148,8 +509,6 @@ namespace Magic.Kernel2.Compilation2
                 // Already have value on stack, need to push obj and field name, then setobj.
                 EmitExpression(memberAccess.Object, scope, result);
                 result.Add(PushString(memberAccess.MemberName, assign.SourceLine));
-                // Stack is now: [value, obj, fieldName] but setobj expects [obj, fieldName, value]
-                // We need to handle this ordering — for now we emit a setobj.
                 result.Add(Emit(Opcodes.SetObj, assign.SourceLine));
                 result.Add(Emit(Opcodes.Pop, assign.SourceLine));
             }
@@ -449,7 +808,7 @@ namespace Magic.Kernel2.Compilation2
             }
         }
 
-        private void EmitLiteral(LiteralExpression2 lit, ExecutionBlock result)
+        private static void EmitLiteral(LiteralExpression2 lit, ExecutionBlock result)
         {
             result.Add(lit.Kind switch
             {
@@ -486,7 +845,7 @@ namespace Magic.Kernel2.Compilation2
             });
         }
 
-        private void EmitVariableRef(VariableExpression2 varExpr, ScopeSymbols2 scope, ExecutionBlock result)
+        private static void EmitVariableRef(VariableExpression2 varExpr, ScopeSymbols2 scope, ExecutionBlock result)
         {
             if (scope.TryResolveSlot(varExpr.Name, out var slot, out var kind))
             {
@@ -756,4 +1115,15 @@ namespace Magic.Kernel2.Compilation2
         }
     }
 
+    /// <summary>
+    /// Private scope implementation used by <see cref="Assembler2"/> for procedure/function assembly.
+    /// Inherits the global slot counter from the symbol table so procedure slots continue after global ones.
+    /// </summary>
+    internal sealed class ScopeSymbols2Private : ScopeSymbols2
+    {
+        public ScopeSymbols2Private(SymbolTable2 table)
+            : base(table, new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase), new Dictionary<string, TypeDeclarationNode2>(StringComparer.OrdinalIgnoreCase), isGlobal: false)
+        {
+        }
+    }
 }

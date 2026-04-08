@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using Magic.Kernel.Compilation;
@@ -24,14 +23,15 @@ namespace Magic.Kernel2.Compilation2
     ///   <term>Semantic analysis on typed AST</term>
     ///   <description>
     ///     <see cref="SemanticAnalyzer2"/> walks typed AST nodes directly, building the symbol table
-    ///     (variable slots, type registrations, method signatures) without text re-parsing.
+    ///     (variable slots, type registrations) without text re-parsing and without any V1 calls.
     ///   </description>
     /// </item>
     /// <item>
-    ///   <term>No lowering phase</term>
+    ///   <term>Bytecode generation via Assembler2</term>
     ///   <description>
     ///     <see cref="Assembler2"/> generates executable <see cref="Command"/> bytecode by walking
-    ///     typed AST nodes directly. There is no <c>StatementLoweringCompiler</c> text-lowering step.
+    ///     typed AST nodes directly via <see cref="Assembler2.Assemble"/>. There is no
+    ///     <c>StatementLoweringCompiler</c> text-lowering step anywhere in the V2 pipeline.
     ///   </description>
     /// </item>
     /// </list>
@@ -40,11 +40,13 @@ namespace Magic.Kernel2.Compilation2
     {
         private readonly Parser2 _parser;
         private readonly SemanticAnalyzer2 _semanticAnalyzer;
+        private readonly Assembler2 _assembler;
 
         public Compiler2()
         {
             _parser = new Parser2();
             _semanticAnalyzer = new SemanticAnalyzer2();
+            _assembler = new Assembler2();
         }
 
         /// <summary>Compile source code from a file.</summary>
@@ -71,7 +73,7 @@ namespace Magic.Kernel2.Compilation2
 
         /// <summary>
         /// Compile source code string with optional source path context.
-        /// Pipeline: Parse → SemanticAnalysis → (no lowering needed, AST is fully typed) → Assemble.
+        /// Pipeline: Parse → SemanticAnalysis → Assemble (pure V2, no V1 lowering).
         /// </summary>
         public Task<CompilationResult> CompileAsync(string sourceCode, string? sourcePath)
         {
@@ -81,25 +83,13 @@ namespace Magic.Kernel2.Compilation2
                 // Unlike v1.0, no StatementLineNode raw text is produced — the AST is complete.
                 var programAst = _parser.ParseProgram(sourceCode);
 
-                // Step 2: Semantic analysis — walks typed AST, builds symbol table, resolves types.
-                // Unlike v1.0, this does NOT call StatementLoweringCompiler on raw text.
-                var analyzed = _semanticAnalyzer.Analyze(programAst);
+                // Step 2: Semantic analysis — walks typed AST, builds symbol table, registers types.
+                // Pure V2: no StatementLoweringCompiler, no V1 references.
+                var symbolTable = _semanticAnalyzer.Analyze(programAst);
 
-                // Step 3: Build the ExecutableUnit from the analyzed program.
-                var unit = new ExecutableUnit
-                {
-                    Version = programAst.Version,
-                    Name = programAst.ProgramName,
-                    Module = programAst.Module,
-                    System = programAst.System,
-                    EntryPoint = analyzed.EntryPoint
-                };
-
-                foreach (var (name, proc) in analyzed.Procedures)
-                    unit.Procedures[name] = proc;
-
-                foreach (var (name, func) in analyzed.Functions)
-                    unit.Functions[name] = func;
+                // Step 3: Assemble — Assembler2 generates bytecode by walking typed AST nodes.
+                // No V1 lowering phase anywhere in this pipeline.
+                var unit = _assembler.Assemble(programAst, symbolTable);
 
                 if (sourcePath != null)
                     unit.AttachSourcePath = Path.GetFullPath(sourcePath);

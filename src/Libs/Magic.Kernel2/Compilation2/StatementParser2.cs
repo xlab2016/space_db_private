@@ -168,6 +168,13 @@ namespace Magic.Kernel2.Compilation2
                     if (!string.IsNullOrEmpty(fieldName))
                         decl.Fields.Add(new FieldDeclaration2 { Name = fieldName, TypeSpec = fieldType });
                 }
+                else if (decl.IsDatabase)
+                {
+                    // Database body items are table references: "Message<>;" (no colon)
+                    var tableRef = m.TrimEnd(';').Trim();
+                    if (!string.IsNullOrEmpty(tableRef))
+                        decl.Fields.Add(new FieldDeclaration2 { Name = tableRef, TypeSpec = tableRef });
+                }
             }
         }
 
