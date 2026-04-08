@@ -5,6 +5,7 @@
         xmlns:avaloniaEdit="clr-namespace:AvaloniaEdit;assembly=AvaloniaEdit"
         xmlns:mkinterp="clr-namespace:Magic.Kernel.Interpretation;assembly=Magic.Kernel"
         mc:Ignorable="d"
+        x:CompileBindings="False"
         x:Class="Space.OS.Terminal2.MainWindow"
         Title="Space.OS.Terminal2"
         Height="860"
@@ -58,16 +59,16 @@
         </TreeDataTemplate>
     </Window.Resources>
 
-    <Grid>
+    <Grid x:Name="RootShellGrid">
         <Grid.Background>
-            <RadialGradientBrush Center="50%,30%" Radius="110%">
+            <RadialGradientBrush Center="50%,30%" Radius="1.1">
                 <GradientStop Color="#152553" Offset="0" />
                 <GradientStop Color="#0A1332" Offset="0.45" />
                 <GradientStop Color="#05081A" Offset="1" />
             </RadialGradientBrush>
         </Grid.Background>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition x:Name="SidebarColumn" Width="290" />
+            <ColumnDefinition Width="290" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
@@ -120,7 +121,7 @@
                         <Button Margin="8,0,0,0" Click="ExecutionUnitsSave_Click">Save</Button>
                     </StackPanel>
                     <DataGrid x:Name="ExecutionUnitsGrid" Grid.Row="1" Margin="0,10,0,0"
-                              AutoGenerateColumns="False" CanUserAddRows="False"
+                              AutoGenerateColumns="False"
                               Background="#111A3F" Foreground="#EAF1FF" BorderBrush="#3A4A8A">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Path" Binding="{Binding Path}" Width="*" />
@@ -155,8 +156,8 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="2*" MinHeight="120" />
-                        <RowDefinition x:Name="CodeEditorEnvironmentSplitterRow" Height="6" MinHeight="6" />
-                        <RowDefinition x:Name="CodeEditorEnvironmentRow" Height="*" MinHeight="140" />
+                        <RowDefinition Height="6" MinHeight="6" />
+                        <RowDefinition Height="*" MinHeight="140" />
                     </Grid.RowDefinitions>
 
                     <!-- Toolbar -->
@@ -165,7 +166,7 @@
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <StackPanel Grid.Column="0" Orientation="Horizontal">
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                             <Button Classes="DebugToolbarButtonFirst"
                                     Click="CodeEditorReload_Click"
                                     ToolTip.Tip="Перечитать файл с диска">
@@ -194,7 +195,7 @@
                                           Data="M 5.5,3.5 L 5.5,12.5 L 12.5,8 Z" />
                                 </Canvas>
                             </Button>
-                            <TextBlock x:Name="CodeEditorRunningHint" Margin="10,6,0,0" VerticalAlignment="Center"
+                            <TextBlock x:Name="CodeEditorRunningHint" Margin="10,0,0,0" VerticalAlignment="Center"
                                        IsVisible="False" Foreground="#7CFCA8">Running exe instance</TextBlock>
                             <Button x:Name="DebugAttachButton"
                                     Classes="DebugToolbarButton"
@@ -211,8 +212,7 @@
                             <Button x:Name="DebugRestartRunningExeButton"
                                     Classes="DebugToolbarButton"
                                     MinWidth="64"
-                                    Width="Auto"
-                                    Padding="10,0"
+                                    Padding="8,2"
                                     FontSize="10"
                                     IsVisible="False"
                                     Click="DebugRestartRunningExe_Click"
@@ -260,7 +260,8 @@
                                           Data="M 3,3 H 13 V 13 H 3 Z" />
                                 </Canvas>
                             </Button>
-                            <TextBlock x:Name="CodeEditorFileText" Margin="12,6,0,0" Foreground="{StaticResource TextMutedBrush}">No file selected</TextBlock>
+                            <TextBlock x:Name="CodeEditorFileText" Margin="12,0,0,0" VerticalAlignment="Center"
+                                       Foreground="{StaticResource TextMutedBrush}">No file selected</TextBlock>
                         </StackPanel>
                         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="8,0,0,0">
                             <Button Classes="DebugToolbarButtonFirst"
@@ -291,9 +292,9 @@
                           Grid.Row="1"
                           Margin="0,10,0,0">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition x:Name="CodeEditorEditorColumn" Width="*" MinWidth="120" />
-                            <ColumnDefinition x:Name="CodeEditorDebuggerSplitterColumn" Width="6" />
-                            <ColumnDefinition x:Name="CodeEditorDebuggerColumn" Width="280" MinWidth="200" />
+                            <ColumnDefinition Width="*" MinWidth="120" />
+                            <ColumnDefinition Width="6" />
+                            <ColumnDefinition Width="280" MinWidth="200" />
                         </Grid.ColumnDefinitions>
 
                         <!-- Source Tab Control (Code + Asm) -->
@@ -397,8 +398,7 @@
                                                       Foreground="#DDE8FF"
                                                       BorderBrush="#3A4A8A"
                                                       GridLinesVisibility="Horizontal"
-                                                      RowHeight="22"
-                                                      CanUserAddRows="False">
+                                                      RowHeight="22">
                                                 <DataGrid.Columns>
                                                     <DataGridTextColumn Header="Layer" Binding="{Binding Layer}" Width="90" />
                                                     <DataGridTextColumn Header="Slot" Binding="{Binding Slot}" Width="64" />
@@ -416,8 +416,7 @@
                                                   Foreground="#DDE8FF"
                                                   BorderBrush="#3A4A8A"
                                                   GridLinesVisibility="Horizontal"
-                                                  RowHeight="22"
-                                                  CanUserAddRows="False">
+                                                  RowHeight="22">
                                             <DataGrid.Columns>
                                                 <DataGridTextColumn Header="#" Binding="{Binding Index}" Width="48" />
                                                 <DataGridTextColumn Header="TOS" Binding="{Binding TopMark}" Width="52" />
@@ -575,7 +574,7 @@
                         <Button Margin="8,0,0,0" Click="VaultDelete_Click">Delete Item</Button>
                         <Button Margin="8,0,0,0" Click="VaultSave_Click">Save</Button>
                     </StackPanel>
-                    <DataGrid x:Name="VaultItemsGrid" Grid.Row="1" AutoGenerateColumns="False" CanUserAddRows="False"
+                    <DataGrid x:Name="VaultItemsGrid" Grid.Row="1" AutoGenerateColumns="False"
                               SelectionChanged="VaultItemsGrid_SelectionChanged"
                               Background="#111A3F" Foreground="#EAF1FF" BorderBrush="#3A4A8A">
                         <DataGrid.Columns>
@@ -586,7 +585,7 @@
                         </DataGrid.Columns>
                     </DataGrid>
                     <DataGrid x:Name="VaultStoreGrid" Grid.Column="1" Grid.Row="1" Margin="12,0,0,0"
-                              AutoGenerateColumns="False" CanUserAddRows="True"
+                              AutoGenerateColumns="False"
                               Background="#111A3F" Foreground="#EAF1FF" BorderBrush="#3A4A8A">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Key" Binding="{Binding Key}" Width="200" />
@@ -607,7 +606,7 @@
                         <TextBlock x:Name="MonitorStatsText" Margin="12,6,0,0" Foreground="{StaticResource TextMutedBrush}">stats</TextBlock>
                     </StackPanel>
                     <DataGrid x:Name="MonitorGrid" Grid.Row="1" Margin="0,10,0,0" AutoGenerateColumns="False"
-                              CanUserAddRows="False" IsReadOnly="True"
+                              IsReadOnly="True"
                               Background="#111A3F" Foreground="#EAF1FF" BorderBrush="#3A4A8A">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="220" />

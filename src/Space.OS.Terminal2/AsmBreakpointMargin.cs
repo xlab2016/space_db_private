@@ -8,23 +8,30 @@ using AvaloniaEdit.Rendering;
 
 namespace Space.OS.Terminal2;
 
-/// <summary>Breakpoint по номеру строки листинга AGIASM (1-based).</summary>
+/// <summary>
+/// Breakpoint по номеру строки листинга AGIASM (1-based). Клик — полоса слева от номеров строк, не сами цифры.
+/// </summary>
 internal sealed class AsmBreakpointMargin : AbstractMargin
 {
     private readonly HashSet<int> _breakpoints;
     private readonly Action? _onBreakpointsChanged;
 
+    private static readonly IBrush HitTestSlabBrush = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0));
+
     private static readonly IBrush FillBrush = new SolidColorBrush(Color.FromRgb(0xCD, 0x5C, 0x5C)); // IndianRed
     private static readonly IPen BorderPen = new Pen(new SolidColorBrush(Color.FromRgb(0x8B, 0x00, 0x00)), 1); // DarkRed
+
+    private const double GutterWidth = 28;
 
     public AsmBreakpointMargin(HashSet<int> breakpoints, Action? onBreakpointsChanged = null)
     {
         _breakpoints = breakpoints;
         _onBreakpointsChanged = onBreakpointsChanged;
         ClipToBounds = false;
+        Cursor = new Cursor(StandardCursorType.Hand);
     }
 
-    protected override Size MeasureOverride(Size availableSize) => new(14, 0);
+    protected override Size MeasureOverride(Size availableSize) => new(GutterWidth, 0);
 
     protected override void OnTextViewChanged(TextView? oldTextView, TextView? newTextView)
     {
@@ -44,6 +51,8 @@ internal sealed class AsmBreakpointMargin : AbstractMargin
         if (textView == null || !textView.VisualLinesValid)
             return;
 
+        drawingContext.FillRectangle(HitTestSlabBrush, new Rect(Bounds.Size));
+
         foreach (var line in textView.VisualLines)
         {
             var ln = line.FirstDocumentLine.LineNumber;
@@ -51,7 +60,7 @@ internal sealed class AsmBreakpointMargin : AbstractMargin
                 continue;
 
             var y = line.GetTextLineVisualYPosition(line.TextLines[0], VisualYPosition.TextTop) - textView.VerticalOffset;
-            var center = new Point(7, y + 9);
+            var center = new Point(GutterWidth * 0.5, y + 9);
             drawingContext.DrawEllipse(FillBrush, BorderPen, center, 5, 5);
         }
     }

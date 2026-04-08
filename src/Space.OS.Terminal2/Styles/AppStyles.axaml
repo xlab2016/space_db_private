@@ -1,8 +1,14 @@
 <Styles xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
+    <!-- Fluent: без узкой полосы и «распухания» при hover — сразу нормальная ширина, проще таскать. -->
+    <Style Selector="ScrollBar">
+        <Setter Property="AllowAutoHide" Value="False" />
+    </Style>
+
     <!-- Button global style -->
     <Style Selector="Button">
+        <Setter Property="FontSize" Value="12" />
         <Setter Property="Foreground" Value="#EAF1FF" />
         <Setter Property="Background" Value="#1C2750" />
         <Setter Property="BorderBrush" Value="#3A4A8A" />
@@ -22,18 +28,21 @@
         <Setter Property="Background" Value="#13182E" />
     </Style>
 
-    <!-- TextBlock global style -->
+    <!-- TextBlock global style (matches WPF app default ~12; explicit FontSize on titles overrides) -->
     <Style Selector="TextBlock">
+        <Setter Property="FontSize" Value="12" />
         <Setter Property="Foreground" Value="#EAF1FF" />
     </Style>
 
     <!-- CheckBox global style -->
     <Style Selector="CheckBox">
+        <Setter Property="FontSize" Value="12" />
         <Setter Property="Foreground" Value="#EAF1FF" />
     </Style>
 
     <!-- RadioButton global style -->
     <Style Selector="RadioButton">
+        <Setter Property="FontSize" Value="12" />
         <Setter Property="Foreground" Value="#DDE8FF" />
     </Style>
 
@@ -45,13 +54,15 @@
     </Style>
 
     <Style Selector="TreeViewItem">
+        <Setter Property="FontSize" Value="12" />
         <Setter Property="Foreground" Value="#EAF1FF" />
         <Setter Property="Background" Value="#0D1431" />
         <Setter Property="Padding" Value="4,2" />
     </Style>
 
-    <!-- TextBox global style -->
+    <!-- TextBox global style (editors with explicit FontSize keep monospace sizes) -->
     <Style Selector="TextBox">
+        <Setter Property="FontSize" Value="12" />
         <Setter Property="Background" Value="#0E1738" />
         <Setter Property="Foreground" Value="#EAF1FF" />
         <Setter Property="BorderBrush" Value="#3A4A8A" />
@@ -71,6 +82,7 @@
     </Style>
 
     <Style Selector="DataGridColumnHeader">
+        <Setter Property="FontSize" Value="12" />
         <Setter Property="Foreground" Value="#EAF1FF" />
         <Setter Property="Background" Value="#1A295A" />
         <Setter Property="BorderBrush" Value="#3A4A8A" />
@@ -95,8 +107,10 @@
 
     <!-- TabControl / TabItem styles -->
     <Style Selector="TabItem">
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="FontWeight" Value="Normal" />
         <Setter Property="Foreground" Value="#EAF1FF" />
-        <Setter Property="Padding" Value="14,8" />
+        <Setter Property="Padding" Value="10,5" />
         <Setter Property="Background" Value="#141F49" />
         <Setter Property="BorderBrush" Value="#3A4A8A" />
         <Setter Property="BorderThickness" Value="1,1,1,0" />
@@ -129,6 +143,8 @@
         <Setter Property="MinWidth" Value="32" />
         <Setter Property="Padding" Value="0" />
         <Setter Property="Margin" Value="6,0,0,0" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
     </Style>
 
     <Style Selector="Button.DebugToolbarButtonFirst">
@@ -137,6 +153,8 @@
         <Setter Property="MinWidth" Value="32" />
         <Setter Property="Padding" Value="0" />
         <Setter Property="Margin" Value="0,0,0,0" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
     </Style>
 
     <!-- GridSplitter style -->

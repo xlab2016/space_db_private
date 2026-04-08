@@ -7,9 +7,11 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using AvaloniaEdit;
 using Magic.Kernel;
 using Magic.Kernel.Compilation;
@@ -90,6 +92,8 @@ public partial class MainWindow : Window
     private DebuggerMemoryLayerKind _debuggerMemoryLayerKind = DebuggerMemoryLayerKind.All;
     private List<DebuggerMemoryRow>? _debuggerMemoryRowsFull;
     private readonly HttpClient _httpScratchClient = new() { Timeout = TimeSpan.FromSeconds(120) };
+    private long _lastGlobalDebugFnKeyTick;
+    private Key _lastGlobalDebugFnKey;
 
     private const string LinkedModuleMarkerPrefix = "// --- Space.Terminal linked module: ";
     private const string LinkedModuleMarkerSuffix = " ---";
@@ -226,7 +230,7 @@ public partial class MainWindow : Window
     private void ToggleSidebar_Click(object? sender, RoutedEventArgs e)
     {
         _sidebarCollapsed = !_sidebarCollapsed;
-        SidebarColumn.Width = _sidebarCollapsed ? new GridLength(56) : new GridLength(290);
+        RootShellGrid.ColumnDefinitions[0].Width = _sidebarCollapsed ? new GridLength(56) : new GridLength(290);
     }
 
     private void NavigationTree_SelectionChanged(object? sender, SelectionChangedEventArgs e)
@@ -287,13 +291,31 @@ public partial class MainWindow : Window
 
     private void ExecutionUnitsRowEdit_Click(object? sender, RoutedEventArgs e)
     {
-        if (sender is not Control ctrl || ctrl.DataContext is not ExecutionUnitItem item)
+        // DataGrid cell template controls often have no DataContext in Avalonia; walk to row/cell.
+        if (!TryFindDataContextInVisualAncestors<ExecutionUnitItem>(sender, out var item) || item == null)
             return;
         if (string.IsNullOrWhiteSpace(item.Path))
             return;
         var fullPath = SpaceEnvironment.GetFilePath(item.Path);
         OpenCodeEditor(fullPath, Math.Max(1, item.InstanceCount));
         SelectNavigationTag("space-code-editor");
+    }
+
+    private static bool TryFindDataContextInVisualAncestors<T>(object? sender, out T? value) where T : class
+    {
+        value = null;
+        if (sender is not Visual visual)
+            return false;
+        foreach (var v in visual.GetVisualAncestors().Prepend(visual))
+        {
+            if (v is StyledElement se && se.DataContext is T found)
+            {
+                value = found;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void StorageReload_Click(object? sender, RoutedEventArgs e) => LoadStorageTree();
@@ -1201,7 +1223,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            Dispatcher.UIThread.InvokeAsync(() =>
+            _ = Dispatcher.UIThread.InvokeAsync(() =>
             {
                 debugRecord.Success = false;
                 debugRecord.Status = "error";
@@ -1218,7 +1240,7 @@ public partial class MainWindow : Window
             _activeDebugSession = null;
             _editorDebugInterpreter = null;
             _editorDebugStdin = null;
-            Dispatcher.UIThread.InvokeAsync(() =>
+            _ = Dispatcher.UIThread.InvokeAsync(() =>
             {
                 _debugHighlightDocumentLine = 0;
                 _debugHighlightAgiPath = null;
@@ -1304,6 +1326,16 @@ public partial class MainWindow : Window
             e.Handled = true;
     }
 
+    private bool IsLikelyFunctionKeyAutoRepeat(Key key)
+    {
+        var now = Environment.TickCount64;
+        if (key == _lastGlobalDebugFnKey && now - _lastGlobalDebugFnKeyTick < 45)
+            return true;
+        _lastGlobalDebugFnKey = key;
+        _lastGlobalDebugFnKeyTick = now;
+        return false;
+    }
+
     private bool TryHandleGlobalDebugKeys(KeyEventArgs e)
     {
         if (!CodeEditorPanel.IsVisible)
@@ -1317,17 +1349,17 @@ public partial class MainWindow : Window
         switch (e.Key)
         {
             case Key.F5:
-                if (e.IsRepeat)
+                if (IsLikelyFunctionKeyAutoRepeat(e.Key))
                     return false;
                 CodeEditorDebug_Click(this, e);
                 return true;
             case Key.F9:
-                if (e.IsRepeat || !DebugContinueButton.IsEnabled)
+                if (IsLikelyFunctionKeyAutoRepeat(e.Key) || !DebugContinueButton.IsEnabled)
                     return false;
                 DebugContinue_Click(this, e);
                 return true;
             case Key.F10:
-                if (e.IsRepeat || !DebugStepButton.IsEnabled)
+                if (IsLikelyFunctionKeyAutoRepeat(e.Key) || !DebugStepButton.IsEnabled)
                     return false;
                 if (asmTab)
                     DebugStepInto_Click(this, e);
@@ -1335,7 +1367,7 @@ public partial class MainWindow : Window
                     DebugStep_Click(this, e);
                 return true;
             case Key.F11:
-                if (e.IsRepeat || !DebugStepIntoButton.IsEnabled)
+                if (IsLikelyFunctionKeyAutoRepeat(e.Key) || !DebugStepIntoButton.IsEnabled)
                     return false;
                 DebugStepInto_Click(this, e);
                 return true;
@@ -1888,8 +1920,8 @@ public partial class MainWindow : Window
             ShowLineNumbers = true,
             Foreground = CodeEditor.Foreground,
             Background = CodeEditor.Background,
-            HorizontalScrollBarVisibility = AvaloniaEdit.Utils.ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = AvaloniaEdit.Utils.ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             WordWrap = false
         };
         editor.Options.AllowScrollBelowDocument = false;

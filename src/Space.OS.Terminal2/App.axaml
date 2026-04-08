@@ -4,7 +4,10 @@
              RequestedThemeVariant="Dark">
 
     <Application.Styles>
-        <FluentTheme />
+        <!-- Compact + explicit UI font sizes in AppStyles — WPF Terminal uses ~12px system UI; Fluent Normal looks oversized on tabs/chrome. -->
+        <FluentTheme DensityStyle="Compact" />
+        <StyleInclude Source="avares://Avalonia.Controls.DataGrid/Themes/Fluent.xaml" />
+        <StyleInclude Source="avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml" />
         <StyleInclude Source="avares://Space.OS.Terminal2/Styles/AppStyles.axaml" />
     </Application.Styles>
 

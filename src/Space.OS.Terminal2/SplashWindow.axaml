@@ -1,5 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:CompileBindings="False"
         x:Class="Space.OS.Terminal2.SplashWindow"
         SystemDecorations="None"
         CanResize="False"
@@ -8,23 +9,27 @@
         ShowInTaskbar="False"
         Topmost="True"
         Background="Transparent"
+        Opacity="0"
         TransparencyLevelHint="Transparent"
         WindowStartupLocation="CenterScreen">
 
-    <Border CornerRadius="20" Background="#050814" BorderBrush="#2B3A75" BorderThickness="1">
-        <Panel>
-            <!-- Radial gradient background -->
-            <Border>
-                <Border.Background>
-                    <RadialGradientBrush Center="50%,45%" Radius="90%">
-                        <GradientStop Color="#1A2B66" Offset="0.0" />
-                        <GradientStop Color="#0A1134" Offset="0.52" />
-                        <GradientStop Color="#040716" Offset="1.0" />
-                    </RadialGradientBrush>
-                </Border.Background>
-            </Border>
+    <!-- Чуть светлее подложка под скругление (DWM/Skia иначе чем WPF). -->
+    <Border CornerRadius="20" Background="#0B1434" BorderBrush="#2B3A75" BorderThickness="1">
+        <!-- Как WPF SplashWindow: фон + дети на одном Grid, масштаб от центра -->
+        <Grid x:Name="SplashRootGrid" RenderTransformOrigin="50%,50%">
+            <Grid.Background>
+                <!-- WPF: Center по умолчанию 0.5,0.5; GradientOrigin 0.5,0.45; RadiusX/Y 0.9 -->
+                <!-- Те же относительные параметры, что у WPF; стопы чуть светлее — компенсация отличий Skia от WPF. -->
+                <RadialGradientBrush Center="50%,50%"
+                                     GradientOrigin="50%,45%"
+                                     RadiusX="0.9"
+                                     RadiusY="0.9">
+                    <GradientStop Color="#243A88" Offset="0.0" />
+                    <GradientStop Color="#121E52" Offset="0.45" />
+                    <GradientStop Color="#0A1436" Offset="1.0" />
+                </RadialGradientBrush>
+            </Grid.Background>
 
-            <!-- Decorative gradient ellipses -->
             <Canvas>
                 <Ellipse Width="340" Height="340"
                          Canvas.Left="160" Canvas.Top="80"
@@ -48,7 +53,6 @@
                 </Ellipse>
             </Canvas>
 
-            <!-- Title text -->
             <TextBlock HorizontalAlignment="Center"
                        Margin="0,350,0,0"
                        VerticalAlignment="Top"
@@ -64,7 +68,6 @@
                        Foreground="#BFD0F9"
                        Text="JOIN UNIVERSE" />
 
-            <!-- Gradient accent bar at bottom -->
             <Rectangle Height="3"
                        VerticalAlignment="Bottom"
                        Margin="180,0,180,56"
@@ -77,6 +80,6 @@
                     </LinearGradientBrush>
                 </Rectangle.Fill>
             </Rectangle>
-        </Panel>
+        </Grid>
     </Border>
 </Window>
