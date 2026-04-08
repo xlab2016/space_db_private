@@ -34,40 +34,49 @@ namespace Magic.Kernel2.Compilation2
             if (string.IsNullOrWhiteSpace(trimmed))
                 return null;
 
+            StatementNode2? result = null;
+
             // Variable declaration: var x := expr  OR  var x: Type := expr
             if (TryParseVarDeclaration(trimmed, sourceLine, out var varDecl))
-                return varDecl;
+                result = varDecl;
 
             // Return statement: return expr
-            if (TryParseReturn(trimmed, sourceLine, out var ret))
-                return ret;
+            else if (TryParseReturn(trimmed, sourceLine, out var ret))
+                result = ret;
 
             // If statement
-            if (TryParseIf(trimmed, sourceLine, out var ifStmt))
-                return ifStmt;
+            else if (TryParseIf(trimmed, sourceLine, out var ifStmt))
+                result = ifStmt;
 
             // Switch statement
-            if (TryParseSwitch(trimmed, sourceLine, out var switchStmt))
-                return switchStmt;
+            else if (TryParseSwitch(trimmed, sourceLine, out var switchStmt))
+                result = switchStmt;
 
             // Stream wait for loop: for (var item in stream) { ... }
-            if (TryParseForLoop(trimmed, sourceLine, out var forLoop))
-                return forLoop;
+            else if (TryParseForLoop(trimmed, sourceLine, out var forLoop))
+                result = forLoop;
 
             // Assignment: x := expr  OR  x.Field := expr
-            if (TryParseAssignment(trimmed, sourceLine, out var assignment))
-                return assignment;
+            else if (TryParseAssignment(trimmed, sourceLine, out var assignment))
+                result = assignment;
 
             // Call statement: Foo(a, b) or await Foo or obj.Method(a, b)
-            if (TryParseCallStatement(trimmed, sourceLine, out var call))
-                return call;
+            else if (TryParseCallStatement(trimmed, sourceLine, out var call))
+                result = call;
 
             // Fallback: treat as a raw call/expression statement
-            return new CallStatement2
-            {
-                SourceLine = sourceLine,
-                Callee = new VariableExpression2 { Name = trimmed, SourceLine = sourceLine }
-            };
+            else
+                result = new CallStatement2
+                {
+                    SourceLine = sourceLine,
+                    Callee = new VariableExpression2 { Name = trimmed, SourceLine = sourceLine }
+                };
+
+            // Preserve original source text on every parsed node for V1-lowering fallback.
+            if (result != null)
+                result.SourceText = text;
+
+            return result;
         }
 
         /// <summary>
@@ -107,7 +116,10 @@ namespace Magic.Kernel2.Compilation2
                 Name = typeName,
                 SourceLine = sourceLine,
                 BaseType = isType || isClass ? null : header,
-                IsClass = isClass || (!isType && !isTable && !isDatabase && !string.IsNullOrEmpty(header))
+                IsClass = isClass || (!isType && !isTable && !isDatabase && !string.IsNullOrEmpty(header)),
+                IsTable = isTable,
+                IsDatabase = isDatabase,
+                RawText = text  // Preserve raw text for V1-based lowering of table/database types
             };
 
             // Parse body: fields (X: int;) and methods/constructors
@@ -349,10 +361,12 @@ namespace Magic.Kernel2.Compilation2
                 t = t.Substring(4).TrimStart();
             }
 
-            // Find `:=` or `=` assignment
-            var assignIdx = t.IndexOf(":=", StringComparison.Ordinal);
-            if (assignIdx < 0 && !hasVar)
+            // Without "var", this is an assignment, not a declaration.
+            if (!hasVar)
                 return false;
+
+            // Find `:=` assignment
+            var assignIdx = t.IndexOf(":=", StringComparison.Ordinal);
 
             string varName;
             string? explicitType = null;
