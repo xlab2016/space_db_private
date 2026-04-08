@@ -97,7 +97,7 @@ namespace Magic.Kernel2.Compilation2
     }
 
     /// <summary>Variable/slot scope for a procedure or function.</summary>
-    public sealed class ScopeSymbols2
+    public class ScopeSymbols2
     {
         private readonly SymbolTable2 _table;
         private readonly Dictionary<string, int> _globalSlots;
