@@ -25,9 +25,13 @@ namespace Magic.Kernel2.Compilation2.Ast2
         /// <summary>Base type name or "type" for plain type, "class" for class.</summary>
         public string? BaseType { get; set; }
         public bool IsClass { get; set; }
+        public bool IsTable { get; set; }
+        public bool IsDatabase { get; set; }
         public List<FieldDeclaration2> Fields { get; set; } = new();
         public List<MethodDeclaration2> Methods { get; set; } = new();
         public List<ConstructorDeclaration2> Constructors { get; set; } = new();
+        /// <summary>Raw source text of the declaration — preserved for V1 lowering of table/database types.</summary>
+        public string? RawText { get; set; }
     }
 
     /// <summary>A formal parameter in a procedure/function/method/constructor.</summary>

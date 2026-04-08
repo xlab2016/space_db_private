@@ -3,7 +3,11 @@ using System.Collections.Generic;
 namespace Magic.Kernel2.Compilation2.Ast2
 {
     /// <summary>Base for all statement nodes.</summary>
-    public abstract class StatementNode2 : AstNode2 { }
+    public abstract class StatementNode2 : AstNode2
+    {
+        /// <summary>Original source text of the statement, preserved for V1 lowering fallback.</summary>
+        public string? SourceText { get; set; }
+    }
 
     /// <summary>A block of statements: { stmt1; stmt2; ... }</summary>
     public sealed class BlockNode2 : AstNode2

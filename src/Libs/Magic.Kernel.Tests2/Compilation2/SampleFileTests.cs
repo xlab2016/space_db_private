@@ -1,4 +1,6 @@
 using FluentAssertions;
+using Magic.Kernel;
+using Magic.Kernel.Compilation;
 using Magic.Kernel.Processor;
 using Magic.Kernel2.Compilation2;
 using Magic.Kernel2.Compilation2.Ast2;
@@ -1372,6 +1374,198 @@ namespace Magic.Kernel.Tests2.Compilation2
             typedStmts.Should().HaveCount(allStatements.Count,
                 $"[{sampleName}] v2.0 invariant: all statement nodes must be typed AST2 nodes, not raw text. " +
                 $"Total: {allStatements.Count}, Typed: {typedStmts.Count}");
+        }
+
+        // ─── telegram_to_db instruction-by-instruction V1 vs V2 comparison ─────────
+
+        /// <summary>
+        /// Regression test for issue #31 ("Исправить компиляцию V2").
+        /// Compiles <c>telegram_to_db</c> with both V1 and V2 compilers and asserts
+        /// every instruction matches — opcode and key operands — position by position.
+        /// </summary>
+        [Fact]
+        public async Task TelegramToDb_V2_ShouldProduceSameInstructionsAsV1()
+        {
+            const string source = """
+                @AGI 0.0.1;
+
+                program telegram_to_db;
+                system samples;
+                module telegram;
+
+                Message<> : table {
+                	Id: bigint primary key identity;
+                	Time: datetime;
+                	TokenHash: nvarchar(250)?;
+                	ChatId: nvarchar(250)?;
+                	Username: nvarchar(250)?;
+                	MessageId: int? index;
+                	MessageTime: datetime?;
+                	Message: json?;
+                	ReplyMessageId: int? index;
+                	ReplyMessage: json?;
+                	Photo: json?;
+                	Document: json?;
+
+                	Reply: Message;
+                }
+
+                Db> : database {
+                	Message<>;
+                }
+
+                procedure Main {
+                	var stream1 := stream<messenger, telegram>;
+                	var stream2 := stream<network, file, telegram>;
+                	var vault1 := vault;
+                	var token := vault1.read("token");
+                	stream1.open({
+                		token: token
+                	});
+                	var connectionString := vault1.read("connectionString");
+                	var db1 := database<postgres, Db>>;
+                	db1.open(connectionString);
+
+                	for streamwait by delta (stream1, delta, aggregate) {
+                		var data := delta.data;
+                		// !: accessor to anonymous type
+                		var messageId := data!.id;
+                		var messageTime := data!.time;
+                		var tokenHash := data!.tokenHash;
+                		var chatId := data!.chatId;
+                		var text := data!.text;
+                		var user := data!.username;
+                		var photo := data!.photo;
+                		var document := data!.document;
+                		var reply := data!.reply;
+                		var time = :time;
+
+                		var message = {
+                			MessageId: messageId,
+                			MessageTime: messageTime,
+                			Time: time,
+                			TokenHash: tokenHash,
+                			ChatId: chatId,
+                			Username: user,
+                			Message: text,
+                			ReplyMessageId: reply.id,
+                			ReplyMessage: reply.text
+                		};
+                		print(tokenHash, chatId, text, photo, document, user, time);
+
+                		if (reply.id) {
+                			var replyOriginal := await db1.Message<>.find(_ => _.MessageId = reply.id);
+                			if (replyOriginal) message.ReplyId := replyOriginal.Id;
+                		}
+
+                		if (photo) {
+                			stream2.open({
+                				token: token,
+                				file: photo
+                			});
+                			var photoData := streamwait stream2;
+                			message.Photo = {
+                				data: photoData
+                			}
+                		}
+
+                		if (document) {
+                			stream2.open({
+                				token: token,
+                				file: document
+                			});
+                			var documentData := streamwait stream2;
+                			message.Document = {
+                				data: documentData
+                			}
+                		}
+
+                		db1.Message<> += message;
+                		// save data
+                		await db1;
+
+                		// pipeline message to external code
+                		streamwait print(message);
+                	}
+                }
+
+                entrypoint {
+                	Main;
+                }
+                """;
+
+            // Compile with V1.
+            var v1Compiler = new Magic.Kernel.Compilation.Compiler();
+            var v1Result = await v1Compiler.CompileAsync(source);
+            v1Result.Success.Should().BeTrue($"V1 compile failed: {v1Result.ErrorMessage}");
+
+            // Compile with V2.
+            var v2Compiler = new Compiler2();
+            var v2Result = await v2Compiler.CompileAsync(source);
+            v2Result.Success.Should().BeTrue($"V2 compile failed: {v2Result.ErrorMessage}");
+
+            var v1Unit = v1Result.Result!;
+            var v2Unit = v2Result.Result!;
+
+            // ── Compare entrypoint instructions ──
+            AssertBlocksMatch("entrypoint", v1Unit.EntryPoint, v2Unit.EntryPoint);
+
+            // ── Compare procedure Main ──
+            v2Unit.Procedures.Should().ContainKey("Main", "V2 must produce a 'Main' procedure");
+            v1Unit.Procedures.Should().ContainKey("Main", "V1 must produce a 'Main' procedure");
+            AssertBlocksMatch("Main", v1Unit.Procedures["Main"].Body, v2Unit.Procedures["Main"].Body);
+        }
+
+        /// <summary>
+        /// Asserts that two execution blocks contain the same opcodes in the same order,
+        /// and that key operands (slot indices, string literals, call targets) match.
+        /// </summary>
+        private static void AssertBlocksMatch(string blockName, ExecutionBlock v1, ExecutionBlock v2)
+        {
+            v2.Should().NotBeNull($"[{blockName}] V2 block must not be null");
+            v1.Should().NotBeNull($"[{blockName}] V1 block must not be null");
+
+            for (var i = 0; i < Math.Min(v1.Count, v2.Count); i++)
+            {
+                var c1 = v1[i];
+                var c2 = v2[i];
+
+                c2.Opcode.Should().Be(c1.Opcode,
+                    $"[{blockName}] instruction #{i}: opcode mismatch. " +
+                    $"V1={c1.Opcode} V2={c2.Opcode}");
+
+                // Compare string operands for push/callobj/label/je/jmp/call.
+                if (c1.Opcode == Opcodes.Push && c1.Operand1 is PushOperand p1 && c2.Operand1 is PushOperand p2)
+                {
+                    p2.Kind.Should().Be(p1.Kind,
+                        $"[{blockName}] push #{i}: operand kind mismatch. V1={p1.Kind} V2={p2.Kind}");
+                    if (p1.Kind == "StringLiteral")
+                        p2.Value?.ToString().Should().Be(p1.Value?.ToString(),
+                            $"[{blockName}] push #{i}: string value mismatch. V1={p1.Value} V2={p2.Value}");
+                    if (p1.Kind == "IntLiteral")
+                        p2.Value.Should().Be(p1.Value,
+                            $"[{blockName}] push #{i}: int value mismatch. V1={p1.Value} V2={p2.Value}");
+                }
+
+                if (c1.Opcode == Opcodes.CallObj)
+                    c2.Operand1?.ToString().Should().Be(c1.Operand1?.ToString(),
+                        $"[{blockName}] callobj #{i}: method name mismatch. V1={c1.Operand1} V2={c2.Operand1}");
+
+                if (c1.Opcode == Opcodes.Call || c1.Opcode == Opcodes.ACall)
+                {
+                    if (c1.Operand1 is CallInfo ci1 && c2.Operand1 is CallInfo ci2)
+                        ci2.FunctionName.Should().Be(ci1.FunctionName,
+                            $"[{blockName}] call #{i}: function name mismatch. V1={ci1.FunctionName} V2={ci2.FunctionName}");
+                }
+
+                if (c1.Opcode == Opcodes.Cmp && c1.Operand1 is MemoryAddress ma1 && c2.Operand1 is MemoryAddress ma2)
+                    ma2.Index.Should().Be(ma1.Index,
+                        $"[{blockName}] cmp #{i}: slot mismatch. V1={ma1.Index} V2={ma2.Index}");
+            }
+
+            v2.Count.Should().Be(v1.Count,
+                $"[{blockName}] instruction count mismatch. V1={v1.Count} V2={v2.Count}. " +
+                $"First divergence at or near instruction #{Math.Min(v1.Count, v2.Count)}");
         }
 
         // ─── Helpers ──────────────────────────────────────────────────────────────

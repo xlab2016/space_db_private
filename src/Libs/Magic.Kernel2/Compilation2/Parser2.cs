@@ -40,7 +40,7 @@ namespace Magic.Kernel2.Compilation2
 
             var program = new ProgramNode2
             {
-                Version = v1Structure.Version,
+                Version = v1Structure.Version?.TrimEnd(';').Trim(),
                 ProgramName = v1Structure.ProgramName,
                 Module = v1Structure.Module,
                 System = v1Structure.System,

@@ -27,6 +27,9 @@ namespace Magic.Kernel.Compilation
         private Scanner CurrentScanner =>
             _scanner ?? throw new InvalidOperationException("Scanner is not initialized.");
 
+        /// <summary>The current value of the global slot counter (next slot index to be allocated).</summary>
+        public int NextGlobalSlot => _nextGlobalSlot;
+
         /// <summary>Allocates a new global memory slot for the given name and returns its index.</summary>
         public int AllocateGlobalSlot(string name)
         {

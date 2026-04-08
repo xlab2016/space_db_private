@@ -181,7 +181,7 @@ namespace Magic.Kernel2.Compilation2
             }
             else if (call.Callee is MemberAccessExpression2 memberAccess)
             {
-                // obj.Method(a, b)
+                // obj.Method(a, b) — as statement, result is discarded
                 EmitExpression(memberAccess.Object, scope, result);
                 EmitCallArguments(call.Arguments, scope, result, call.SourceLine);
 
@@ -192,6 +192,8 @@ namespace Magic.Kernel2.Compilation2
                     SourceLine = call.SourceLine
                 };
                 result.Add(callCmd);
+                // V1 always emits pop after callobj statements (result discarded)
+                result.Add(Emit(Opcodes.Pop, call.SourceLine));
             }
             else
             {
@@ -203,10 +205,10 @@ namespace Magic.Kernel2.Compilation2
 
         private void EmitCallArguments(List<ExpressionNode2> args, ScopeSymbols2 scope, ExecutionBlock result, int sourceLine)
         {
-            // Push arity, then each argument.
-            result.Add(PushInt(args.Count, sourceLine));
+            // Push each argument first, then arity — matching V1 calling convention.
             foreach (var arg in args)
                 EmitExpression(arg, scope, result);
+            result.Add(PushInt(args.Count, sourceLine));
         }
 
         // ─── Return ───────────────────────────────────────────────────────────────
@@ -430,7 +432,7 @@ namespace Magic.Kernel2.Compilation2
                     break;
 
                 case GenericTypeExpression2 generic:
-                    EmitGenericType(generic, result);
+                    EmitGenericType(generic, scope, result);
                     break;
 
                 case MemorySlotExpression2 slot:
@@ -613,9 +615,20 @@ namespace Magic.Kernel2.Compilation2
             }
         }
 
-        private static void EmitGenericType(GenericTypeExpression2 generic, ExecutionBlock result)
+        private static void EmitGenericType(GenericTypeExpression2 generic, ScopeSymbols2 scope, ExecutionBlock result)
         {
-            // Push type name, then type arg — for def/defgen patterns.
+            // V1 pattern for stream<A, B>:
+            //   push typeName
+            //   push 1          ← arity for def
+            //   def             ← create base type instance
+            //   pop [tempSlot]  ← store base instance
+            //   push [tempSlot] ← push base instance for defgen
+            //   push A          ← type arg(s)
+            //   push B
+            //   push N          ← arg count for defgen
+            //   defgen          ← specialize
+            // (caller stores result via PopSlot)
+            var tempSlot = scope.AllocateTemp();
             result.Add(new Command
             {
                 Opcode = Opcodes.Push,
@@ -624,20 +637,36 @@ namespace Magic.Kernel2.Compilation2
             });
             result.Add(new Command
             {
-                Opcode = Opcodes.Def,
+                Opcode = Opcodes.Push,
+                Operand1 = new PushOperand { Kind = "IntLiteral", Value = 1L },
                 SourceLine = generic.SourceLine
             });
+            result.Add(new Command { Opcode = Opcodes.Def, SourceLine = generic.SourceLine });
+            result.Add(PopSlot(tempSlot, generic.SourceLine));
+            result.Add(PushSlot(tempSlot, generic.SourceLine));
+
+            // Push each type argument (comma-separated).
+            var typeArgs = generic.TypeArg.Split(',');
+            foreach (var arg in typeArgs)
+            {
+                var a = arg.Trim();
+                if (!string.IsNullOrEmpty(a))
+                    result.Add(new Command
+                    {
+                        Opcode = Opcodes.Push,
+                        Operand1 = new PushOperand { Kind = "StringLiteral", Value = a },
+                        SourceLine = generic.SourceLine
+                    });
+            }
+
+            var argCount = typeArgs.Count(a => !string.IsNullOrWhiteSpace(a));
             result.Add(new Command
             {
                 Opcode = Opcodes.Push,
-                Operand1 = new PushOperand { Kind = "StringLiteral", Value = generic.TypeArg },
+                Operand1 = new PushOperand { Kind = "IntLiteral", Value = (long)argCount },
                 SourceLine = generic.SourceLine
             });
-            result.Add(new Command
-            {
-                Opcode = Opcodes.DefGen,
-                SourceLine = generic.SourceLine
-            });
+            result.Add(new Command { Opcode = Opcodes.DefGen, SourceLine = generic.SourceLine });
         }
 
         private void EmitLambda(LambdaExpression2 lambda, ScopeSymbols2 scope, ExecutionBlock result)
