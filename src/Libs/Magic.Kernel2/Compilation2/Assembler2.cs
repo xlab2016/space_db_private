@@ -34,21 +34,44 @@ namespace Magic.Kernel2.Compilation2
                 System = program.System
             };
 
-            // Assemble procedures.
+            // Phase 1: Pre-allocate global slots for type declarations into the global scope.
+            // This must happen BEFORE procedures are assembled so that procedure-local variables
+            // get slot numbers that don't collide with type slots.
+            // V1 compiles the entrypoint (including types) first, then procedures inherit the
+            // slot counter — so the first user variable in a procedure gets slot N (where N = number of types).
+            var entryScope = symbolTable.GlobalScope;
+            var entryBlock = new ExecutionBlock();
+            foreach (var typeDecl in program.TypeDeclarations)
+            {
+                var typeCommands = EmitTypeDeclaration(typeDecl, entryScope);
+                entryBlock.AddRange(typeCommands);
+            }
+
+            // Emit entrypoint body statements (e.g. "call Main").
+            if (program.EntryPoint != null)
+            {
+                foreach (var stmt in program.EntryPoint.Statements)
+                    EmitStatement(stmt, entryScope, entryBlock, isProcedure: false);
+            }
+
+            unit.EntryPoint = entryBlock;
+
+            // Phase 2: Assemble procedures and functions.
+            // At this point the global slot counter has been advanced past the type slots,
+            // so procedure-local variables start at the correct slot index.
             foreach (var proc in program.Procedures)
             {
                 var procedure = AssembleProcedure(proc, symbolTable);
                 unit.Procedures[proc.Name] = procedure;
             }
 
-            // Assemble functions.
             foreach (var func in program.Functions)
             {
                 var function = AssembleFunction(func, symbolTable);
                 unit.Functions[func.Name] = function;
             }
 
-            // Assemble nested procedures/functions discovered during procedure body assembly.
+            // Phase 3: Assemble nested procedures/functions discovered during body assembly.
             foreach (var nested in symbolTable.NestedProcedures)
             {
                 var nestedDecl = new ProcedureDeclarationNode2
@@ -72,27 +95,6 @@ namespace Magic.Kernel2.Compilation2
                 unit.Functions[nested.Name] = nestedFunc;
             }
 
-            // Assemble entrypoint.
-            // The entrypoint runs: type declarations first (allocating slots 0..N),
-            // then the entrypoint body statements.
-            var entryScope = symbolTable.GlobalScope;
-            var entryBlock = new ExecutionBlock();
-
-            // Emit type declarations into the entrypoint (they allocate global slots 0..N).
-            foreach (var typeDecl in program.TypeDeclarations)
-            {
-                var typeCommands = EmitTypeDeclaration(typeDecl, entryScope);
-                entryBlock.AddRange(typeCommands);
-            }
-
-            // Emit entrypoint body statements.
-            if (program.EntryPoint != null)
-            {
-                foreach (var stmt in program.EntryPoint.Statements)
-                    EmitStatement(stmt, entryScope, entryBlock, isProcedure: false);
-            }
-
-            unit.EntryPoint = entryBlock;
             return unit;
         }
 
@@ -433,7 +435,7 @@ namespace Magic.Kernel2.Compilation2
                     break;
 
                 case CallStatement2 call:
-                    EmitCallStatement(call, scope, result);
+                    EmitCallStatement(call, scope, result, isProcedure);
                     break;
 
                 case StreamWaitCallStatement2 swCall:
@@ -503,6 +505,44 @@ namespace Magic.Kernel2.Compilation2
                     result.Add(PushInt(1L, varDecl.SourceLine));
                     result.Add(Emit(Opcodes.Def, varDecl.SourceLine));
                     var slot = scope.AllocateLocal(varDecl.VariableName);
+                    result.Add(PopSlot(slot, varDecl.SourceLine));
+                }
+                else if (varDecl.Initializer is ObjectLiteralExpression2)
+                {
+                    // For object literals: the literal's internal objSlot becomes the variable slot.
+                    // V1 pattern: emit the literal (allocates objSlot), then register that slot as the var.
+                    // This avoids allocating a separate var slot + copying from objSlot.
+                    var objSlot = scope.NextSlot; // will be the first AllocateTemp() in EmitObjectLiteral
+                    EmitExpression(varDecl.Initializer, scope, result);
+                    // EmitObjectLiteral ends with "push [objSlot]" — pop it and register objSlot as the var.
+                    result.RemoveAt(result.Count - 1); // remove trailing push [objSlot]
+                    scope.RegisterLocalSlot(varDecl.VariableName, objSlot);
+                }
+                else if (varDecl.Initializer is AwaitExpression2 awaitInit &&
+                         awaitInit.Operand is CallExpression2 awaitCallInit &&
+                         awaitCallInit.Callee is MemberAccessExpression2 awaitMemberInit)
+                {
+                    // Special V1 pattern for: var x := await obj.method(args)
+                    // V1 allocates: varSlot (x), awaitSourceSlot (intermediate), then any lambda temps.
+                    // This matches V1's TryCompileExpressionToSlot "await" branch which pre-allocates awaitSourceSlot.
+                    var slot = scope.AllocateLocal(varDecl.VariableName);      // slot N (x)
+                    var awaitSourceSlot = scope.AllocateTemp();                 // slot N+1 (intermediate)
+
+                    // Pre-push receiver (first push) into awaitSourceSlot — V1 double-push pattern.
+                    var receiver = TryGetFirstPushReceiver(awaitInit.Operand);
+                    if (receiver != null)
+                    {
+                        EmitExpression(receiver, scope, result);
+                        result.Add(PopSlot(awaitSourceSlot, varDecl.SourceLine));
+                    }
+
+                    // Emit the call expression — result left on stack.
+                    EmitCallExpression(awaitCallInit, scope, result);
+
+                    // Store call result to awaitSourceSlot, then await it.
+                    result.Add(PopSlot(awaitSourceSlot, varDecl.SourceLine));
+                    result.Add(PushSlot(awaitSourceSlot, varDecl.SourceLine));
+                    result.Add(Emit(Opcodes.AwaitObj, varDecl.SourceLine));
                     result.Add(PopSlot(slot, varDecl.SourceLine));
                 }
                 else
@@ -650,7 +690,7 @@ namespace Magic.Kernel2.Compilation2
 
         // ─── Call statement ───────────────────────────────────────────────────────
 
-        private void EmitCallStatement(CallStatement2 call, ScopeSymbols2 scope, ExecutionBlock result)
+        private void EmitCallStatement(CallStatement2 call, ScopeSymbols2 scope, ExecutionBlock result, bool isProcedure = true)
         {
             if (call.Callee is VariableExpression2 varExpr)
             {
@@ -672,12 +712,63 @@ namespace Magic.Kernel2.Compilation2
                     SourceLine = call.SourceLine
                 };
                 result.Add(callCmd);
+                // V1 emits pop after procedure calls in statement context to discard return value.
+                // But in entrypoint context (isProcedure=false), no pop is emitted after call Main.
+                if (isProcedure)
+                    result.Add(Emit(Opcodes.Pop, call.SourceLine));
             }
             else if (call.Callee is MemberAccessExpression2 memberAccess)
             {
-                // obj.Method(a, b) — as statement, result is discarded
-                EmitExpression(memberAccess.Object, scope, result);
-                EmitCallArguments(call.Arguments, scope, result, call.SourceLine);
+                // obj.Method(a, b) — as statement, result is discarded.
+                // V1 pattern: if any arg is an object literal, pre-evaluate all args into temp slots
+                // BEFORE pushing the receiver, then push receiver, then push pre-evaluated args.
+                // This matches V1's output ordering: arg-setup, receiver, arg-push, arity, callobj.
+                bool hasObjectLiteralArg = call.Arguments.Any(a => a is ObjectLiteralExpression2);
+                if (hasObjectLiteralArg)
+                {
+                    // V1 pattern: evaluate complex args first (object literals → temp slots),
+                    // then push receiver, then push the pre-evaluated slots, then arity.
+                    // This ordering matches V1's output: arg-setup code, push receiver, push args.
+                    var argSlots = new List<int>();
+                    foreach (var arg in call.Arguments)
+                    {
+                        if (arg is VariableExpression2 ve2 && scope.TryResolveSlot(ve2.Name, out var argSlotResolved, out _))
+                        {
+                            // Simple variable — don't emit, just track slot.
+                            argSlots.Add(argSlotResolved);
+                        }
+                        else if (arg is ObjectLiteralExpression2)
+                        {
+                            // Object literal: EmitObjectLiteral allocates its own objSlot and
+                            // ends with "push [objSlot]". We intercept by removing that last push
+                            // and tracking objSlot directly (= scope.NextSlot before emission).
+                            var objSlot = scope.NextSlot; // will be the first AllocateTemp() in EmitObjectLiteral
+                            EmitExpression(arg, scope, result);
+                            // Remove the trailing "push [objSlot]" that EmitObjectLiteral adds.
+                            result.RemoveAt(result.Count - 1);
+                            argSlots.Add(objSlot);
+                        }
+                        else
+                        {
+                            // Other complex expression — emit to stack, pop into temp.
+                            EmitExpression(arg, scope, result);
+                            var tempSlot = scope.AllocateTemp();
+                            result.Add(PopSlot(tempSlot, call.SourceLine));
+                            argSlots.Add(tempSlot);
+                        }
+                    }
+                    // Push receiver after args are prepared.
+                    EmitExpression(memberAccess.Object, scope, result);
+                    // Push pre-evaluated arg slots, then arity.
+                    foreach (var argSlot in argSlots)
+                        result.Add(PushSlot(argSlot, call.SourceLine));
+                    result.Add(PushInt(call.Arguments.Count, call.SourceLine));
+                }
+                else
+                {
+                    EmitExpression(memberAccess.Object, scope, result);
+                    EmitCallArguments(call.Arguments, scope, result, call.SourceLine);
+                }
 
                 var callCmd = new Command
                 {
@@ -871,8 +962,9 @@ namespace Magic.Kernel2.Compilation2
             // ── Compile body first to discover captured parent slots ─────────────
             var bodyBlock = EmitBlock(loop.Body, scope, isProcedure);
 
-            // Determine which parent slots are referenced in body (slots < bodySlotStart, excluding delta/aggregate)
-            var captureSlots = CollectCaptureSlots(bodyBlock, bodySlotStart, deltaSlot, aggregateSlot);
+            // Determine which parent slots are referenced in body (slots < bodySlotStart, excluding delta/aggregate).
+            // Also always include endSlot (V1 always captures it as the delta value holder).
+            var captureSlots = CollectCaptureSlots(bodyBlock, bodySlotStart, deltaSlot, aggregateSlot, endSlot);
 
             // ── acall: push captured, push arity, acall bodyLabel ────────────────
             foreach (var capSlot in captureSlots)
@@ -900,24 +992,43 @@ namespace Magic.Kernel2.Compilation2
         /// <summary>
         /// Collect all local memory slot indices referenced in <paramref name="block"/>
         /// that are &lt; <paramref name="bodySlotStart"/> (parent scope), excluding the delta and aggregate slots.
+        /// Also always includes <paramref name="endSlot"/> (V1 always captures it as a delta value holder).
         /// These are the slots that need to be captured (pushed before acall).
         /// </summary>
-        private static List<int> CollectCaptureSlots(ExecutionBlock block, int bodySlotStart, int deltaSlot, int aggregateSlot)
+        private static List<int> CollectCaptureSlots(ExecutionBlock block, int bodySlotStart, int deltaSlot, int aggregateSlot, int endSlot)
         {
             var set = new System.Collections.Generic.SortedSet<int>();
+
+            void ConsiderSlot(int idx)
+            {
+                if (idx < bodySlotStart && idx != deltaSlot && idx != aggregateSlot)
+                    set.Add(idx);
+            }
+
             foreach (var cmd in block)
             {
+                // Scan push [N] instructions.
                 if (cmd.Opcode == Opcodes.Push && cmd.Operand1 is PushOperand po && po.Kind == "Memory")
+                    ConsiderSlot((int)(long)po.Value!);
+
+                // Scan call/callobj instructions — opjson calls reference slots via CallInfo.Parameters.
+                if (cmd.Opcode == Opcodes.Call && cmd.Operand1 is CallInfo ci && ci.Parameters != null)
                 {
-                    var idx = (int)(long)po.Value!;
-                    if (idx < bodySlotStart && idx != deltaSlot && idx != aggregateSlot)
-                        set.Add(idx);
+                    foreach (var kv in ci.Parameters)
+                    {
+                        if (kv.Value is MemoryAddress ma)
+                            ConsiderSlot((int)ma.Index);
+                    }
                 }
-                if (cmd.Opcode == Opcodes.Cmp && cmd.Operand1 is MemoryAddress ma)
-                {
-                    // Cmp might also reference slots — but usually body-allocated
-                }
+
+                // Scan setobj — Operand1 can be a memory address.
+                if (cmd.Opcode == Opcodes.SetObj && cmd.Operand1 is MemoryAddress setMa)
+                    ConsiderSlot((int)setMa.Index);
             }
+
+            // V1 always captures endSlot (it holds the streamwait delta value).
+            ConsiderSlot(endSlot);
+
             return new List<int>(set);
         }
 
@@ -1205,7 +1316,8 @@ namespace Magic.Kernel2.Compilation2
         private void EmitAwaitExpression(AwaitExpression2 awaitExpr, ScopeSymbols2 scope, ExecutionBlock result)
         {
             EmitExpression(awaitExpr.Operand, scope, result);
-            result.Add(Emit(awaitExpr.IsObjectAwait ? Opcodes.AwaitObj : Opcodes.Await, awaitExpr.SourceLine));
+            // AGI always uses awaitobj (awaiting an object/promise); 'await' opcode is not used in standard patterns.
+            result.Add(Emit(Opcodes.AwaitObj, awaitExpr.SourceLine));
         }
 
         private void EmitObjectCreation(ObjectCreationExpression2 objCreate, ScopeSymbols2 scope, ExecutionBlock result)
@@ -1438,7 +1550,7 @@ namespace Magic.Kernel2.Compilation2
         private static Command PushIdentifier(string name, int sourceLine) => new()
         {
             Opcode = Opcodes.Push,
-            Operand1 = new PushOperand { Kind = "Identifier", Value = name },
+            Operand1 = new PushOperand { Kind = "Type", Value = name },
             SourceLine = sourceLine
         };
 

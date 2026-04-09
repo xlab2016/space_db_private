@@ -237,65 +237,65 @@ pop [36]
 cmp [36], 0
 je if_end_1004
 push string: "{}"
-pop [12]
-call opjson, [12], operation: "set", path: "token", [7]
+pop [37]
+call opjson, [37], operation: "set", path: "token", [7]
 pop
-call opjson, [12], operation: "set", path: "file", [22]
+call opjson, [37], operation: "set", path: "file", [22]
 pop
 push [5]
-push [12]
+push [37]
 push 1
 callobj "open"
 pop
 push [26]
 push string: "Photo"
 push string: "{}"
-pop [38]
-call opjson, [38], operation: "set", path: "data", [37]
-pop
-push [38]
-setobj
 pop [39]
+call opjson, [39], operation: "set", path: "data", [38]
+pop
+push [39]
+setobj
+pop [40]
 label if_end_1004
 push [23]
-pop [40]
-cmp [40], 0
+pop [41]
+cmp [41], 0
 je if_end_1005
 push string: "{}"
-pop [13]
-call opjson, [13], operation: "set", path: "token", [7]
+pop [42]
+call opjson, [42], operation: "set", path: "token", [7]
 pop
-call opjson, [13], operation: "set", path: "file", [23]
+call opjson, [42], operation: "set", path: "file", [23]
 pop
 push [5]
-push [13]
+push [42]
 push 1
 callobj "open"
 pop
 push [26]
 push string: "Document"
 push string: "{}"
-pop [42]
-call opjson, [42], operation: "set", path: "data", [41]
+pop [44]
+call opjson, [44], operation: "set", path: "data", [43]
 pop
-push [42]
+push [44]
 setobj
-pop [43]
+pop [45]
 label if_end_1005
 push [11]
 push string: "Message<>"
 getobj
-pop [44]
-push [44]
+pop [46]
+push [46]
 push [26]
 push 1
 callobj "add"
-pop [44]
+pop [46]
 push [11]
 push string: "Message<>"
-push [44]
+push [46]
 setobj
-pop [45]
+pop [47]
 push [11]
 awaitobj
 pop

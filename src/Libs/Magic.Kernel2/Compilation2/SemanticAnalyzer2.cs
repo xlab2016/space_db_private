@@ -134,6 +134,14 @@ namespace Magic.Kernel2.Compilation2
             return _table.NextSlot++;
         }
 
+        /// <summary>Register an existing slot index under a new variable name (no new slot is allocated).</summary>
+        public void RegisterLocalSlot(string name, int slot)
+        {
+            _localSlots[name] = slot;
+            if (_isGlobal)
+                _globalSlots[name] = slot;
+        }
+
         public bool TryResolveSlot(string name, out int slot, out string kind)
         {
             if (_localSlots.TryGetValue(name, out slot))

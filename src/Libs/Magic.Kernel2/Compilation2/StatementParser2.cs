@@ -34,6 +34,10 @@ namespace Magic.Kernel2.Compilation2
             if (string.IsNullOrWhiteSpace(trimmed))
                 return null;
 
+            // Skip comment lines.
+            if (trimmed.StartsWith("//", StringComparison.Ordinal))
+                return null;
+
             StatementNode2? result = null;
 
             // Variable declaration: var x := expr  OR  var x: Type := expr
@@ -508,6 +512,13 @@ namespace Magic.Kernel2.Compilation2
                     }
                 }
             }
+            else if (!string.IsNullOrWhiteSpace(afterCond))
+            {
+                // Single-statement if without braces: if (cond) stmt;
+                var thenStmt = ParseStatement(afterCond, sourceLine);
+                if (thenStmt != null)
+                    thenBlock.Statements.Add(thenStmt);
+            }
 
             result = new IfStatement2
             {
@@ -964,6 +975,34 @@ namespace Magic.Kernel2.Compilation2
                     return new GenericTypeExpression2 { SourceLine = sourceLine, TypeName = typeName, TypeArg = typeArg };
             }
 
+            // Lambda expression: param => body_expr (check BEFORE member access to avoid misparse of "_ => _.Foo")
+            // Must be checked before FindOutermostDot, otherwise "_ => _.Foo" splits at the dot in "_.Foo".
+            {
+                var earlyArrowIdx = FindArrowOutsideParens(t);
+                if (earlyArrowIdx > 0)
+                {
+                    var earlyParam = t.Substring(0, earlyArrowIdx).Trim();
+                    var earlyBody = t.Substring(earlyArrowIdx + 2).Trim();
+                    if (IsSimpleIdentifier(earlyParam) && !string.IsNullOrEmpty(earlyBody))
+                    {
+                        var earlyBodyExpr = ParseExpression(earlyBody, sourceLine);
+                        var earlyBlock = new BlockNode2
+                        {
+                            Statements = new System.Collections.Generic.List<StatementNode2>
+                            {
+                                new ExpressionStatement2 { Expression = earlyBodyExpr, SourceLine = sourceLine }
+                            }
+                        };
+                        return new LambdaExpression2
+                        {
+                            SourceLine = sourceLine,
+                            Parameters = new System.Collections.Generic.List<string> { earlyParam },
+                            Body = earlyBlock
+                        };
+                    }
+                }
+            }
+
             // Member access + call chain: parse left-to-right.
             // Find the outermost dot (handles data!.id by treating '!' as part of left side).
             var dotIdx = FindOutermostDot(t);
@@ -984,13 +1023,32 @@ namespace Magic.Kernel2.Compilation2
                     leftExpr = ParseExpression(leftPart, sourceLine);
                 }
 
-                // Right part might be a call: Method(args)
+                // Right part might be a call: Method(args)  OR  Path.To.Method(args)
                 var rParenIdx = FindFirstParenOutsideStrings(rightPart);
                 if (rParenIdx > 0)
                 {
-                    var methodName = rightPart.Substring(0, rParenIdx).Trim();
+                    var methodChain = rightPart.Substring(0, rParenIdx).Trim();
                     var argsText = rightPart.Substring(rParenIdx);
                     var args = ParseArgumentList(argsText, sourceLine);
+
+                    // If methodChain contains dots, build intermediate member-access nodes.
+                    // E.g. for "Message<>.find": receiver = MemberAccess(leftExpr, "Message<>"), method = "find"
+                    ExpressionNode2 receiverExpr = leftExpr;
+                    var actualMethodName = methodChain;
+                    if (methodChain.Contains('.'))
+                    {
+                        var segments = SplitSimpleMemberChain(methodChain);
+                        actualMethodName = segments[segments.Count - 1];
+                        for (var si = 0; si < segments.Count - 1; si++)
+                        {
+                            receiverExpr = new MemberAccessExpression2
+                            {
+                                SourceLine = sourceLine,
+                                Object = receiverExpr,
+                                MemberName = segments[si]
+                            };
+                        }
+                    }
 
                     return new CallExpression2
                     {
@@ -998,8 +1056,8 @@ namespace Magic.Kernel2.Compilation2
                         Callee = new MemberAccessExpression2
                         {
                             SourceLine = sourceLine,
-                            Object = leftExpr,
-                            MemberName = methodName
+                            Object = receiverExpr,
+                            MemberName = actualMethodName
                         },
                         Arguments = args,
                         IsObjectCall = true
@@ -1318,6 +1376,34 @@ namespace Magic.Kernel2.Compilation2
                     return i;
             }
             return -1;
+        }
+
+        /// <summary>
+        /// Split a simple member chain like "Message&lt;&gt;.find" or "a.b.c" into ["Message&lt;&gt;", "find"] or ["a","b","c"].
+        /// Handles segments that contain &lt;&gt; (no nesting inside segments is expected here).
+        /// </summary>
+        private static List<string> SplitSimpleMemberChain(string chain)
+        {
+            var result = new List<string>();
+            var start = 0;
+            var depth = 0; // track < > nesting
+            for (var i = 0; i < chain.Length; i++)
+            {
+                var c = chain[i];
+                if (c == '<') depth++;
+                else if (c == '>') depth--;
+                else if (c == '.' && depth == 0)
+                {
+                    var seg = chain.Substring(start, i - start).Trim();
+                    if (!string.IsNullOrEmpty(seg))
+                        result.Add(seg);
+                    start = i + 1;
+                }
+            }
+            var last = chain.Substring(start).Trim();
+            if (!string.IsNullOrEmpty(last))
+                result.Add(last);
+            return result;
         }
 
         private static int FindOutermostDot(string text)
