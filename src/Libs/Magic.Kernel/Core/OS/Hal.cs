@@ -426,6 +426,12 @@ namespace Magic.Kernel.Core.OS
                 defType.Generalizations.Add(new ClawStreamDevice());
                 return defObj;
             }
+            if (streamDevice != null && genSet.Contains("http"))
+            {
+                // "stream<http>" → HttpStreamDevice for making HTTP requests.
+                defType.Generalizations.Add(new Devices.Streams.HttpStreamDevice());
+                return defObj;
+            }
             if (streamDevice != null && genSet.Contains("site"))
             {
                 // Collect view type names (all genValues that are not "site" and are non-empty strings).
@@ -493,6 +499,8 @@ namespace Magic.Kernel.Core.OS
                     defType.Generalizations.Add(new Devices.Streams.Telegram());
                 else if (string.Equals(g as string, "client", StringComparison.OrdinalIgnoreCase))
                     ;
+                else if (string.Equals(g as string, "http", StringComparison.OrdinalIgnoreCase))
+                    ; // handled by combined genSet check above
                 else if (string.Equals(g as string, "claw", StringComparison.OrdinalIgnoreCase))
                     ; // handled by combined genSet check above
                 else if (string.Equals(g as string, "site", StringComparison.OrdinalIgnoreCase))

@@ -107,32 +107,89 @@ namespace Magic.Kernel.Devices.Streams.Drivers
 
             var view = new ViewDefinition { Name = viewName };
 
-            // Extract RenderDevice (if present) to get pre-rendered HTML.
+            // Extract RenderDevice (if present) to get pre-rendered HTML/CSS.
             var renderDevice = defType.Generalizations.OfType<RenderDevice>().FirstOrDefault();
             if (renderDevice?.ViewDefinition != null)
             {
                 view.RenderResult = renderDevice.ViewDefinition.RenderResult;
                 view.RawHtml = renderDevice.ViewDefinition.RawHtml;
+                view.CssResult = renderDevice.ViewDefinition.CssResult;
                 view.Fields = renderDevice.ViewDefinition.Fields;
                 view.Buttons = renderDevice.ViewDefinition.Buttons;
                 return view;
             }
 
-            // Extract fields from the type schema.
+            // Extract fields and buttons from the type schema using ViewFieldParser.
             foreach (var field in defType.Fields)
             {
                 var fieldName = (field.Name ?? "").Trim();
+                var typeSpec = (field.Type ?? "").Trim();
+
                 if (string.IsNullOrEmpty(fieldName))
                     continue;
 
+                // Try to parse as a button declaration.
+                if (ViewFieldParser.IsButtonSpec(typeSpec))
+                {
+                    var button = ViewFieldParser.TryParseButton(fieldName, typeSpec);
+                    if (button != null)
+                    {
+                        view.Buttons.Add(button);
+                        continue;
+                    }
+                }
+
+                // Try to parse as a typed view field.
+                var viewField = ViewFieldParser.TryParseField(fieldName, typeSpec);
+                if (viewField != null)
+                {
+                    view.Fields.Add(viewField);
+                    continue;
+                }
+
+                // Fallback: store as raw field.
                 view.Fields.Add(new ViewField
                 {
                     Name = fieldName,
-                    FieldType = (field.Type ?? "string").Trim()
+                    FieldType = string.IsNullOrEmpty(typeSpec) ? "string" : typeSpec
                 });
             }
 
+            // Extract Render() method body to build HTML/CSS render result.
+            ExtractRenderMethodResult(defType, view);
+
             return view;
+        }
+
+        /// <summary>
+        /// Attempts to extract the HTML/CSS render result from the view type's Render() method body.
+        /// The Render() method's return value is stored in the type's method metadata; here we look
+        /// for the return value string and parse it using <see cref="ViewRenderResult"/>.
+        /// </summary>
+        private static void ExtractRenderMethodResult(DefType defType, ViewDefinition view)
+        {
+            // Find the Render() method in the type's method registry.
+            var renderMethod = defType.Methods.FirstOrDefault(m =>
+                string.Equals(m.Name, "Render", StringComparison.OrdinalIgnoreCase));
+
+            if (renderMethod == null)
+                return;
+
+            // The return value string is embedded in the method's ReturnType field
+            // when it contains an html:/css: projection literal (V1 compiler convention).
+            var returnType = renderMethod.ReturnType ?? "";
+            if (!string.IsNullOrWhiteSpace(returnType) &&
+                (returnType.StartsWith("html:", StringComparison.OrdinalIgnoreCase) ||
+                 returnType.StartsWith("css:", StringComparison.OrdinalIgnoreCase)))
+            {
+                var renderResult = ViewRenderResult.Parse(returnType);
+                if (renderResult != null)
+                {
+                    view.RenderResult = renderResult.HtmlNode;
+                    view.RawHtml = renderResult.RawHtml;
+                    view.CssResult = renderResult.CssBlock;
+                }
+            }
         }
 
         public void ParseAndApplyConfig(object? config)

@@ -1,0 +1,76 @@
+@AGI 0.0.1;
+
+program login_view;
+system samples;
+module views;
+
+Login{} : view {
+  Username: field<string>(label: "Username");
+  Password: field<string>(type: "password");
+  Logon: button<Login_logon>;
+  Error: bool;
+
+  method Render() {
+    return html: <html>
+      <body>
+        <div id="login">
+          Username
+          Password
+          <button ref=Logon>Login</button>
+          <div id="error">Неверный логин или пароль</div>
+        </div>
+    </body>
+  </html>, css: {
+    #login {
+      horizontal-position: center;
+      vertical-position: center;
+    }
+    #error {
+      color: red;
+      display: Error ? block : none;
+    }
+  };
+  }
+
+  Login_logon: button {
+     constructor {
+       Click:= Logon_click;
+     }
+
+     method Logon_click() {
+        var username:= Parent.Username;
+        var password:= Parent.Password;
+       println(#"logon_click: {username}, {password}");
+       await logon(username, password);
+     }
+
+     method Render() {
+        return css: {
+           color: f00000ee;
+        }
+     }
+  }
+}
+
+Site1} : site {
+  Login{};
+}
+
+procedure Main() {
+  var frontend := stream<site, Site1>;
+  frontend.open({ port: 6000 });
+
+  await frontend;
+}
+
+procedure logon(username, password) {
+  var api:= stream<http>;
+  var response := json: await api.post("/api/v1/authenticate", {
+    username, password
+  });
+  return response.success;
+}
+
+entrypoint {
+  Main;
+}
