@@ -1,0 +1,19 @@
+@AGI 0.0.1;
+
+program simple_site;
+system samples;
+module views;
+
+Site1} : site {
+}
+
+procedure Main() {
+  var frontend := stream<site, Site1>;
+  frontend.open({ port: 6000 });
+
+  await frontend;
+}
+
+entrypoint {
+  Main;
+}
